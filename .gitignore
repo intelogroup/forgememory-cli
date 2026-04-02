@@ -1,0 +1,16 @@
+# Binaries
+forge
+forge-*
+*.exe
+
+# Database
+*.db
+*.db-wal
+*.db-shm
+
+# OS
+.DS_Store
+
+# IDE
+.idea/
+.vscode/
