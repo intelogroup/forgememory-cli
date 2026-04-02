@@ -1,0 +1,118 @@
+name: Forge CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.22'
+
+      - name: Build
+        run: go build -o forge ./cmd/
+
+      - name: Unit tests
+        run: go test ./... -v -count=1
+
+      - name: Lint
+        run: go vet ./...
+
+  cross-compile:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        include:
+          - os: darwin
+            arch: amd64
+            suffix: ''
+          - os: darwin
+            arch: arm64
+            suffix: ''
+          - os: linux
+            arch: amd64
+            suffix: ''
+          - os: linux
+            arch: arm64
+            suffix: ''
+          - os: windows
+            arch: amd64
+            suffix: '.exe'
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.22'
+
+      - name: Build for ${{ matrix.os }}/${{ matrix.arch }}
+        env:
+          GOOS: ${{ matrix.os }}
+          GOARCH: ${{ matrix.arch }}
+          CGO_ENABLED: '0'
+        run: go build -o forge-${{ matrix.os }}-${{ matrix.arch }}${{ matrix.suffix }} ./cmd/
+
+      - name: Check binary size
+        run: ls -lh forge-*
+
+  integration:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.22'
+
+      - name: Build
+        run: go build -o forge ./cmd/
+
+      - name: Integration test
+        run: |
+          # Clean slate
+          rm -rf ~/.forge
+          
+          # Init
+          ./forge init
+          
+          # Start daemon
+          ./forge start
+          sleep 2
+          
+          # Check daemon is running
+          ./forge status | grep "Daemon:.*running"
+          
+          # Send test events
+          echo '{"session_id":"ci-test","hook_event_name":"PostToolUse","tool_name":"Bash","tool_input":{"command":"echo test"}}' | \
+            FORGE_SOURCE_TOOL=claude FORGE_EVENT_TYPE=PostToolUse ./forge hook
+          sleep 0.5
+          
+          echo '{"session_id":"ci-test","hook_event_name":"PostToolUse","tool_name":"Edit","tool_input":{"file_path":"test.go"}}' | \
+            FORGE_SOURCE_TOOL=claude FORGE_EVENT_TYPE=PostToolUse ./forge hook
+          sleep 0.5
+          
+          # Verify events captured
+          ./forge status | grep "Events:.*2"
+          
+          # Distill
+          ./forge distill
+          
+          # Test MCP server
+          echo '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}
+          {"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"get_recent_context","arguments":{}}}' | \
+            ./forge mcp 2>/dev/null | grep -q "forge"
+          
+          # Test search
+          ./forge search "test" | grep -q "PostToolUse"
+          
+          # Stop daemon
+          ./forge stop
+          
+          echo "Integration test passed!"
