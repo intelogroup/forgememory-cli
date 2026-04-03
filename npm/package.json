@@ -1,6 +1,6 @@
 {
   "name": "forgememory",
-  "version": "0.3.3",
+  "version": "0.3.4",
   "description": "Silent memory layer for AI coding agents — captures tool usage, distills insights, injects context",
   "license": "MIT",
   "repository": {
