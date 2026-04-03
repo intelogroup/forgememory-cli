@@ -444,6 +444,7 @@ func runMCP(args []string) {
 	defer database.Close()
 
 	server := mcp.New(database)
+	server.Quiet = true // Suppress startup banner for MCP stdio transport
 	if err := server.Run(); err != nil {
 		fmt.Fprintf(os.Stderr, "MCP server error: %v\n", err)
 		os.Exit(1)

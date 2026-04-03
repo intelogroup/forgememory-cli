@@ -53,7 +53,8 @@ type Server struct {
 	db     *db.DB
 	name   string
 	reader *bufio.Reader
-	writer io.Writer
+	writer *bufio.Writer
+	Quiet  bool // If true, suppress startup banner (used for stdio transport)
 }
 
 // New creates a new MCP server.
@@ -62,14 +63,16 @@ func New(database *db.DB) *Server {
 		db:     database,
 		name:   "forge",
 		reader: bufio.NewReader(os.Stdin),
-		writer: os.Stdout,
+		writer: bufio.NewWriter(os.Stdout),
 	}
 }
 
 // Run starts the MCP server loop.
 func (s *Server) Run() error {
 	log.SetOutput(os.Stderr)
-	log.Println("Forge MCP server starting (stdio transport)")
+	if !s.Quiet {
+		log.Println("Forge MCP server starting (stdio transport)")
+	}
 
 	for {
 		line, err := s.reader.ReadBytes('\n')
@@ -90,6 +93,7 @@ func (s *Server) Run() error {
 			data, _ := json.Marshal(resp)
 			data = append(data, '\n')
 			s.writer.Write(data)
+			s.writer.Flush()
 		}
 	}
 }
