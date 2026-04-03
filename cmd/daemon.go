@@ -61,7 +61,10 @@ func runDaemon(args []string) {
 
 	// Get the parent PID before we daemonize (if started via forge start/mcp)
 	// The daemon should exit when its parent dies to avoid orphaned processes.
+	// Skip parent monitoring if FORGE_NO_EXIT_ON_PARENT_EXIT is set - this is
+	// set by `forge start` so the daemon doesn't exit when the CLI exits.
 	parentPID := os.Getppid()
+	skipParentMonitor := os.Getenv("FORGE_NO_EXIT_ON_PARENT_EXIT") == "1"
 
 	// Listen for hook events
 	ln, addr, err := ipc.Listen()
@@ -84,7 +87,7 @@ func runDaemon(args []string) {
 	// Parent process monitor - exit when parent dies to avoid orphaned daemons.
 	// Only monitor if parent is not init (PID 1) - this means we were started
 	// by a specific process (like forge mcp) rather than as a system service.
-	if parentPID > 1 {
+	if parentPID > 1 && !skipParentMonitor {
 		go func() {
 			ticker := time.NewTicker(5 * time.Second)
 			defer ticker.Stop()

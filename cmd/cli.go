@@ -128,13 +128,8 @@ func runStart(args []string) {
 	forgeDir := filepath.Join(forgeHome(), ".forge")
 	_ = os.MkdirAll(forgeDir, 0o700) // ensure dir exists before opening log
 	logPath := filepath.Join(forgeDir, "daemon.log")
-	cmd := exec.Command(os.Args[0], "daemon")
-	cmd.Stdin = nil
-	if lf, err := os.OpenFile(logPath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o600); err == nil {
-		cmd.Stdout = lf
-		cmd.Stderr = lf
-		defer lf.Close()
-	}
+	cmd, closeLog := newDaemonCommand(logPath, true)
+	defer closeLog()
 
 	if err := startBackground(cmd); err != nil {
 		fmt.Fprintf(os.Stderr, "Error starting daemon: %v\n", err)
@@ -158,6 +153,24 @@ func runStart(args []string) {
 	runDoctorInline()
 	fmt.Fprintln(os.Stderr, "\n  Run 'forge doctor --repair' to auto-fix stale state.")
 	os.Exit(1)
+}
+
+func newDaemonCommand(logPath string, skipParentMonitor bool) (*exec.Cmd, func()) {
+	cmd := exec.Command(os.Args[0], "daemon")
+	cmd.Stdin = nil
+	cmd.Env = os.Environ()
+	if skipParentMonitor {
+		cmd.Env = append(cmd.Env, "FORGE_NO_EXIT_ON_PARENT_EXIT=1")
+	}
+
+	closeLog := func() {}
+	if lf, err := os.OpenFile(logPath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o600); err == nil {
+		cmd.Stdout = lf
+		cmd.Stderr = lf
+		closeLog = func() { _ = lf.Close() }
+	}
+
+	return cmd, closeLog
 }
 
 func runStop(args []string) {
@@ -407,13 +420,8 @@ func runMCP(args []string) {
 		forgeDir := filepath.Join(forgeHome(), ".forge")
 		_ = os.MkdirAll(forgeDir, 0o700) // ensure dir exists before opening log
 		logPath := filepath.Join(forgeDir, "daemon.log")
-		cmd := exec.Command(os.Args[0], "daemon")
-		cmd.Stdin = nil
-		if lf, err := os.OpenFile(logPath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o600); err == nil {
-			cmd.Stdout = lf
-			cmd.Stderr = lf
-			defer lf.Close()
-		}
+		cmd, closeLog := newDaemonCommand(logPath, false)
+		defer closeLog()
 
 		if err := startBackground(cmd); err != nil {
 			fmt.Fprintf(os.Stderr, "Error starting daemon: %v\n", err)

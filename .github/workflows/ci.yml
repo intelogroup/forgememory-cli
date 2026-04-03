@@ -87,6 +87,109 @@ jobs:
           if (($ec -ne 0) -and ($captured -match "(?m)^FAIL\s")) { exit 1 }
           exit 0
 
+  integration-windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.25'
+          cache: true
+
+      - name: Build
+        run: go build -o forge.exe ./cmd/
+
+      - name: Integration test
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+
+          function Invoke-Forge {
+            param(
+              [string[]]$Args,
+              [string]$InputText
+            )
+
+            if ($PSBoundParameters.ContainsKey('InputText')) {
+              $output = $InputText | & .\forge.exe @Args 2>&1
+            } else {
+              $output = & .\forge.exe @Args 2>&1
+            }
+
+            $output | Out-Host
+            if ($LASTEXITCODE -ne 0) {
+              throw "forge.exe $($Args -join ' ') failed with exit code $LASTEXITCODE"
+            }
+
+            return ($output | Out-String)
+          }
+
+          $forgeHome = Join-Path $env:USERPROFILE '.forge'
+          if (Test-Path $forgeHome) {
+            Remove-Item -Recurse -Force $forgeHome
+          }
+
+          $savedSourceTool = $env:FORGE_SOURCE_TOOL
+          $savedEventType = $env:FORGE_EVENT_TYPE
+
+          try {
+            Invoke-Forge init
+            Invoke-Forge start
+
+            $status = ''
+            $running = $false
+            for ($i = 0; $i -lt 20; $i++) {
+              Start-Sleep -Seconds 1
+              $status = Invoke-Forge status
+              if ($status -match 'Daemon:\s+running') {
+                $running = $true
+                break
+              }
+            }
+
+            if (-not $running) {
+              Invoke-Forge doctor
+              throw "daemon did not reach the running state after start"
+            }
+
+            $doctor = Invoke-Forge doctor
+            if ($doctor -notmatch '\[OK\] Daemon') {
+              throw "doctor did not report a healthy daemon"
+            }
+
+            $env:FORGE_SOURCE_TOOL = 'claude'
+            $env:FORGE_EVENT_TYPE = 'PostToolUse'
+            Invoke-Forge hook '{"session_id":"ci-test","hook_event_name":"PostToolUse","tool_name":"Bash","tool_input":{"command":"echo test"}}'
+            Start-Sleep -Milliseconds 500
+            Invoke-Forge hook '{"session_id":"ci-test","hook_event_name":"PostToolUse","tool_name":"Edit","tool_input":{"file_path":"test.go"}}'
+            Start-Sleep -Milliseconds 500
+
+            $status = Invoke-Forge status
+            if ($status -notmatch 'Events:\s+2') {
+              throw "expected 2 captured events after hook calls"
+            }
+          } finally {
+            if ($null -ne $savedSourceTool) {
+              $env:FORGE_SOURCE_TOOL = $savedSourceTool
+            } else {
+              Remove-Item Env:FORGE_SOURCE_TOOL -ErrorAction SilentlyContinue
+            }
+
+            if ($null -ne $savedEventType) {
+              $env:FORGE_EVENT_TYPE = $savedEventType
+            } else {
+              Remove-Item Env:FORGE_EVENT_TYPE -ErrorAction SilentlyContinue
+            }
+
+            Invoke-Forge stop
+          }
+
+          $finalStatus = Invoke-Forge status
+          if ($finalStatus -notmatch 'Daemon:\s+not running') {
+            throw "daemon should not be running after stop"
+          }
+
   integration:
     runs-on: ubuntu-latest
     steps:

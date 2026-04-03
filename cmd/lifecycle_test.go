@@ -31,6 +31,16 @@ func captureStdout(f func()) string {
 	return buf.String()
 }
 
+func hasEnv(env []string, key, want string) bool {
+	prefix := key + "="
+	for _, entry := range env {
+		if strings.HasPrefix(entry, prefix) {
+			return strings.TrimPrefix(entry, prefix) == want
+		}
+	}
+	return false
+}
+
 // seedEvents inserts n events into the DB at the current HOME path.
 func seedEvents(t *testing.T, n int) {
 	t.Helper()
@@ -131,6 +141,40 @@ func TestRunStop_Idempotent(t *testing.T) {
 	// Stopping twice should never panic
 	captureStdout(func() { runStop([]string{}) })
 	captureStdout(func() { runStop([]string{}) })
+}
+
+func TestNewDaemonCommand_SetsDetachedDaemonEnvForStart(t *testing.T) {
+	logPath := filepath.Join(t.TempDir(), "daemon.log")
+
+	cmd, closeLog := newDaemonCommand(logPath, true)
+	defer closeLog()
+
+	if got := cmd.Path; got != os.Args[0] {
+		t.Fatalf("cmd.Path = %q, want %q", got, os.Args[0])
+	}
+	if len(cmd.Args) != 2 || cmd.Args[1] != "daemon" {
+		t.Fatalf("cmd.Args = %v, want [self daemon]", cmd.Args)
+	}
+	if cmd.Stdin != nil {
+		t.Fatal("daemon command should detach from stdin")
+	}
+	if !hasEnv(cmd.Env, "FORGE_NO_EXIT_ON_PARENT_EXIT", "1") {
+		t.Fatalf("cmd.Env missing FORGE_NO_EXIT_ON_PARENT_EXIT=1: %v", cmd.Env)
+	}
+	if cmd.Stdout == nil || cmd.Stderr == nil {
+		t.Fatal("daemon command should log stdout/stderr to daemon.log when available")
+	}
+}
+
+func TestNewDaemonCommand_KeepsParentMonitorForMCP(t *testing.T) {
+	logPath := filepath.Join(t.TempDir(), "daemon.log")
+
+	cmd, closeLog := newDaemonCommand(logPath, false)
+	defer closeLog()
+
+	if hasEnv(cmd.Env, "FORGE_NO_EXIT_ON_PARENT_EXIT", "1") {
+		t.Fatalf("cmd.Env should not disable parent monitoring for MCP launches: %v", cmd.Env)
+	}
 }
 
 // ---- runDistill ----

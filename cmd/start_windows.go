@@ -8,6 +8,10 @@ import (
 )
 
 const (
+	// detachedProcess creates a process with no inherited console attachment.
+	// Without this, a hidden child can still be tied to the parent's console
+	// lifecycle and die as soon as the wrapper process exits.
+	detachedProcess = 0x00000008
 	// createBreakawayFromJob escapes the parent's Windows Job Object so the
 	// daemon is not killed when PowerShell/terminal job objects are torn down.
 	createBreakawayFromJob = 0x01000000
@@ -23,7 +27,7 @@ const (
 // first; falls back without it when the parent job disallows breakaway
 // (e.g. GitHub Actions runners).
 func startBackground(cmd *exec.Cmd) error {
-	const base = syscall.CREATE_NEW_PROCESS_GROUP | createNoWindow
+	const base = detachedProcess | syscall.CREATE_NEW_PROCESS_GROUP | createNoWindow
 	cmd.SysProcAttr = &syscall.SysProcAttr{
 		CreationFlags: base | createBreakawayFromJob,
 		HideWindow:    true,
