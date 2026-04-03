@@ -57,8 +57,16 @@ jobs:
           files: dist/*
           generate_release_notes: true
 
+      - name: Verify npm auth
+        working-directory: npm
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: |
+          npm whoami
+
       - name: Publish to npm
         working-directory: npm
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
         run: |
-          echo "//registry.npmjs.org/:_authToken=${{ secrets.NPM_TOKEN }}" >> "$NPM_CONFIG_USERCONFIG"
           npm publish --access public
