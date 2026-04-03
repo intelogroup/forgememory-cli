@@ -6,6 +6,7 @@ import (
 	"os"
 	"os/exec"
 	"strings"
+	"time"
 
 	"github.com/forge/forge/internal/agent"
 	"github.com/forge/forge/internal/db"
@@ -70,7 +71,19 @@ func runStart(args []string) {
 		os.Exit(1)
 	}
 
-	fmt.Println("  Daemon started.")
+	// Wait up to 3 seconds for daemon to write its addr and start accepting.
+	// On Windows, the process may be killed by the parent job object if not
+	// properly detached — we catch that here before claiming success.
+	for i := 0; i < 15; i++ {
+		time.Sleep(200 * time.Millisecond)
+		if a := readAddr(); a != "" && isDaemonAlive(a) {
+			fmt.Println("  Daemon started.")
+			return
+		}
+	}
+	fmt.Fprintln(os.Stderr, "  Error: daemon process exited immediately — not responding.")
+	fmt.Fprintln(os.Stderr, "  Run 'forge doctor' to diagnose.")
+	os.Exit(1)
 }
 
 func runStop(args []string) {
@@ -292,9 +305,6 @@ func runScan(args []string) {
 	}
 }
 
-func startBackground(cmd *exec.Cmd) error {
-	return cmd.Start()
-}
 
 func runMCP(args []string) {
 	database, err := db.Open("")

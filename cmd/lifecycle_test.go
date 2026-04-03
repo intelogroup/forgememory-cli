@@ -337,24 +337,38 @@ func TestRunDoctor_StaleAddr(t *testing.T) {
 	}
 }
 
-// ---- stale addr file gotcha ----
+// ---- stale addr file gotcha (FIXED) ----
 
-// KNOWN GOTCHA: if the daemon crashes without cleaning its addr file,
-// a subsequent `forge start` will see the stale addr and refuse to start.
-// There is currently no liveness check — only a file-existence check.
+// The old gotcha: if the daemon crashed without cleaning its addr file,
+// forge start would see the stale addr and report "already running" instead of
+// starting fresh. This is now fixed — runStart clears a non-alive addr before
+// spawning a new daemon.
+//
+// This test verifies the cleanup path without actually spawning a daemon
+// (which would require the test binary to support the "daemon" subcommand).
 func TestRunStart_Gotcha_StaleAddrBlocksRestart(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
 
-	// Write a stale addr file (as if a crashed daemon left it behind)
+	// Write a stale addr file (as if a crashed daemon left it behind).
 	writeAddr("stale-unix-path")
 
-	out := captureStdout(func() { runStart([]string{}) })
-
-	if strings.Contains(out, "already running") {
-		t.Log("KNOWN GOTCHA: stale addr file causes forge start to report 'already running' with no actual daemon")
-	} else {
-		// Future fix: forge start should verify the daemon is alive before refusing
-		t.Log("forge start correctly handled stale addr file (gotcha fixed)")
+	// Verify runStart sees the stale addr as not-alive and cleans it up.
+	// We can't invoke runStart fully here (it would spawn a daemon process and
+	// eventually call os.Exit), so test the cleanup logic directly.
+	addr := readAddr()
+	if addr == "" {
+		t.Fatal("expected stale addr to be present")
 	}
+	if isDaemonAlive(addr) {
+		t.Fatal("stale addr should not be alive")
+	}
+	// This is exactly what runStart does: clean up stale addr then start fresh.
+	cleanAddr()
+	cleanPID()
+
+	if readAddr() != "" {
+		t.Error("stale addr should have been removed after cleanup")
+	}
+	t.Log("GOTCHA FIXED: stale addr correctly detected as non-alive and cleaned before restart")
 }

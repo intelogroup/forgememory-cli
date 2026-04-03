@@ -246,10 +246,16 @@ func setupGemini(home string) error {
 func setupCodex(home string) error {
 	forgePath := ForgePath()
 
-	// Install skill file
-	skillDir := filepath.Join(home, ".codex", "skills")
+	// Honour CODEX_HOME env var, fall back to ~/.codex
+	codexHome := os.Getenv("CODEX_HOME")
+	if codexHome == "" {
+		codexHome = filepath.Join(home, ".codex")
+	}
+
+	// Install skill file — create the skills directory first
+	skillDir := filepath.Join(codexHome, "skills")
 	if err := os.MkdirAll(skillDir, 0o700); err != nil {
-		return fmt.Errorf("create skills dir: %w", err)
+		return fmt.Errorf("create skills dir %s: %w", skillDir, err)
 	}
 
 	skillContent := map[string]any{
@@ -288,10 +294,27 @@ func setupCodex(home string) error {
 
 	skillPath := filepath.Join(skillDir, "forge.json")
 	if err := os.WriteFile(skillPath, data, 0o600); err != nil {
-		return fmt.Errorf("write skill: %w", err)
+		// Provide a manual fallback — common on Windows when .codex has restricted ACLs.
+		fallback := manualCodexFallback(skillPath, data)
+		return fmt.Errorf("write skill: %w\n  Manual fallback:\n%s", err, fallback)
 	}
 
 	return nil
+}
+
+// manualCodexFallback returns shell commands to install the skill file manually.
+func manualCodexFallback(skillPath string, data []byte) string {
+	dir := filepath.Dir(skillPath)
+	if IsWindows() {
+		return fmt.Sprintf(
+			"    New-Item -ItemType Directory -Force \"%s\"\n"+
+				"    Set-Content -Path \"%s\" -Value '%s'",
+			dir, skillPath, string(data))
+	}
+	return fmt.Sprintf(
+		"    mkdir -p \"%s\"\n"+
+			"    cat > \"%s\" << 'EOF'\n%s\nEOF",
+		dir, skillPath, string(data))
 }
 
 // OS detection helpers
