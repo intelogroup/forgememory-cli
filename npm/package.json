@@ -1,5 +1,5 @@
 {
-  "name": "forgememo",
+  "name": "forgememo-cli",
   "version": "0.3.6",
   "description": "Silent memory layer for AI coding agents — captures tool usage, distills insights, injects context",
   "license": "MIT",
