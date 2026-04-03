@@ -1,6 +1,7 @@
 package db
 
 import (
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
@@ -92,14 +93,18 @@ func (d *DB) EventCount() (total, undistilled int, err error) {
 }
 
 // SearchEvents does full-text search on event payloads.
+// The query is wrapped in FTS5 double-quote phrase syntax so hyphens and other
+// special characters are treated as literals rather than operators.
 func (d *DB) SearchEvents(query string, limit int) ([]Event, error) {
+	// Escape any embedded double-quotes by doubling them, then phrase-quote the whole thing.
+	ftsQuery := `"` + strings.ReplaceAll(query, `"`, `""`) + `"`
 	rows, err := d.conn.Query(
 		`SELECT e.id, e.ts, e.session_id, e.project_id, e.source_tool, e.event_type, e.tool_name, e.payload, e.distilled
 		 FROM events e
 		 JOIN events_fts f ON e.rowid = f.rowid
 		 WHERE events_fts MATCH ?
 		 ORDER BY rank
-		 LIMIT ?`, query, limit,
+		 LIMIT ?`, ftsQuery, limit,
 	)
 	if err != nil {
 		return nil, err
