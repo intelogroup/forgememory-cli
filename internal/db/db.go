@@ -113,7 +113,18 @@ func (d *DB) migrate() error {
 		{"session_summaries", "investigation", "TEXT DEFAULT ''"},
 		{"session_summaries", "learnings", "TEXT DEFAULT ''"},
 		{"session_summaries", "next_steps", "TEXT DEFAULT ''"},
+		{"events", "git_root", "TEXT DEFAULT ''"},
 	}
+	migrations = append(migrations,
+		`CREATE TABLE IF NOT EXISTS projects (
+			id           TEXT PRIMARY KEY,
+			git_root     TEXT NOT NULL,
+			name         TEXT NOT NULL,
+			last_active  TEXT NOT NULL,
+			agents       TEXT DEFAULT ''
+		)`,
+		`CREATE INDEX IF NOT EXISTS idx_projects_git_root ON projects(git_root)`,
+	)
 	for _, cm := range colMigrations {
 		if err := d.addColumnIfMissing(cm.table, cm.col, cm.def); err != nil {
 			return fmt.Errorf("add column %s.%s: %w", cm.table, cm.col, err)

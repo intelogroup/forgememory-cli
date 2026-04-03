@@ -5,6 +5,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
+	"time"
 )
 
 func TestLoadConfigDefaults(t *testing.T) {
@@ -222,4 +223,120 @@ func containsStrHelper(s, substr string) bool {
 		}
 	}
 	return false
+}
+
+func TestUserMessageErrors(t *testing.T) {
+	tests := []struct {
+		name string
+		err  error
+		want string
+	}{
+		{
+			name: "ErrNoProvider",
+			err:  ErrNoProvider,
+			want: "No inference provider configured",
+		},
+		{
+			name: "ErrProviderInvalid",
+			err:  ErrProviderInvalid,
+			want: "Invalid provider or credentials",
+		},
+		{
+			name: "ErrProviderUnreachable",
+			err:  ErrProviderUnreachable,
+			want: "Cannot reach inference provider",
+		},
+		{
+			name: "ConnectionRefused",
+			err:  &testError{"connection refused to localhost:11434"},
+			want: "Connection refused",
+		},
+		{
+			name: "AuthError401",
+			err:  &testError{"401 Unauthorized"},
+			want: "Authentication failed",
+		},
+		{
+			name: "AuthError403",
+			err:  &testError{"403 Forbidden"},
+			want: "Access forbidden",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			msg := UserMessage(tt.err)
+			if !containsStr(msg, tt.want) {
+				t.Errorf("UserMessage(%v) = %q, want to contain %q", tt.err, msg, tt.want)
+			}
+		})
+	}
+}
+
+type testError struct {
+	msg string
+}
+
+func (e *testError) Error() string {
+	return e.msg
+}
+
+func TestCallOllamaUnreachable(t *testing.T) {
+	d := &Distiller{
+		config: Config{
+			Provider: ProviderOllama,
+			Model:    "llama3.2",
+			BaseURL:  "http://localhost:19999",
+		},
+		client: &http.Client{Timeout: 2 * time.Second},
+	}
+
+	_, err := d.callOllama("test")
+	if err == nil {
+		t.Error("expected error for unreachable Ollama")
+	}
+}
+
+func TestCallOpenAIUnauthorized(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusUnauthorized)
+	}))
+	defer server.Close()
+
+	d := &Distiller{
+		config: Config{
+			Provider: ProviderOpenAI,
+			Model:    "gpt-4o-mini",
+			APIKey:   "invalid",
+			BaseURL:  server.URL,
+		},
+		client: server.Client(),
+	}
+
+	_, err := d.callOpenAI("test")
+	if err == nil {
+		t.Error("expected error for unauthorized OpenAI")
+	}
+}
+
+func TestCallAnthropicForbidden(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusForbidden)
+	}))
+	defer server.Close()
+
+	d := &Distiller{
+		config: Config{
+			Provider: ProviderAnthropic,
+			Model:    "claude-3-haiku-20240307",
+			APIKey:   "invalid",
+			BaseURL:  server.URL,
+		},
+		client: server.Client(),
+	}
+
+	_, err := d.callAnthropic("test")
+	if err == nil {
+		t.Error("expected error for forbidden Anthropic")
+	}
 }

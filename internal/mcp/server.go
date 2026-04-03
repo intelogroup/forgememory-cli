@@ -193,6 +193,20 @@ func (s *Server) handleToolsList(req Request) *Response {
 				},
 			},
 		},
+		{
+			Name:        "get_project_timeline",
+			Description: "Returns a cross-agent timeline for the current project showing all sessions from Claude, Gemini, and Codex. Use when the user asks what happened in this project across different agents.",
+			InputSchema: map[string]any{
+				"type": "object",
+				"properties": map[string]any{
+					"limit": map[string]any{
+						"type":        "number",
+						"description": "Number of timeline entries to return (default 10)",
+						"default":     10,
+					},
+				},
+			},
+		},
 	}
 
 	return &Response{
@@ -221,6 +235,8 @@ func (s *Server) handleToolsCall(req Request) *Response {
 		result = s.getPrinciples(params.Arguments)
 	case "get_session_summaries":
 		result = s.getSessionSummaries(params.Arguments)
+	case "get_project_timeline":
+		result = s.getProjectTimeline(params.Arguments)
 	default:
 		return errorResponse(req.ID, "Unknown tool: "+params.Name)
 	}
@@ -410,4 +426,55 @@ func intFromArgs(args map[string]any, key string, defaultVal int) int {
 		}
 	}
 	return defaultVal
+}
+
+func (s *Server) getProjectTimeline(args map[string]any) ToolResult {
+	limit := intFromArgs(args, "limit", 10)
+	projectID := detectProject()
+
+	entries, err := s.db.ProjectTimeline(projectID, limit)
+	if err != nil {
+		return toolError("Failed to get project timeline: " + err.Error())
+	}
+
+	agents, _ := s.db.ProjectAgents(projectID)
+
+	text := fmt.Sprintf("## Project Timeline: %s\n\n", projectID)
+
+	if len(agents) > 0 {
+		text += fmt.Sprintf("**Agents in this project**: %s\n\n", strings.Join(agents, ", "))
+	}
+
+	if len(entries) == 0 {
+		text += "No sessions recorded for this project yet.\n"
+	} else {
+		text += "| Session | Agent | Events | Start | End |\n"
+		text += "|---------|-------|--------|-------|-----|\n"
+		for _, e := range entries {
+			start := e.StartTS
+			if len(start) >= 10 {
+				start = start[:10]
+			}
+			end := e.EndTS
+			if len(end) >= 10 {
+				end = end[:10]
+			}
+			text += fmt.Sprintf("| `%s` | %s | %d | %s | %s |\n",
+				e.SessionID[:8], e.PrimaryAgent, e.EventCount, start, end)
+		}
+	}
+
+	return ToolResult{
+		Content: []ToolContent{{Type: "text", Text: text}},
+	}
+}
+
+func detectProject() string {
+	// Use current working directory as project ID
+	cwd, _ := os.Getwd()
+	parts := strings.Split(cwd, "/")
+	if len(parts) > 0 {
+		return parts[len(parts)-1]
+	}
+	return cwd
 }

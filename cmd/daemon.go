@@ -21,6 +21,16 @@ import (
 
 // runDaemon is the entrypoint for `forge daemon`.
 func runDaemon(args []string) {
+	// Acquire exclusive lock to prevent multiple daemons
+	lockFile, err := acquireDaemonLock()
+	if err != nil {
+		log.Fatalf("Failed to acquire daemon lock: %v", err)
+	}
+	if lockFile != nil {
+		defer lockFile.Close()
+		defer os.Remove(lockFile.Name())
+	}
+
 	// Open database
 	database, err := db.Open("")
 	if err != nil {
@@ -78,6 +88,7 @@ func runDaemon(args []string) {
 	wg.Wait()
 	cleanAddr()
 	cleanPID()
+	cleanLock()
 	log.Println("Forge daemon stopped.")
 }
 
@@ -251,4 +262,39 @@ func statusOutput() {
 	} else {
 		fmt.Printf("Daemon:    not running\n")
 	}
+}
+
+// acquireDaemonLock creates an exclusive lock file to ensure only one daemon runs.
+// Returns nil, nil if no existing lock, or an error if lock cannot be acquired.
+func acquireDaemonLock() (*os.File, error) {
+	lockPath := filepath.Join(forgeHome(), ".forge", "forge.lock")
+	if err := os.MkdirAll(filepath.Dir(lockPath), 0o700); err != nil {
+		return nil, fmt.Errorf("create lock dir: %w", err)
+	}
+
+	lockFile, err := os.OpenFile(lockPath, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o600)
+	if err != nil {
+		if os.IsExist(err) {
+			return nil, fmt.Errorf("daemon already running or stale lock exists")
+		}
+		return nil, fmt.Errorf("acquire lock: %w", err)
+	}
+
+	// Write PID to lock file for debugging
+	fmt.Fprintf(lockFile, "%d", os.Getpid())
+	lockFile.Close()
+
+	// Re-open for holding the lock
+	lockFile, err = os.OpenFile(lockPath, os.O_WRONLY, 0o600)
+	if err != nil {
+		return nil, fmt.Errorf("reopen lock: %w", err)
+	}
+
+	return lockFile, nil
+}
+
+// cleanLock removes the daemon lock file.
+func cleanLock() {
+	lockPath := filepath.Join(forgeHome(), ".forge", "forge.lock")
+	_ = os.Remove(lockPath)
 }

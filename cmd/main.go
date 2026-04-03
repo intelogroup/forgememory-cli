@@ -37,12 +37,22 @@ func main() {
 		runScan(os.Args[2:])
 	case "mcp":
 		runMCP(os.Args[2:])
+	case "ui":
+		runDashboard(os.Args[2:])
 	case "doctor":
 		runDoctor(os.Args[2:])
 	case "service-install":
 		runServiceInstall(os.Args[2:])
 	case "service-uninstall":
 		runServiceUninstall(os.Args[2:])
+	case "service-start":
+		runServiceStart(os.Args[2:])
+	case "service-stop":
+		runServiceStop(os.Args[2:])
+	case "config":
+		runConfig(os.Args[2:])
+	case "login":
+		runLogin(os.Args[2:])
 	case "synthesize-session":
 		runSynthesizeSession(os.Args[2:]) // internal, not shown in help
 	case "version":
@@ -59,32 +69,35 @@ func main() {
 func printUsage() {
 	fmt.Print(`forge — silent memory forger for AI agents
 
-Usage:
-  forge <command> [args]
+ Usage:
+   forge <command> [args]
 
-Commands:
-  init          Detect agents, create DB, register hooks, install skills
-  start         Start the daemon
-  stop          Stop the daemon
-  status        Show DB stats, daemon health, skill status
-  save          Save a memory directly (--type --content [--principle])
-  scan          Mine recent git history for learnings (--dry-run)
-  distill       Run distillation manually
-  search <q>    Full-text search on event payloads
-  mcp           Start MCP server (stdio transport, for Claude Code)
-  doctor        Self-test: check DB, daemon, agents, binary
-  hook          (internal) Hook entrypoint — called by agents
-  daemon        (internal) Daemon entrypoint — long-running service
-  version       Print version
-  help          Print this help
+ Commands:
+   init          Detect agents, create DB, register hooks, install skills
+   start         Start the daemon
+   stop          Stop the daemon
+   status        Show DB stats, daemon health, skill status
+   save          Save a memory directly (--type --content [--principle])
+   scan          Mine recent git history for learnings (--dry-run)
+   distill       Run distillation manually
+   search <q>    Full-text search on event payloads
+   mcp           Start MCP server (stdio transport, for Claude Code)
+   ui            Start memory dashboard web UI (http://localhost:5555)
+    doctor        Self-test: check DB, daemon, agents, binary
+    config        Configure inference provider (--provider --api-key)
+    login         Login to Forge (--email --password [--purchase])
+    hook          (internal) Hook entrypoint — called by agents
+   daemon        (internal) Daemon entrypoint — long-running service
+   version       Print version
+   help          Print this help
 
-Environment:
-  FORGE_SESSION_ID    Session identifier (set by hook)
-  FORGE_SOURCE_TOOL   Source agent: claude/gemini/codex (set by hook)
-  FORGE_EVENT_TYPE    Event type: PostToolUse/SessionEnd/UserPromptSubmit (set by hook)
-  FORGE_TOOL_NAME     Tool name if applicable (set by hook)
-  FORGE_PIPE_ADDR     Daemon IPC address (set by daemon)
-  FORGE_PROVIDER      Inference provider: anthropic/openai/ollama
-  FORGE_API_KEY       API key for inference provider
-`)
+ Environment:
+   FORGE_SESSION_ID    Session identifier (set by hook)
+   FORGE_SOURCE_TOOL   Source agent: claude/gemini/codex (set by hook)
+   FORGE_EVENT_TYPE    Event type: PostToolUse/SessionEnd/UserPromptSubmit (set by hook)
+   FORGE_TOOL_NAME     Tool name if applicable (set by hook)
+   FORGE_PIPE_ADDR     Daemon IPC address (set by daemon)
+   FORGE_PROVIDER      Inference provider: anthropic/openai/ollama
+   FORGE_API_KEY       API key for inference provider
+ `)
 }

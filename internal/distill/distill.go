@@ -3,6 +3,7 @@ package distill
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -23,26 +24,66 @@ const (
 	ProviderAnthropic Provider = "anthropic"
 )
 
+// Error types for provider configuration issues.
+var (
+	ErrNoProvider          = errors.New("no inference provider configured")
+	ErrProviderInvalid     = errors.New("invalid provider or credentials")
+	ErrProviderUnreachable = errors.New("provider unreachable")
+)
+
+// UserMessage returns a human-readable error message for end users.
+func UserMessage(err error) string {
+	switch {
+	case errors.Is(err, ErrNoProvider):
+		return "No inference provider configured. Set FORGE_PROVIDER (anthropic/openai/ollama) and run 'forge config -i' to configure."
+	case errors.Is(err, ErrProviderInvalid):
+		return "Invalid provider or credentials. Check your FORGE_PROVIDER and FORGE_API_KEY settings."
+	case errors.Is(err, ErrProviderUnreachable):
+		return "Cannot reach inference provider. Ensure Ollama is running or your API key is valid."
+	case strings.Contains(err.Error(), "connection refused"):
+		return "Connection refused. Is your inference provider running? For Ollama, run: ollama serve"
+	case strings.Contains(err.Error(), "401"):
+		return "Authentication failed. Check your FORGE_API_KEY is valid."
+	case strings.Contains(err.Error(), "403"):
+		return "Access forbidden. Check your API key permissions."
+	default:
+		return fmt.Sprintf("Distillation error: %v. Run 'forge doctor' to diagnose.", err)
+	}
+}
+
 // Config holds distillation configuration.
 type Config struct {
-	Provider Provider
-	APIKey   string
-	Model    string
-	BaseURL  string
+	Provider   Provider
+	APIKey     string
+	Model      string
+	BaseURL    string
+	PaymentURL string
 }
 
 // LoadConfig loads distillation config from environment.
+// Priority: Forge credits > OpenAI/Anthropic > Ollama (fallback)
 func LoadConfig() Config {
 	cfg := Config{
-		Provider: Provider(os.Getenv("FORGE_PROVIDER")),
-		APIKey:   os.Getenv("FORGE_API_KEY"),
-		Model:    os.Getenv("FORGE_MODEL"),
-		BaseURL:  os.Getenv("FORGE_BASE_URL"),
+		Provider:   Provider(os.Getenv("FORGE_PROVIDER")),
+		APIKey:     os.Getenv("FORGE_API_KEY"),
+		Model:      os.Getenv("FORGE_MODEL"),
+		BaseURL:    os.Getenv("FORGE_BASE_URL"),
+		PaymentURL: os.Getenv("FORGE_PAYMENT_URL"),
+	}
+
+	if cfg.PaymentURL == "" {
+		cfg.PaymentURL = "http://localhost:3000"
 	}
 
 	if cfg.Provider == "" {
-		cfg.Provider = ProviderOllama
+		// Check if Forge credits are configured
+		if cfg.APIKey != "" {
+			cfg.Provider = "forge"
+		} else {
+			cfg.Provider = ProviderOllama
+		}
 	}
+
 	if cfg.Model == "" {
 		switch cfg.Provider {
 		case ProviderOllama:
@@ -51,10 +92,21 @@ func LoadConfig() Config {
 			cfg.Model = "gpt-4o-mini"
 		case ProviderAnthropic:
 			cfg.Model = "claude-haiku-4-5-20251001"
+		case "forge":
+			cfg.Model = "claude-sonnet-4-20250514"
 		}
 	}
-	if cfg.BaseURL == "" && cfg.Provider == ProviderOllama {
-		cfg.BaseURL = "http://localhost:11434"
+	if cfg.BaseURL == "" {
+		switch cfg.Provider {
+		case ProviderOllama:
+			cfg.BaseURL = "http://localhost:11434"
+		case ProviderOpenAI:
+			cfg.BaseURL = "https://api.openai.com"
+		case ProviderAnthropic:
+			cfg.BaseURL = "https://api.anthropic.com"
+		case "forge":
+			cfg.BaseURL = cfg.PaymentURL + "/api/forge"
+		}
 	}
 
 	return cfg
@@ -76,6 +128,32 @@ func New(database *db.DB, config Config) *Distiller {
 	}
 }
 
+func (d *Distiller) checkCredits() bool {
+	url := d.config.PaymentURL + "/api/credits"
+	req, _ := http.NewRequest("GET", url, nil)
+	req.Header.Set("Authorization", d.config.APIKey)
+	resp, err := d.client.Do(req)
+	if err != nil {
+		return true // Allow on error
+	}
+	defer resp.Body.Close()
+
+	var result struct {
+		Data struct {
+			Credits int `json:"credits"`
+		} `json:"data"`
+	}
+	json.NewDecoder(resp.Body).Decode(&result)
+	return result.Data.Credits > 0
+}
+
+func (d *Distiller) deductCredit() {
+	url := d.config.PaymentURL + "/api/deduct"
+	req, _ := http.NewRequest("POST", url, nil)
+	req.Header.Set("Authorization", d.config.APIKey)
+	d.client.Do(req)
+}
+
 // DistillBatch processes undistilled events into principles.
 func (d *Distiller) DistillBatch(limit int) (int, error) {
 	events, err := d.db.UndistilledEvents(limit)
@@ -84,6 +162,14 @@ func (d *Distiller) DistillBatch(limit int) (int, error) {
 	}
 	if len(events) < 3 {
 		return 0, nil // Not enough events to distill
+	}
+
+	// Check credits if using Forge provider
+	if d.config.Provider == "forge" && d.config.APIKey != "" {
+		if !d.checkCredits() {
+			return 0, fmt.Errorf("no credits remaining. Run 'forge login --purchase' to buy more")
+		}
+		d.deductCredit()
 	}
 
 	// Build prompt from events
@@ -218,8 +304,11 @@ func (d *Distiller) callLLM(prompt string) (string, error) {
 		return d.callOpenAI(prompt)
 	case ProviderAnthropic:
 		return d.callAnthropic(prompt)
+	case "forge":
+		return d.callForge(prompt)
 	default:
-		return "", fmt.Errorf("unknown provider: %s", d.config.Provider)
+		// Fallback to Ollama
+		return d.callOllama(prompt)
 	}
 }
 
@@ -235,9 +324,16 @@ func (d *Distiller) callOllama(prompt string) (string, error) {
 
 	resp, err := d.client.Post(url, "application/json", bytes.NewReader(jsonBody))
 	if err != nil {
+		if strings.Contains(err.Error(), "connection refused") || strings.Contains(err.Error(), "no such host") {
+			return "", fmt.Errorf("%w: %v", ErrProviderUnreachable, err)
+		}
 		return "", err
 	}
 	defer resp.Body.Close()
+
+	if resp.StatusCode >= 400 {
+		return "", fmt.Errorf("%w: Ollama returned status %d", ErrProviderInvalid, resp.StatusCode)
+	}
 
 	data, _ := io.ReadAll(resp.Body)
 	var result struct {
@@ -268,9 +364,22 @@ func (d *Distiller) callOpenAI(prompt string) (string, error) {
 
 	resp, err := d.client.Do(req)
 	if err != nil {
+		if strings.Contains(err.Error(), "connection refused") || strings.Contains(err.Error(), "no such host") {
+			return "", fmt.Errorf("%w: %v", ErrProviderUnreachable, err)
+		}
 		return "", err
 	}
 	defer resp.Body.Close()
+
+	if resp.StatusCode == 401 {
+		return "", fmt.Errorf("%w: Invalid OpenAI API key", ErrProviderInvalid)
+	}
+	if resp.StatusCode == 403 {
+		return "", fmt.Errorf("%w: OpenAI access forbidden", ErrProviderInvalid)
+	}
+	if resp.StatusCode >= 400 {
+		return "", fmt.Errorf("%w: OpenAI returned status %d", ErrProviderInvalid, resp.StatusCode)
+	}
 
 	data, _ := io.ReadAll(resp.Body)
 	var result struct {
@@ -310,9 +419,22 @@ func (d *Distiller) callAnthropic(prompt string) (string, error) {
 
 	resp, err := d.client.Do(req)
 	if err != nil {
+		if strings.Contains(err.Error(), "connection refused") || strings.Contains(err.Error(), "no such host") {
+			return "", fmt.Errorf("%w: %v", ErrProviderUnreachable, err)
+		}
 		return "", err
 	}
 	defer resp.Body.Close()
+
+	if resp.StatusCode == 401 {
+		return "", fmt.Errorf("%w: Invalid Anthropic API key", ErrProviderInvalid)
+	}
+	if resp.StatusCode == 403 {
+		return "", fmt.Errorf("%w: Anthropic access forbidden", ErrProviderInvalid)
+	}
+	if resp.StatusCode >= 400 {
+		return "", fmt.Errorf("%w: Anthropic returned status %d", ErrProviderInvalid, resp.StatusCode)
+	}
 
 	data, _ := io.ReadAll(resp.Body)
 	var result struct {
@@ -325,6 +447,40 @@ func (d *Distiller) callAnthropic(prompt string) (string, error) {
 		return result.Content[0].Text, nil
 	}
 	return "", fmt.Errorf("no response from Anthropic")
+}
+
+func (d *Distiller) callForge(prompt string) (string, error) {
+	url := d.config.PaymentURL + "/api/distill"
+
+	body := map[string]any{
+		"model":   d.config.Model,
+		"prompt":  prompt,
+		"api_key": d.config.APIKey,
+	}
+	jsonBody, _ := json.Marshal(body)
+
+	resp, err := d.client.Post(url, "application/json", bytes.NewReader(jsonBody))
+	if err != nil {
+		return "", fmt.Errorf("%w: %v", ErrProviderUnreachable, err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode == 401 {
+		return "", fmt.Errorf("%w: No credits or invalid API key", ErrProviderInvalid)
+	}
+	if resp.StatusCode >= 400 {
+		return "", fmt.Errorf("%w: Forge API returned status %d", ErrProviderInvalid, resp.StatusCode)
+	}
+
+	data, _ := io.ReadAll(resp.Body)
+	var result struct {
+		Response string `json:"response"`
+	}
+	json.Unmarshal(data, &result)
+	if result.Response != "" {
+		return result.Response, nil
+	}
+	return "", fmt.Errorf("no response from Forge")
 }
 
 func (d *Distiller) parsePrinciples(response string, projectID string) ([]db.Principle, error) {

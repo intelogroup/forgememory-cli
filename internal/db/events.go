@@ -168,3 +168,59 @@ func (d *DB) RecentEvents(limit int) ([]Event, error) {
 	}
 	return events, rows.Err()
 }
+
+// ProjectTimeline returns a cross-agent timeline for a project.
+// Groups events by session and aggregates across all agents (claude/gemini/codex).
+func (d *DB) ProjectTimeline(projectID string, limit int) ([]ProjectTimelineEntry, error) {
+	rows, err := d.conn.Query(`
+		SELECT DISTINCT session_id, source_tool, MIN(ts) as start_ts, MAX(ts) as end_ts,
+			COUNT(*) as event_count
+		FROM events
+		WHERE project_id = ?
+		GROUP BY session_id
+		ORDER BY start_ts DESC
+		LIMIT ?`, projectID, limit,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var entries []ProjectTimelineEntry
+	for rows.Next() {
+		var e ProjectTimelineEntry
+		if err := rows.Scan(&e.SessionID, &e.PrimaryAgent, &e.StartTS, &e.EndTS, &e.EventCount); err != nil {
+			return nil, err
+		}
+		entries = append(entries, e)
+	}
+	return entries, rows.Err()
+}
+
+// ProjectTimelineEntry represents a session summary in the project timeline.
+type ProjectTimelineEntry struct {
+	SessionID    string `json:"session_id"`
+	PrimaryAgent string `json:"primary_agent"`
+	StartTS      string `json:"start_ts"`
+	EndTS        string `json:"end_ts"`
+	EventCount   int    `json:"event_count"`
+}
+
+// ProjectAgents returns all unique agents that have worked on a project.
+func (d *DB) ProjectAgents(projectID string) ([]string, error) {
+	rows, err := d.conn.Query(
+		`SELECT DISTINCT source_tool FROM events WHERE project_id = ? ORDER BY source_tool`, projectID,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var agents []string
+	for rows.Next() {
+		var agent string
+		if err := rows.Scan(&agent); err != nil {
+			return nil, err
+		}
+		agents = append(agents, agent)
+	}
+	return agents, rows.Err()
+}

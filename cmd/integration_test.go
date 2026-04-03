@@ -766,3 +766,71 @@ func TestBinary_Upgrade_PreservesEvents(t *testing.T) {
 		t.Errorf("second forge init reduced event count from %d to %d — DB was corrupted or wiped", countBefore, countAfter)
 	}
 }
+
+// TestBinary_DaemonLockFile verifies that the daemon creates a lock file
+// to prevent multiple daemons from running simultaneously.
+func TestBinary_DaemonLockFile(t *testing.T) {
+	home := shortHome(t)
+	forgeDir := filepath.Join(home, ".forge")
+	if err := os.MkdirAll(forgeDir, 0o700); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+
+	// Start first daemon
+	runForge(t, home, "start")
+	waitForFile(t, filepath.Join(forgeDir, "forge.lock"), 3*time.Second)
+
+	// Check lock file exists
+	lockData, err := os.ReadFile(filepath.Join(forgeDir, "forge.lock"))
+	if err != nil {
+		t.Fatalf("lock file should exist after daemon start: %v", err)
+	}
+
+	// Verify lock file contains PID
+	if len(lockData) == 0 {
+		t.Error("lock file should not be empty")
+	}
+
+	// Stop daemon
+	runForge(t, home, "stop")
+
+	// Verify lock file is removed after stop
+	_, err = os.Stat(filepath.Join(forgeDir, "forge.lock"))
+	if !os.IsNotExist(err) {
+		t.Error("lock file should be removed after daemon stop")
+	}
+}
+
+// TestBinary_SingletonDaemon verifies that only one daemon can run at a time.
+func TestBinary_SingletonDaemon(t *testing.T) {
+	home := shortHome(t)
+	forgeDir := filepath.Join(home, ".forge")
+	if err := os.MkdirAll(forgeDir, 0o700); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+
+	// Start first daemon
+	runForge(t, home, "start")
+	waitForFile(t, filepath.Join(forgeDir, "forge.lock"), 3*time.Second)
+
+	// Verify daemon is running
+	stdout, _, _ := runForge(t, home, "status")
+	if !strings.Contains(stdout, "running") {
+		t.Errorf("daemon should be running, got: %s", stdout)
+	}
+
+	// Verify second start reports already running
+	stdout, _, _ = runForge(t, home, "start")
+	if !strings.Contains(stdout, "already running") {
+		t.Errorf("second start should report already running, got: %s", stdout)
+	}
+
+	// Stop daemon
+	runForge(t, home, "stop")
+
+	// Verify daemon is stopped
+	stdout, _, _ = runForge(t, home, "status")
+	if !strings.Contains(stdout, "not running") {
+		t.Errorf("daemon should be stopped, got: %s", stdout)
+	}
+}

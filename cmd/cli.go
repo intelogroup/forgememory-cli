@@ -1,19 +1,27 @@
 package main
 
 import (
+	"bytes"
+	"encoding/json"
 	"flag"
 	"fmt"
+	"log"
+	"net/http"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"time"
 
 	"github.com/forge/forge/internal/agent"
+	"github.com/forge/forge/internal/config"
+	"github.com/forge/forge/internal/dashboard"
 	"github.com/forge/forge/internal/db"
 	"github.com/forge/forge/internal/distill"
 	"github.com/forge/forge/internal/mcp"
 	"github.com/forge/forge/internal/scanner"
+	"github.com/forge/forge/internal/service"
 )
 
 func runInit(args []string) {
@@ -115,6 +123,7 @@ func runStop(args []string) {
 
 	cleanAddr()
 	cleanPID()
+	cleanLock()
 	fmt.Println("  Daemon stopped.")
 }
 
@@ -267,7 +276,8 @@ func runSynthesizeSession(args []string) {
 	sessionID := fs.String("session-id", "", "Session ID")
 	projectID := fs.String("project-id", "", "Project ID")
 	if err := fs.Parse(args); err != nil {
-		os.Exit(0) // internal command — silent failure
+		log.Printf("synthesize-session: flag parse error: %v", err)
+		os.Exit(0)
 	}
 
 	if *sessionID == "" {
@@ -276,12 +286,18 @@ func runSynthesizeSession(args []string) {
 
 	database, err := db.Open("")
 	if err != nil {
+		log.Printf("synthesize-session: failed to open DB: %v", err)
 		os.Exit(0)
 	}
 	defer database.Close()
 
 	events, err := database.SessionEvents(*sessionID, 20)
-	if err != nil || len(events) < 3 {
+	if err != nil {
+		log.Printf("synthesize-session: failed to get session events: %v", err)
+		os.Exit(0)
+	}
+	if len(events) < 3 {
+		log.Printf("synthesize-session: not enough events (%d) for synthesis", len(events))
 		os.Exit(0)
 	}
 
@@ -291,7 +307,13 @@ func runSynthesizeSession(args []string) {
 	}
 
 	d := distill.New(database, distill.LoadConfig())
-	_ = d.SynthesizeSession(*sessionID, proj, events)
+	if err := d.SynthesizeSession(*sessionID, proj, events); err != nil {
+		log.Printf("synthesize-session: synthesis failed: %v", err)
+		os.Exit(1)
+	}
+
+	log.Printf("synthesize-session: synthesized session %s with %d events", *sessionID, len(events))
+	os.Exit(0)
 }
 
 // runScan mines recent git history across ~/Developer repos and inserts learnings.
@@ -316,8 +338,49 @@ func runScan(args []string) {
 	}
 }
 
-
 func runMCP(args []string) {
+	// Check if daemon is running, start it if not
+	addr := readAddr()
+	if addr == "" || !isDaemonAlive(addr) {
+		fmt.Println("Starting Forge daemon for MCP server...")
+
+		// Clear any stale addr/pid before starting fresh
+		cleanAddr()
+		cleanPID()
+
+		// Start daemon as background process
+		forgeDir := filepath.Join(forgeHome(), ".forge")
+		_ = os.MkdirAll(forgeDir, 0o700) // ensure dir exists before opening log
+		logPath := filepath.Join(forgeDir, "daemon.log")
+		cmd := exec.Command(os.Args[0], "daemon")
+		cmd.Stdin = nil
+		if lf, err := os.OpenFile(logPath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o600); err == nil {
+			cmd.Stdout = lf
+			cmd.Stderr = lf
+			defer lf.Close()
+		}
+
+		if err := startBackground(cmd); err != nil {
+			fmt.Fprintf(os.Stderr, "Error starting daemon: %v\n", err)
+			os.Exit(1)
+		}
+
+		// Wait up to 3 seconds for daemon to write its addr and start accepting.
+		for i := 0; i < 15; i++ {
+			time.Sleep(200 * time.Millisecond)
+			if a := readAddr(); a != "" && isDaemonAlive(a) {
+				fmt.Println("  Daemon started.")
+				break
+			}
+			if i == 14 { // Last attempt
+				fmt.Fprintln(os.Stderr, "  Error: daemon process exited immediately — not responding.")
+				fmt.Fprintf(os.Stderr, "  Check logs: %s\n", logPath)
+				fmt.Fprintln(os.Stderr, "  Run 'forge doctor' to diagnose.")
+				os.Exit(1)
+			}
+		}
+	}
+
 	database, err := db.Open("")
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
@@ -328,6 +391,29 @@ func runMCP(args []string) {
 	server := mcp.New(database)
 	if err := server.Run(); err != nil {
 		fmt.Fprintf(os.Stderr, "MCP server error: %v\n", err)
+		os.Exit(1)
+	}
+}
+
+func runDashboard(args []string) {
+	fs := flag.NewFlagSet("dashboard", flag.ContinueOnError)
+	port := fs.Int("port", 5555, "Port to serve dashboard on")
+	if err := fs.Parse(args); err != nil {
+		os.Exit(1)
+	}
+
+	fmt.Printf("Starting Forge Memory Dashboard on http://localhost:%d\n", *port)
+
+	database, err := db.Open("")
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+		os.Exit(1)
+	}
+	defer database.Close()
+
+	srv := dashboard.New(database, *port)
+	if err := srv.Start(); err != nil {
+		fmt.Fprintf(os.Stderr, "Dashboard error: %v\n", err)
 		os.Exit(1)
 	}
 }
@@ -395,12 +481,277 @@ func detectProjectID() string {
 
 func runServiceInstall(args []string) {
 	fmt.Println("Installing Forge as system service...")
-	home, _ := os.UserHomeDir()
-	os.MkdirAll(home+"/.forge/logs", 0o700)
-	fmt.Println("  Service installed. Use 'forge start' to start the daemon.")
+
+	mgr, err := service.New()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "  Error: %v\n", err)
+		os.Exit(1)
+	}
+
+	if mgr.IsServiceInstalled() {
+		fmt.Println("  Service already installed.")
+		return
+	}
+
+	if err := mgr.Install(); err != nil {
+		fmt.Fprintf(os.Stderr, "  Error installing service: %v\n", err)
+		os.Exit(1)
+	}
+
+	fmt.Println("  Service installed successfully.")
+	fmt.Println("  Run 'forge service-start' to start the daemon as a service.")
 }
 
 func runServiceUninstall(args []string) {
 	fmt.Println("Uninstalling Forge service...")
-	fmt.Println("  Service uninstalled.")
+
+	mgr, err := service.New()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "  Error: %v\n", err)
+		os.Exit(1)
+	}
+
+	if !mgr.IsServiceInstalled() {
+		fmt.Println("  Service not installed.")
+		return
+	}
+
+	if err := mgr.Uninstall(); err != nil {
+		fmt.Fprintf(os.Stderr, "  Error uninstalling service: %v\n", err)
+		os.Exit(1)
+	}
+
+	fmt.Println("  Service uninstalled successfully.")
 }
+
+func runServiceStart(args []string) {
+	fmt.Println("Starting Forge service...")
+
+	mgr, err := service.New()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "  Error: %v\n", err)
+		os.Exit(1)
+	}
+
+	if err := mgr.Start(); err != nil {
+		fmt.Fprintf(os.Stderr, "  Error starting service: %v\n", err)
+		os.Exit(1)
+	}
+
+	fmt.Println("  Service started.")
+}
+
+func runServiceStop(args []string) {
+	fmt.Println("Stopping Forge service...")
+
+	mgr, err := service.New()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "  Error: %v\n", err)
+		os.Exit(1)
+	}
+
+	if err := mgr.Stop(); err != nil {
+		fmt.Fprintf(os.Stderr, "  Error stopping service: %v\n", err)
+		os.Exit(1)
+	}
+
+	fmt.Println("  Service stopped.")
+}
+
+func runConfig(args []string) {
+	fs := flag.NewFlagSet("config", flag.ContinueOnError)
+	showFlag := fs.Bool("show", false, "Show current config")
+	providerFlag := fs.String("provider", "", "Provider: anthropic/openai/ollama")
+	apiKeyFlag := fs.String("api-key", "", "API key for provider")
+	modelFlag := fs.String("model", "", "Model name (optional, defaults vary by provider)")
+	baseURLFlag := fs.String("base-url", "", "Base URL for API (optional)")
+	if err := fs.Parse(args); err != nil {
+		os.Exit(1)
+	}
+
+	if *showFlag {
+		cfg, err := config.Load()
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Error loading config: %v\n", err)
+			os.Exit(1)
+		}
+		if cfg.Provider == "" {
+			fmt.Println("No config set. Run 'forge config --provider openai --api-key YOUR_KEY' to configure.")
+			return
+		}
+		fmt.Printf("Provider:  %s\n", cfg.Provider)
+		if cfg.APIKey != "" {
+			fmt.Printf("API Key:    %s\n", maskKey(cfg.APIKey))
+		}
+		if cfg.Model != "" {
+			fmt.Printf("Model:      %s\n", cfg.Model)
+		}
+		if cfg.BaseURL != "" {
+			fmt.Printf("Base URL:   %s\n", cfg.BaseURL)
+		}
+		return
+	}
+
+	if *providerFlag == "" {
+		fmt.Println("Usage: forge config [options]")
+		fmt.Println("")
+		fmt.Println("Options:")
+		fmt.Println("  --show           Show current configuration")
+		fmt.Println("  --provider       Provider: anthropic, openai, or ollama")
+		fmt.Println("  --api-key        API key for the provider")
+		fmt.Println("  --model          Model name (optional)")
+		fmt.Println("  --base-url       Base URL for API (optional)")
+		fmt.Println("")
+		fmt.Println("Examples:")
+		fmt.Println("  forge config --show")
+		fmt.Println("  forge config --provider openai --api-key sk-...")
+		fmt.Println("  forge config --provider anthropic --api-key sk-ant-...")
+		fmt.Println("  forge config --provider ollama --model llama3.2")
+		os.Exit(0)
+	}
+
+	validProviders := map[string]bool{"anthropic": true, "openai": true, "ollama": true}
+	if !validProviders[*providerFlag] {
+		fmt.Fprintf(os.Stderr, "Error: provider must be one of: anthropic, openai, ollama\n")
+		os.Exit(1)
+	}
+
+	cfg := config.Config{
+		Provider: *providerFlag,
+		APIKey:   *apiKeyFlag,
+		Model:    *modelFlag,
+		BaseURL:  *baseURLFlag,
+	}
+
+	if err := config.Save(cfg); err != nil {
+		fmt.Fprintf(os.Stderr, "Error saving config: %v\n", err)
+		os.Exit(1)
+	}
+
+	fmt.Printf("Configuration saved.\n")
+	fmt.Printf("Provider: %s\n", *providerFlag)
+	if *apiKeyFlag != "" {
+		fmt.Println("API Key: " + maskKey(*apiKeyFlag))
+	}
+	fmt.Println("\nTo apply, either:")
+	fmt.Println("  1. Run: export $(cat ~/.forge/config | xargs)  # in your shell")
+	fmt.Println("  2. Or add to your shell profile (~/.zshrc, ~/.bashrc)")
+}
+
+func maskKey(key string) string {
+	if len(key) <= 8 {
+		return "***"
+	}
+	return key[:4] + "****" + key[len(key)-4:]
+}
+
+func openBrowser(url string) {
+	var args []string
+	switch runtime.GOOS {
+	case "darwin":
+		args = []string{"open", url}
+	case "windows":
+		args = []string{"cmd", "/c", "start", url}
+	default:
+		args = []string{"xdg-open", url}
+	}
+	exec.Command(args[0], args[1:]...).Start()
+}
+
+func runLogin(args []string) {
+	fs := flag.NewFlagSet("login", flag.ContinueOnError)
+	emailFlag := fs.String("email", "", "Email address")
+	passwordFlag := fs.String("password", "", "Password")
+	purchaseFlag := fs.Bool("purchase", false, "Purchase credits after login")
+	signupFlag := fs.Bool("signup", false, "Open signup page")
+	if err := fs.Parse(args); err != nil {
+		os.Exit(1)
+	}
+
+	paymentURL := os.Getenv("FORGE_PAYMENT_URL")
+	if paymentURL == "" {
+		paymentURL = "http://localhost:3000"
+	}
+
+	if *signupFlag {
+		fmt.Println("Opening Forge signup page...")
+		openBrowser("https://forge.sh/signup")
+		return
+	}
+
+	if *emailFlag == "" {
+		fmt.Println("Usage: forge login [--email USER --password PASS] [--purchase] [--signup]")
+		fmt.Println("")
+		fmt.Println("Login to Forge to access your credits and API.")
+		fmt.Println("")
+		fmt.Println("Options:")
+		fmt.Println("  --email     Email address")
+		fmt.Println("  --password  Password")
+		fmt.Println("  --purchase  Purchase credits after login")
+		fmt.Println("  --signup    Open signup page in browser")
+		fmt.Println("")
+		fmt.Println("Don't have an account? Run: forge login --signup")
+		os.Exit(0)
+	}
+
+	type loginReq struct {
+		Email    string `json:"email"`
+		Password string `json:"password"`
+	}
+	body, _ := json.Marshal(loginReq{Email: *emailFlag, Password: *passwordFlag})
+	resp, err := http.Post(paymentURL+"/api/login", "application/json", bytes.NewReader(body))
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+		os.Exit(1)
+	}
+	defer resp.Body.Close()
+
+	var result struct {
+		Success bool   `json:"success"`
+		Message string `json:"message,omitempty"`
+		Data    struct {
+			Token   string `json:"token"`
+			APIKey  string `json:"api_key"`
+			Credits int    `json:"credits"`
+		} `json:"data,omitempty"`
+	}
+	json.NewDecoder(resp.Body).Decode(&result)
+
+	if !result.Success {
+		fmt.Fprintf(os.Stderr, "Error: %s\n", result.Message)
+		os.Exit(1)
+	}
+
+	cfg := config.Config{
+		Provider: "forge",
+		APIKey:   result.Data.APIKey,
+	}
+	config.Save(cfg)
+
+	fmt.Printf("Logged in as %s\n", *emailFlag)
+	fmt.Printf("Credits: %d\n", result.Data.Credits)
+
+	if *purchaseFlag || result.Data.Credits < 5 {
+		checkoutResp, _ := http.NewRequest("POST", paymentURL+"/api/checkout", bytes.NewReader(nil))
+		checkoutResp.Header.Set("Authorization", result.Data.Token)
+		client := &http.Client{}
+		res, _ := client.Do(checkoutResp)
+		var checkout struct {
+			Data struct {
+				URL          string `json:"url"`
+				CreditAmount int    `json:"credit_amount"`
+				PriceCents   int    `json:"price_cents"`
+			} `json:"data"`
+		}
+		json.NewDecoder(res.Body).Decode(&checkout)
+		if checkout.Data.URL != "" {
+			price := float64(checkout.Data.PriceCents) / 100
+			fmt.Printf("\nOpening Stripe to purchase %d credits for $%.2f...\n", checkout.Data.CreditAmount, price)
+			openBrowser(checkout.Data.URL)
+			fmt.Println("After payment, credits will be added automatically.")
+		}
+	}
+}
+
+// These functions are imported from daemon.go via package main
+// forgeHome, readAddr, isDaemonAlive, cleanAddr, cleanPID
