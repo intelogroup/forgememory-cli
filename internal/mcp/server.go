@@ -7,6 +7,7 @@ import (
 	"io"
 	"log"
 	"os"
+	"strings"
 
 	"github.com/forge/forge/internal/db"
 )
@@ -178,6 +179,20 @@ func (s *Server) handleToolsList(req Request) *Response {
 				},
 			},
 		},
+		{
+			Name:        "get_session_summaries",
+			Description: "Returns synthesized summaries of recent work sessions. Use when the user asks what they were working on before a break or yesterday.",
+			InputSchema: map[string]any{
+				"type": "object",
+				"properties": map[string]any{
+					"limit": map[string]any{
+						"type":        "number",
+						"description": "Number of sessions to return (default 5)",
+						"default":     5,
+					},
+				},
+			},
+		},
 	}
 
 	return &Response{
@@ -204,6 +219,8 @@ func (s *Server) handleToolsCall(req Request) *Response {
 		result = s.searchMemories(params.Arguments)
 	case "get_principles":
 		result = s.getPrinciples(params.Arguments)
+	case "get_session_summaries":
+		result = s.getSessionSummaries(params.Arguments)
 	default:
 		return errorResponse(req.ID, "Unknown tool: "+params.Name)
 	}
@@ -218,25 +235,44 @@ func (s *Server) handleToolsCall(req Request) *Response {
 func (s *Server) getRecentContext(args map[string]any) ToolResult {
 	limit := intFromArgs(args, "limit", 10)
 
-	// Get principles
 	principles, err := s.db.RecentPrinciples(limit)
 	if err != nil {
 		return toolError("Failed to get principles: " + err.Error())
 	}
+	summaries, _ := s.db.GetRecentSessionSummaries(3)
 
 	text := "## Recent Memories\n\n"
+
+	if len(summaries) > 0 {
+		text += "### Recent Sessions\n"
+		for _, ss := range summaries {
+			ts := ss.TS
+			if len(ts) >= 10 {
+				ts = ts[:10]
+			}
+			if ss.Learnings != "" {
+				text += fmt.Sprintf("- **[%s]** %s\n", ts, ss.Learnings)
+			} else if ss.Summary != "" {
+				text += fmt.Sprintf("- **[%s]** %s\n", ts, ss.Summary)
+			}
+		}
+		text += "\n"
+	}
 
 	if len(principles) == 0 {
 		text += "No distilled memories yet. Keep working — Forge will capture your patterns.\n"
 	} else {
+		text += "### Principles\n"
 		for _, p := range principles {
-			text += fmt.Sprintf("### %s\n", p.Title)
+			text += fmt.Sprintf("#### %s\n", p.Title)
 			text += fmt.Sprintf("- **Type**: %s | **Score**: %.1f | **Date**: %s\n", p.Type, p.ImpactScore, p.TS[:10])
+			if len(p.Concepts) > 0 {
+				text += fmt.Sprintf("- **Concepts**: %s\n", strings.Join(p.Concepts, ", "))
+			}
 			text += fmt.Sprintf("- %s\n\n", p.Narrative)
 		}
 	}
 
-	// Get event count
 	total, undistilled, _ := s.db.EventCount()
 	text += fmt.Sprintf("---\n*Total events: %d | Undistilled: %d*\n", total, undistilled)
 
@@ -292,8 +328,55 @@ func (s *Server) getPrinciples(args map[string]any) ToolResult {
 	} else {
 		for _, p := range principles {
 			text += fmt.Sprintf("### %s [%s]\n", p.Title, p.Type)
-			text += fmt.Sprintf("- **Impact**: %.1f | **Date**: %s | **Project**: %s\n", p.ImpactScore, p.TS[:10], p.ProjectID)
+			text += fmt.Sprintf("- **Impact**: %.1f | **Date**: %s | **Project**: %s\n",
+				p.ImpactScore, p.TS[:10], p.ProjectID)
+			if len(p.Concepts) > 0 {
+				text += fmt.Sprintf("- **Concepts**: %s\n", strings.Join(p.Concepts, ", "))
+			}
+			if len(p.FilesModified) > 0 {
+				text += fmt.Sprintf("- **Files**: %s\n", strings.Join(p.FilesModified, ", "))
+			}
 			text += fmt.Sprintf("- %s\n\n", p.Narrative)
+		}
+	}
+
+	return ToolResult{
+		Content: []ToolContent{{Type: "text", Text: text}},
+	}
+}
+
+func (s *Server) getSessionSummaries(args map[string]any) ToolResult {
+	limit := intFromArgs(args, "limit", 5)
+
+	summaries, err := s.db.GetRecentSessionSummaries(limit)
+	if err != nil {
+		return toolError("Failed to get session summaries: " + err.Error())
+	}
+
+	text := "## Recent Work Sessions\n\n"
+
+	if len(summaries) == 0 {
+		text += "No session summaries yet. Session summaries are generated automatically at the end of each coding session.\n"
+	} else {
+		for _, s := range summaries {
+			ts := s.TS
+			if len(ts) >= 10 {
+				ts = ts[:10]
+			}
+			text += fmt.Sprintf("### Session [%s]\n", ts)
+			if s.Request != "" {
+				text += fmt.Sprintf("**Goal**: %s\n", s.Request)
+			}
+			if s.Investigation != "" {
+				text += fmt.Sprintf("**Explored**: %s\n", s.Investigation)
+			}
+			if s.Learnings != "" {
+				text += fmt.Sprintf("**Learned**: %s\n", s.Learnings)
+			}
+			if s.NextSteps != "" {
+				text += fmt.Sprintf("**Next**: %s\n", s.NextSteps)
+			}
+			text += "\n"
 		}
 	}
 

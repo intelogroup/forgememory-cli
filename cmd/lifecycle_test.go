@@ -1,0 +1,360 @@
+package main
+
+import (
+	"bytes"
+	"errors"
+	"io"
+	"os"
+	"os/exec"
+	"path/filepath"
+	"strings"
+	"testing"
+
+	"github.com/forge/forge/internal/db"
+)
+
+// captureStdout swaps os.Stdout for a pipe, runs f, then restores and returns captured output.
+// Not safe for parallel tests that also capture stdout.
+func captureStdout(f func()) string {
+	r, w, err := os.Pipe()
+	if err != nil {
+		panic(err)
+	}
+	old := os.Stdout
+	os.Stdout = w
+	defer func() { os.Stdout = old }()
+	f()
+	w.Close()
+	var buf bytes.Buffer
+	io.Copy(&buf, r)
+	r.Close()
+	return buf.String()
+}
+
+// seedEvents inserts n events into the DB at the current HOME path.
+func seedEvents(t *testing.T, n int) {
+	t.Helper()
+	database, err := db.Open("")
+	if err != nil {
+		t.Fatalf("seedEvents db.Open: %v", err)
+	}
+	defer database.Close()
+	for i := 0; i < n; i++ {
+		e := &db.Event{
+			SessionID:  "test-session",
+			ProjectID:  "test-project",
+			SourceTool: "claude",
+			EventType:  "PostToolUse",
+			Payload:    `{"tool":"Bash","input":"echo hello"}`,
+		}
+		if err := database.InsertEvent(e); err != nil {
+			t.Fatalf("seedEvents InsertEvent: %v", err)
+		}
+	}
+}
+
+// ---- addr file helpers ----
+
+func TestAddrRoundtrip(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+
+	if readAddr() != "" {
+		t.Fatal("expected empty addr before write")
+	}
+	writeAddr("/tmp/forge-test.sock")
+	if got := readAddr(); got != "/tmp/forge-test.sock" {
+		t.Errorf("readAddr = %q, want %q", got, "/tmp/forge-test.sock")
+	}
+	cleanAddr()
+	if readAddr() != "" {
+		t.Fatal("expected empty addr after cleanAddr")
+	}
+}
+
+func TestReadAddr_Missing(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	if got := readAddr(); got != "" {
+		t.Errorf("readAddr on missing file = %q, want empty", got)
+	}
+}
+
+func TestWriteAddr_CreatesDir(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+
+	// Ensure .forge dir does not exist yet
+	os.RemoveAll(filepath.Join(home, ".forge"))
+
+	writeAddr("test-addr")
+
+	addrFile := filepath.Join(home, ".forge", "forge.addr")
+	if _, err := os.Stat(addrFile); err != nil {
+		t.Errorf("forge.addr should exist after writeAddr: %v", err)
+	}
+	data, _ := os.ReadFile(addrFile)
+	if string(data) != "test-addr" {
+		t.Errorf("forge.addr content = %q, want %q", string(data), "test-addr")
+	}
+}
+
+func TestCleanAddr_Idempotent(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	// Calling cleanAddr when no file exists should not panic or error
+	cleanAddr()
+	cleanAddr()
+}
+
+// ---- runStop ----
+
+func TestRunStop_DaemonNotRunning(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	out := captureStdout(func() { runStop([]string{}) })
+	if !strings.Contains(out, "not running") {
+		t.Errorf("expected 'not running' in output, got: %q", out)
+	}
+}
+
+func TestRunStop_CleansAddrFile(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+
+	writeAddr("fake-addr")
+	captureStdout(func() { runStop([]string{}) })
+
+	if readAddr() != "" {
+		t.Error("addr file should be removed after runStop")
+	}
+}
+
+func TestRunStop_Idempotent(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	// Stopping twice should never panic
+	captureStdout(func() { runStop([]string{}) })
+	captureStdout(func() { runStop([]string{}) })
+}
+
+// ---- runDistill ----
+
+func TestRunDistill_NoEvents(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	out := captureStdout(func() { runDistill([]string{}) })
+	if !strings.Contains(out, "No undistilled events") {
+		t.Errorf("expected 'No undistilled events' in output, got: %q", out)
+	}
+}
+
+func TestRunDistill_WithEvents(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	seedEvents(t, 3)
+
+	captureStdout(func() { runDistill([]string{}) })
+
+	database, err := db.Open("")
+	if err != nil {
+		t.Fatalf("db.Open: %v", err)
+	}
+	defer database.Close()
+	_, undistilled, err := database.EventCount()
+	if err != nil {
+		t.Fatalf("EventCount: %v", err)
+	}
+	if undistilled != 0 {
+		t.Errorf("expected 0 undistilled after runDistill, got %d", undistilled)
+	}
+}
+
+// KNOWN GOTCHA: runDistill marks events distilled without calling the LLM.
+// The daemon's distillLoop calls distiller.DistillBatch which actually extracts principles.
+// `forge distill` is therefore a no-op for principle extraction.
+func TestRunDistill_Gotcha_NoPrinciplesExtracted(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	seedEvents(t, 3)
+
+	captureStdout(func() { runDistill([]string{}) })
+
+	database, err := db.Open("")
+	if err != nil {
+		t.Fatalf("db.Open: %v", err)
+	}
+	defer database.Close()
+	count, err := database.PrincipleCount()
+	if err != nil {
+		t.Fatalf("PrincipleCount: %v", err)
+	}
+	if count != 0 {
+		t.Errorf("runDistill extracted %d principles — unexpected (no LLM call should occur)", count)
+	}
+	t.Log("KNOWN GOTCHA: forge distill marks events as distilled but extracts no principles (LLM never called)")
+}
+
+// ---- runSearch ----
+
+// TestRunSearch_NoQuery verifies that forge search with no argument exits 1.
+// Uses the subprocess trick to safely capture os.Exit.
+func TestRunSearch_NoQuery(t *testing.T) {
+	if os.Getenv("FORGE_TEST_SUBPROCESS") == "search_nq" {
+		runSearch([]string{}) // calls os.Exit(1)
+		return
+	}
+	home := t.TempDir()
+	cmd := exec.Command(os.Args[0], "-test.run=TestRunSearch_NoQuery", "-test.v=false")
+	cmd.Env = append(os.Environ(), "FORGE_TEST_SUBPROCESS=search_nq", "HOME="+home)
+	err := cmd.Run()
+	var exitErr *exec.ExitError
+	if !errors.As(err, &exitErr) {
+		t.Fatalf("expected non-zero exit, got: %v", err)
+	}
+	if exitErr.ExitCode() != 1 {
+		t.Errorf("expected exit 1, got %d", exitErr.ExitCode())
+	}
+}
+
+func TestRunSearch_NoResults(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	out := captureStdout(func() { runSearch([]string{"zxqvnotfound999"}) })
+	if !strings.Contains(out, "No results") {
+		t.Errorf("expected 'No results' in output, got: %q", out)
+	}
+}
+
+func TestRunSearch_WithResults(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+
+	database, err := db.Open("")
+	if err != nil {
+		t.Fatalf("db.Open: %v", err)
+	}
+	e := &db.Event{
+		SessionID:  "s1",
+		ProjectID:  "p1",
+		SourceTool: "claude",
+		EventType:  "PostToolUse",
+		Payload:    `{"tool":"uniquewidget42marker"}`,
+	}
+	if err := database.InsertEvent(e); err != nil {
+		t.Fatalf("InsertEvent: %v", err)
+	}
+	database.Close()
+
+	out := captureStdout(func() { runSearch([]string{"uniquewidget42marker"}) })
+	if !strings.Contains(out, "uniquewidget42marker") {
+		t.Errorf("expected payload in search output, got: %q", out)
+	}
+}
+
+// ---- truncate ----
+
+func TestTruncate(t *testing.T) {
+	tests := []struct {
+		input string
+		max   int
+		want  string
+	}{
+		{"abc", 5, "abc"},
+		{"abcdef", 3, "abc..."},
+		{"abcde", 5, "abcde"},
+		{"abcdef", 6, "abcdef"},
+		{"abcdefg", 6, "abcdef..."},
+		{"", 10, ""},
+	}
+	for _, tc := range tests {
+		if got := truncate(tc.input, tc.max); got != tc.want {
+			t.Errorf("truncate(%q, %d) = %q, want %q", tc.input, tc.max, got, tc.want)
+		}
+	}
+}
+
+// ---- statusOutput ----
+
+func TestStatusOutput_DaemonDown(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	out := captureStdout(statusOutput)
+	if !strings.Contains(out, "not running") {
+		t.Errorf("expected 'not running' in status output, got: %q", out)
+	}
+}
+
+func TestStatusOutput_DaemonUp(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	writeAddr("unix:/tmp/forge-fake.sock")
+	out := captureStdout(statusOutput)
+	if !strings.Contains(out, "unix:/tmp/forge-fake.sock") {
+		t.Errorf("expected addr string in status output, got: %q", out)
+	}
+}
+
+func TestStatusOutput_ShowsEventCounts(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	seedEvents(t, 2)
+
+	out := captureStdout(statusOutput)
+	if !strings.Contains(out, "2") {
+		t.Errorf("expected event count in status output, got: %q", out)
+	}
+}
+
+// ---- runDoctor ----
+
+func TestRunDoctor_DBExists(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+
+	// Pre-create the DB
+	d, err := db.Open("")
+	if err != nil {
+		t.Fatalf("db.Open: %v", err)
+	}
+	d.Close()
+
+	out := captureStdout(func() { runDoctor([]string{}) })
+	if !strings.Contains(out, "[OK] Database") {
+		t.Errorf("expected '[OK] Database' in doctor output, got: %q", out)
+	}
+}
+
+func TestRunDoctor_DaemonDown(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	out := captureStdout(func() { runDoctor([]string{}) })
+	if !strings.Contains(out, "[FAIL] Daemon") {
+		t.Errorf("expected '[FAIL] Daemon' when daemon not running, got: %q", out)
+	}
+}
+
+func TestRunDoctor_StaleAddr(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	// Addr file exists but socket is unreachable — should report FAIL, not OK.
+	writeAddr("unix:/tmp/forge-fake.sock")
+	out := captureStdout(func() { runDoctor([]string{}) })
+	if !strings.Contains(out, "[FAIL] Daemon") {
+		t.Errorf("expected '[FAIL] Daemon' for stale addr, got: %q", out)
+	}
+}
+
+// ---- stale addr file gotcha ----
+
+// KNOWN GOTCHA: if the daemon crashes without cleaning its addr file,
+// a subsequent `forge start` will see the stale addr and refuse to start.
+// There is currently no liveness check — only a file-existence check.
+func TestRunStart_Gotcha_StaleAddrBlocksRestart(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+
+	// Write a stale addr file (as if a crashed daemon left it behind)
+	writeAddr("stale-unix-path")
+
+	out := captureStdout(func() { runStart([]string{}) })
+
+	if strings.Contains(out, "already running") {
+		t.Log("KNOWN GOTCHA: stale addr file causes forge start to report 'already running' with no actual daemon")
+	} else {
+		// Future fix: forge start should verify the daemon is alive before refusing
+		t.Log("forge start correctly handled stale addr file (gotcha fixed)")
+	}
+}

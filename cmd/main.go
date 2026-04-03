@@ -5,7 +5,8 @@ import (
 	"os"
 )
 
-const version = "0.1.0"
+// version is set at build time via -ldflags "-X main.version=..."
+var version = "dev"
 
 func main() {
 	if len(os.Args) < 2 {
@@ -30,10 +31,20 @@ func main() {
 		runDistill(os.Args[2:])
 	case "search":
 		runSearch(os.Args[2:])
+	case "save":
+		runSave(os.Args[2:])
+	case "scan":
+		runScan(os.Args[2:])
 	case "mcp":
 		runMCP(os.Args[2:])
 	case "doctor":
 		runDoctor(os.Args[2:])
+	case "service-install":
+		runServiceInstall(os.Args[2:])
+	case "service-uninstall":
+		runServiceUninstall(os.Args[2:])
+	case "synthesize-session":
+		runSynthesizeSession(os.Args[2:]) // internal, not shown in help
 	case "version":
 		fmt.Printf("forge %s\n", version)
 	case "help", "--help", "-h":
@@ -56,6 +67,8 @@ Commands:
   start         Start the daemon
   stop          Stop the daemon
   status        Show DB stats, daemon health, skill status
+  save          Save a memory directly (--type --content [--principle])
+  scan          Mine recent git history for learnings (--dry-run)
   distill       Run distillation manually
   search <q>    Full-text search on event payloads
   mcp           Start MCP server (stdio transport, for Claude Code)
@@ -68,7 +81,7 @@ Commands:
 Environment:
   FORGE_SESSION_ID    Session identifier (set by hook)
   FORGE_SOURCE_TOOL   Source agent: claude/gemini/codex (set by hook)
-  FORGE_EVENT_TYPE    Event type: PostToolUse/SessionEnd/UserPrompt (set by hook)
+  FORGE_EVENT_TYPE    Event type: PostToolUse/SessionEnd/UserPromptSubmit (set by hook)
   FORGE_TOOL_NAME     Tool name if applicable (set by hook)
   FORGE_PIPE_ADDR     Daemon IPC address (set by daemon)
   FORGE_PROVIDER      Inference provider: anthropic/openai/ollama

@@ -14,3 +14,7 @@ forge-*
 # IDE
 .idea/
 .vscode/
+
+# Secrets
+.env
+.env.*

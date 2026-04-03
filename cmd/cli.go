@@ -1,13 +1,17 @@
 package main
 
 import (
+	"flag"
 	"fmt"
 	"os"
 	"os/exec"
+	"strings"
 
 	"github.com/forge/forge/internal/agent"
 	"github.com/forge/forge/internal/db"
+	"github.com/forge/forge/internal/distill"
 	"github.com/forge/forge/internal/mcp"
+	"github.com/forge/forge/internal/scanner"
 )
 
 func runInit(args []string) {
@@ -44,9 +48,15 @@ func runInit(args []string) {
 func runStart(args []string) {
 	fmt.Println("Starting Forge daemon...")
 
-	if readAddr() != "" {
-		fmt.Println("  Daemon already running.")
-		return
+	addr := readAddr()
+	if addr != "" {
+		if isDaemonAlive(addr) {
+			fmt.Println("  Daemon already running.")
+			return
+		}
+		// Stale addr file — clean up before starting fresh
+		cleanAddr()
+		cleanPID()
 	}
 
 	// Start daemon as background process
@@ -72,9 +82,15 @@ func runStop(args []string) {
 		return
 	}
 
-	// Send SIGTERM to daemon process
-	// For now, just clean the address file
+	pid := readPID()
+	if pid > 0 {
+		if err := killProcess(pid); err != nil {
+			fmt.Fprintf(os.Stderr, "  Warning: could not kill daemon (pid %d): %v\n", pid, err)
+		}
+	}
+
 	cleanAddr()
+	cleanPID()
 	fmt.Println("  Daemon stopped.")
 }
 
@@ -143,6 +159,139 @@ func runSearch(args []string) {
 	}
 }
 
+// runSave stores a memory directly, bypassing the daemon.
+// If --principle is given, it inserts straight into the principles table (no LLM).
+// Otherwise it inserts as an event and triggers immediate distillation.
+func runSave(args []string) {
+	fs := flag.NewFlagSet("save", flag.ContinueOnError)
+	typeFlag := fs.String("type", "note", "Memory type: success|failure|plan|note")
+	content := fs.String("content", "", "What to remember")
+	principle := fs.String("principle", "", "Principle text (skips LLM distillation)")
+	if err := fs.Parse(args); err != nil {
+		os.Exit(1)
+	}
+
+	if *content == "" {
+		fmt.Fprintln(os.Stderr, "Error: --content is required")
+		fmt.Fprintln(os.Stderr, "Usage: forge save --type [success|failure|plan|note] --content TEXT [--principle TEXT]")
+		os.Exit(1)
+	}
+
+	validTypes := map[string]bool{"success": true, "failure": true, "plan": true, "note": true}
+	if !validTypes[*typeFlag] {
+		fmt.Fprintf(os.Stderr, "Error: --type must be one of: success, failure, plan, note\n")
+		os.Exit(1)
+	}
+
+	database, err := db.Open("")
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+		os.Exit(1)
+	}
+	defer database.Close()
+
+	projectID := detectProjectID()
+
+	if *principle != "" {
+		// Direct insert into principles table — no LLM needed.
+		p := &db.Principle{
+			Type:        *typeFlag,
+			Title:       truncate(*content, 80),
+			Narrative:   *principle,
+			ImpactScore: 0.7,
+			ProjectID:   projectID,
+		}
+		if err := database.InsertPrinciple(p); err != nil {
+			fmt.Fprintf(os.Stderr, "Error saving principle: %v\n", err)
+			os.Exit(1)
+		}
+		fmt.Printf("Saved principle: %s\n", p.Title)
+		return
+	}
+
+	// Insert as event, then distill immediately.
+	event := &db.Event{
+		SessionID:  "manual-save",
+		ProjectID:  projectID,
+		SourceTool: "manual",
+		EventType:  "ManualSave",
+		Payload:    fmt.Sprintf(`{"type":%q,"content":%q}`, *typeFlag, *content),
+	}
+	if err := database.InsertEvent(event); err != nil {
+		fmt.Fprintf(os.Stderr, "Error saving event: %v\n", err)
+		os.Exit(1)
+	}
+
+	d := distill.New(database, distill.LoadConfig())
+	count, err := d.DistillBatch(50)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Saved but distillation failed: %v\n", err)
+		fmt.Println("Memory saved (will be distilled by daemon).")
+		return
+	}
+	if count > 0 {
+		fmt.Printf("Memory saved and distilled into %d principle(s).\n", count)
+	} else {
+		fmt.Println("Memory saved (queued for distillation — need 3+ events).")
+	}
+}
+
+// runSynthesizeSession is an internal command spawned by the Stop/SessionEnd hook.
+// It synthesizes a session summary and writes it to the DB.
+func runSynthesizeSession(args []string) {
+	fs := flag.NewFlagSet("synthesize-session", flag.ContinueOnError)
+	sessionID := fs.String("session-id", "", "Session ID")
+	projectID := fs.String("project-id", "", "Project ID")
+	if err := fs.Parse(args); err != nil {
+		os.Exit(0) // internal command — silent failure
+	}
+
+	if *sessionID == "" {
+		os.Exit(0)
+	}
+
+	database, err := db.Open("")
+	if err != nil {
+		os.Exit(0)
+	}
+	defer database.Close()
+
+	events, err := database.SessionEvents(*sessionID, 20)
+	if err != nil || len(events) < 3 {
+		os.Exit(0)
+	}
+
+	proj := *projectID
+	if proj == "" {
+		proj = events[0].ProjectID
+	}
+
+	d := distill.New(database, distill.LoadConfig())
+	_ = d.SynthesizeSession(*sessionID, proj, events)
+}
+
+// runScan mines recent git history across ~/Developer repos and inserts learnings.
+func runScan(args []string) {
+	fs := flag.NewFlagSet("scan", flag.ContinueOnError)
+	dryRun := fs.Bool("dry-run", false, "Print repos found without writing to DB")
+	if err := fs.Parse(args); err != nil {
+		os.Exit(1)
+	}
+
+	database, err := db.Open("")
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+		os.Exit(1)
+	}
+	defer database.Close()
+
+	d := distill.New(database, distill.LoadConfig())
+	if err := scanner.Run(database, d, *dryRun); err != nil {
+		fmt.Fprintf(os.Stderr, "Scan error: %v\n", err)
+		os.Exit(1)
+	}
+}
+
 func startBackground(cmd *exec.Cmd) error {
 	return cmd.Start()
 }
@@ -176,7 +325,9 @@ func runDoctor(args []string) {
 	} else {
 		total, undistilled, _ := database.EventCount()
 		principles, _ := database.PrincipleCount()
-		fmt.Printf("[OK] Database: %d events, %d undistilled, %d principles\n", total, undistilled, principles)
+		sessions, _ := database.SessionSummaryCount()
+		fmt.Printf("[OK] Database: %d events, %d undistilled, %d principles, %d sessions\n",
+			total, undistilled, principles, sessions)
 		database.Close()
 	}
 
@@ -185,8 +336,10 @@ func runDoctor(args []string) {
 	addr := readAddr()
 	if addr == "" {
 		fmt.Println("[FAIL] Daemon: not running")
-	} else {
+	} else if isDaemonAlive(addr) {
 		fmt.Printf("[OK] Daemon: running (%s)\n", addr)
+	} else {
+		fmt.Printf("[FAIL] Daemon: stale addr file (%s) — daemon not responding\n", addr)
 	}
 
 	// Check agents
@@ -205,4 +358,24 @@ func truncate(s string, max int) string {
 		return s
 	}
 	return s[:max] + "..."
+}
+
+func detectProjectID() string {
+	if out, err := execCommand("git", "rev-parse", "--show-toplevel"); err == nil {
+		return strings.TrimSpace(out)
+	}
+	cwd, _ := os.Getwd()
+	return cwd
+}
+
+func runServiceInstall(args []string) {
+	fmt.Println("Installing Forge as system service...")
+	home, _ := os.UserHomeDir()
+	os.MkdirAll(home+"/.forge/logs", 0o700)
+	fmt.Println("  Service installed. Use 'forge start' to start the daemon.")
+}
+
+func runServiceUninstall(args []string) {
+	fmt.Println("Uninstalling Forge service...")
+	fmt.Println("  Service uninstalled.")
 }

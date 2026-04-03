@@ -7,11 +7,14 @@ import (
 	"net"
 	"os"
 	"os/signal"
+	"strconv"
+	"strings"
 	"sync"
 	"syscall"
 	"time"
 
 	"github.com/forge/forge/internal/db"
+	"github.com/forge/forge/internal/distill"
 	"github.com/forge/forge/internal/ipc"
 )
 
@@ -31,10 +34,11 @@ func runDaemon(args []string) {
 	}
 	defer ln.Close()
 
-	// Write pipe address for hooks to find
+	// Write pipe address and PID for hooks and stop command
 	writeAddr(addr)
+	writePID(os.Getpid())
 
-	log.Printf("Forge daemon listening on %s", addr)
+	log.Printf("Forge daemon listening on %s (pid %d)", addr, os.Getpid())
 	log.Printf("Database: %s", database.Path)
 
 	// Graceful shutdown
@@ -64,44 +68,74 @@ func runDaemon(args []string) {
 	}()
 
 	// Distillation loop
-	go distillLoop(database)
+	distiller := distill.New(database, distill.LoadConfig())
+	go distillLoop(distiller)
 
 	<-shutdown
 	log.Println("Shutting down...")
 	ln.Close()
 	wg.Wait()
 	cleanAddr()
+	cleanPID()
 	log.Println("Forge daemon stopped.")
 }
 
 func handleConn(conn net.Conn, database *db.DB) {
 	defer conn.Close()
+	conn.SetDeadline(time.Now().Add(5 * time.Second))
 	decoder := json.NewDecoder(conn)
 
-	var msg struct {
-		ID         string `json:"id"`
-		TS         string `json:"ts"`
-		SessionID  string `json:"session_id"`
-		ProjectID  string `json:"project_id"`
-		SourceTool string `json:"source_tool"`
-		EventType  string `json:"event_type"`
-		ToolName   string `json:"tool_name"`
-		Payload    string `json:"payload"`
-	}
-
-	if err := decoder.Decode(&msg); err != nil {
+	// Decode into a generic map first to inspect the type field.
+	var raw map[string]json.RawMessage
+	if err := decoder.Decode(&raw); err != nil {
 		return
 	}
 
+	// Determine message type (default: event).
+	msgType := "event"
+	if t, ok := raw["type"]; ok {
+		var s string
+		if err := json.Unmarshal(t, &s); err == nil && s != "" {
+			msgType = s
+		}
+	}
+
+	switch msgType {
+	case "event":
+		handleEventMsg(raw, database)
+	// "query" type reserved for future bidirectional IPC
+	default:
+		handleEventMsg(raw, database)
+	}
+}
+
+func handleEventMsg(raw map[string]json.RawMessage, database *db.DB) {
+	extract := func(key string) string {
+		v, ok := raw[key]
+		if !ok {
+			return ""
+		}
+		var s string
+		json.Unmarshal(v, &s)
+		return s
+	}
+
 	event := &db.Event{
-		ID:         msg.ID,
-		TS:         msg.TS,
-		SessionID:  msg.SessionID,
-		ProjectID:  msg.ProjectID,
-		SourceTool: msg.SourceTool,
-		EventType:  msg.EventType,
-		ToolName:   msg.ToolName,
-		Payload:    msg.Payload,
+		ID:         extract("id"),
+		TS:         extract("ts"),
+		SessionID:  extract("session_id"),
+		ProjectID:  extract("project_id"),
+		SourceTool: extract("source_tool"),
+		EventType:  extract("event_type"),
+		ToolName:   extract("tool_name"),
+		Payload:    extract("payload"),
+	}
+
+	if event.SessionID == "" {
+		event.SessionID = "unknown"
+	}
+	if event.ProjectID == "" {
+		event.ProjectID = "unknown"
 	}
 
 	if err := database.InsertEvent(event); err != nil {
@@ -109,28 +143,16 @@ func handleConn(conn net.Conn, database *db.DB) {
 	}
 }
 
-func distillLoop(database *db.DB) {
+func distillLoop(d *distill.Distiller) {
 	ticker := time.NewTicker(10 * time.Minute)
 	defer ticker.Stop()
 	for range ticker.C {
-		distill(database)
-	}
-}
-
-func distill(database *db.DB) {
-	events, err := database.UndistilledEvents(50)
-	if err != nil || len(events) < 5 {
-		return
-	}
-	// TODO: Send to LLM for distillation
-	// For now, create a simple summary principle
-	var ids []string
-	for _, e := range events {
-		ids = append(ids, e.ID)
-	}
-	if len(ids) > 0 {
-		_ = database.MarkDistilled(ids)
-		log.Printf("Distilled %d events", len(ids))
+		count, err := d.DistillBatch(50)
+		if err != nil {
+			log.Printf("Distillation error: %v", err)
+		} else if count > 0 {
+			log.Printf("Distilled %d principles from events", count)
+		}
 	}
 }
 
@@ -139,7 +161,6 @@ func writeAddr(addr string) {
 	path := home + "/.forge/forge.addr"
 	_ = os.MkdirAll(home+"/.forge", 0o700)
 	_ = os.WriteFile(path, []byte(addr), 0o600)
-	// Also set env for child processes
 	os.Setenv("FORGE_PIPE_ADDR", addr)
 }
 
@@ -157,6 +178,45 @@ func readAddr() string {
 	return string(data)
 }
 
+func writePID(pid int) {
+	home, _ := os.UserHomeDir()
+	_ = os.MkdirAll(home+"/.forge", 0o700)
+	_ = os.WriteFile(home+"/.forge/forge.pid", []byte(fmt.Sprintf("%d", pid)), 0o600)
+}
+
+func cleanPID() {
+	home, _ := os.UserHomeDir()
+	_ = os.Remove(home + "/.forge/forge.pid")
+}
+
+func readPID() int {
+	home, _ := os.UserHomeDir()
+	data, err := os.ReadFile(home + "/.forge/forge.pid")
+	if err != nil {
+		return 0
+	}
+	pid, _ := strconv.Atoi(strings.TrimSpace(string(data)))
+	return pid
+}
+
+// isDaemonAlive checks whether the daemon behind addr is actually responding.
+// Returns false for empty addr or if the socket/port can't be dialed.
+func isDaemonAlive(addr string) bool {
+	if addr == "" {
+		return false
+	}
+	network := "unix"
+	if strings.Contains(addr, ":") {
+		network = "tcp"
+	}
+	conn, err := net.DialTimeout(network, addr, 500*time.Millisecond)
+	if err != nil {
+		return false
+	}
+	conn.Close()
+	return true
+}
+
 // Status output
 func statusOutput() {
 	database, err := db.Open("")
@@ -168,13 +228,17 @@ func statusOutput() {
 
 	total, undistilled, _ := database.EventCount()
 	principles, _ := database.PrincipleCount()
+	sessions, _ := database.SessionSummaryCount()
 	addr := readAddr()
 
 	fmt.Printf("Database:  %s\n", database.Path)
 	fmt.Printf("Events:    %d (%d undistilled)\n", total, undistilled)
 	fmt.Printf("Principles: %d\n", principles)
-	if addr != "" {
+	fmt.Printf("Sessions:  %d\n", sessions)
+	if addr != "" && isDaemonAlive(addr) {
 		fmt.Printf("Daemon:    running (%s)\n", addr)
+	} else if addr != "" {
+		fmt.Printf("Daemon:    stale (%s — not responding)\n", addr)
 	} else {
 		fmt.Printf("Daemon:    not running\n")
 	}

@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"runtime"
+	"strings"
 
 	_ "modernc.org/sqlite"
 )
@@ -100,6 +100,28 @@ func (d *DB) migrate() error {
 			return fmt.Errorf("exec migration: %w", err)
 		}
 	}
-	_ = runtime.GOOS // placeholder to avoid unused import
+	// Column additions (idempotent — ignored if column already exists).
+	colMigrations := []struct{ table, col, def string }{
+		{"principles", "concepts", "TEXT DEFAULT ''"},
+		{"principles", "files_modified", "TEXT DEFAULT ''"},
+		{"session_summaries", "request", "TEXT DEFAULT ''"},
+		{"session_summaries", "investigation", "TEXT DEFAULT ''"},
+		{"session_summaries", "learnings", "TEXT DEFAULT ''"},
+		{"session_summaries", "next_steps", "TEXT DEFAULT ''"},
+	}
+	for _, cm := range colMigrations {
+		if err := d.addColumnIfMissing(cm.table, cm.col, cm.def); err != nil {
+			return fmt.Errorf("add column %s.%s: %w", cm.table, cm.col, err)
+		}
+	}
 	return nil
+}
+
+// addColumnIfMissing runs ALTER TABLE ADD COLUMN, ignoring duplicate-column errors.
+func (d *DB) addColumnIfMissing(table, column, colDef string) error {
+	_, err := d.conn.Exec(fmt.Sprintf("ALTER TABLE %s ADD COLUMN %s %s", table, column, colDef))
+	if err != nil && strings.Contains(err.Error(), "duplicate column name") {
+		return nil
+	}
+	return err
 }

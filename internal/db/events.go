@@ -118,6 +118,29 @@ func (d *DB) SearchEvents(query string, limit int) ([]Event, error) {
 	return events, rows.Err()
 }
 
+// SessionEvents returns the most recent events for a specific session.
+func (d *DB) SessionEvents(sessionID string, limit int) ([]Event, error) {
+	rows, err := d.conn.Query(
+		`SELECT id, ts, session_id, project_id, source_tool, event_type, tool_name, payload, distilled
+		 FROM events WHERE session_id=? ORDER BY ts DESC LIMIT ?`, sessionID, limit,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var events []Event
+	for rows.Next() {
+		var e Event
+		var distilled int
+		if err := rows.Scan(&e.ID, &e.TS, &e.SessionID, &e.ProjectID, &e.SourceTool, &e.EventType, &e.ToolName, &e.Payload, &distilled); err != nil {
+			return nil, err
+		}
+		e.Distilled = distilled == 1
+		events = append(events, e)
+	}
+	return events, rows.Err()
+}
+
 // RecentEvents returns the most recent events.
 func (d *DB) RecentEvents(limit int) ([]Event, error) {
 	rows, err := d.conn.Query(
