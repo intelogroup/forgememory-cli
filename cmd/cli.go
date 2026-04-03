@@ -66,10 +66,22 @@ func runStart(args []string) {
 		fmt.Println("  Daemon already running.")
 		return
 	}
-	// Clear any stale addr/pid before starting fresh — handles both the
-	// addr-but-not-alive case and the orphan-pid-with-no-addr case.
-	cleanAddr()
-	cleanPID()
+
+	// Clear any stale daemon state before starting fresh — handles the
+	// case where daemon crashed/force-killed and left behind lock/addr/pid.
+	// Only remove if the referenced process is not alive.
+	if addr != "" && !isDaemonAlive(addr) {
+		fmt.Println("  Cleaning stale daemon address...")
+		cleanAddr()
+	}
+	if pid := readPID(); pid > 0 && !isProcessAlive(pid) {
+		fmt.Println("  Cleaning stale daemon PID...")
+		cleanPID()
+	}
+	if isStaleLock() {
+		fmt.Println("  Cleaning stale daemon lock...")
+		cleanLock()
+	}
 
 	// Start daemon as background process, redirecting its output to a log file
 	// so crashes are diagnosable without attaching a debugger.
@@ -108,19 +120,18 @@ func runStart(args []string) {
 func runStop(args []string) {
 	fmt.Println("Stopping Forge daemon...")
 
-	addr := readAddr()
-	if addr == "" {
-		fmt.Println("  Daemon not running.")
-		return
-	}
-
 	pid := readPID()
+
+	// Try to kill the daemon process if it's running
 	if pid > 0 {
 		if err := killProcess(pid); err != nil {
 			fmt.Fprintf(os.Stderr, "  Warning: could not kill daemon (pid %d): %v\n", pid, err)
 		}
 	}
 
+	// Clean up daemon state regardless of whether the process was alive.
+	// This handles both normal shutdown and the stale state case where
+	// the process crashed/force-killed but left behind addr/pid/lock files.
 	cleanAddr()
 	cleanPID()
 	cleanLock()
@@ -419,10 +430,41 @@ func runDashboard(args []string) {
 }
 
 func runDoctor(args []string) {
+	repair := len(args) > 0 && args[0] == "--repair"
+
 	fmt.Println("Forge Doctor")
 	fmt.Println()
 
 	home, _ := os.UserHomeDir()
+
+	// Repair mode: clean up stale daemon state
+	if repair {
+		fmt.Println("Repairing stale daemon state...")
+		addr := readAddr()
+		pid := readPID()
+		hasIssues := false
+
+		if addr != "" && !isDaemonAlive(addr) {
+			fmt.Println("  - Removing stale address file...")
+			cleanAddr()
+			hasIssues = true
+		}
+		if pid > 0 && !isProcessAlive(pid) {
+			fmt.Println("  - Removing stale PID file...")
+			cleanPID()
+			hasIssues = true
+		}
+		if isStaleLock() {
+			fmt.Println("  - Removing stale lock file...")
+			cleanLock()
+			hasIssues = true
+		}
+		if !hasIssues {
+			fmt.Println("  No stale state found.")
+		}
+		fmt.Println("  Repair complete.")
+		fmt.Println()
+	}
 
 	// Check database
 	fmt.Print("  ")

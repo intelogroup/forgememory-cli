@@ -109,8 +109,8 @@ func TestCleanAddr_Idempotent(t *testing.T) {
 func TestRunStop_DaemonNotRunning(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
 	out := captureStdout(func() { runStop([]string{}) })
-	if !strings.Contains(out, "not running") {
-		t.Errorf("expected 'not running' in output, got: %q", out)
+	if !strings.Contains(out, "Daemon stopped") {
+		t.Errorf("expected 'Daemon stopped' in output, got: %q", out)
 	}
 }
 

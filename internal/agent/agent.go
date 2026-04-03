@@ -5,8 +5,10 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"runtime"
+	"strings"
 )
 
 // ForgePath returns the absolute path to the forge binary.
@@ -27,10 +29,18 @@ func DetectAgents(home string) []string {
 	if _, err := os.Stat(filepath.Join(home, ".gemini")); err == nil {
 		agents = append(agents, "gemini")
 	}
-	if _, err := os.Stat(filepath.Join(home, ".codex")); err == nil {
+	if hasCodex() {
 		agents = append(agents, "codex")
 	}
 	return agents
+}
+
+// hasCodex checks if Codex is installed by probing its version command.
+func hasCodex() bool {
+	cmd := exec.Command("codex", "--version")
+	cmd.Stdout = nil
+	cmd.Stderr = nil
+	return cmd.Run() == nil
 }
 
 // SetupAgent configures an agent to work with Forge.
@@ -297,6 +307,15 @@ func setupGemini(home string) (string, error) {
 func setupCodex(home string) (string, error) {
 	forgePath := ForgePath()
 
+	// First, try to register MCP via Codex's native CLI
+	mcpRegistered, mcpErr := registerCodexMCP(forgePath)
+	if mcpRegistered {
+		fmt.Println("    MCP registration: installed via 'codex mcp add'")
+	} else if mcpErr != "" {
+		fmt.Printf("    MCP registration: %s\n", mcpErr)
+	}
+
+	// Continue with skill file installation
 	// Honour CODEX_HOME env var, fall back to ~/.codex
 	codexHome := os.Getenv("CODEX_HOME")
 	if codexHome == "" {
@@ -373,6 +392,30 @@ func setupCodex(home string) (string, error) {
 	}
 
 	return skillPath, nil
+}
+
+// registerCodexMCP attempts to register Forge as an MCP server via Codex's native CLI.
+// Returns (true, "") on success, (false, errorMessage) on failure.
+func registerCodexMCP(forgePath string) (bool, string) {
+	// Check if codex command is available
+	if !hasCodex() {
+		return false, "Codex not found in PATH"
+	}
+
+	// Try to add MCP via Codex CLI
+	cmd := exec.Command("codex", "mcp", "add", "forge", "--", forgePath, "mcp")
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		return false, fmt.Sprintf("failed: %s (use 'codex mcp add forge -- %s mcp' manually)", strings.TrimSpace(string(output)), forgePath)
+	}
+
+	// Verify registration
+	cmd = exec.Command("codex", "mcp", "get", "forge")
+	if err := cmd.Run(); err != nil {
+		return true, "registered but verification failed (run 'codex mcp list' to confirm)"
+	}
+
+	return true, ""
 }
 
 // probeWritable creates and removes a temp file inside dir to verify the
