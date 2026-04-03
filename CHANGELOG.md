@@ -1,5 +1,10 @@
 # Changelog
 
+## [0.4.4] - 2026-04-03
+
+### Fixed
+- Windows npm launcher now runs `forgememo start` in a detached child so the daemon stays alive after successful startup instead of exiting immediately through the wrapper process tree.
+
 ## [0.3.0] - 2025-04-03
 
 ### Added
