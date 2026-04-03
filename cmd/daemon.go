@@ -7,6 +7,7 @@ import (
 	"net"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"sync"
@@ -169,18 +170,18 @@ func forgeHome() string {
 
 func writeAddr(addr string) {
 	home := forgeHome()
-	path := home + "/.forge/forge.addr"
-	_ = os.MkdirAll(home+"/.forge", 0o700)
-	_ = os.WriteFile(path, []byte(addr), 0o600)
+	dir := filepath.Join(home, ".forge")
+	_ = os.MkdirAll(dir, 0o700)
+	_ = os.WriteFile(filepath.Join(dir, "forge.addr"), []byte(addr), 0o600)
 	os.Setenv("FORGE_PIPE_ADDR", addr)
 }
 
 func cleanAddr() {
-	_ = os.Remove(forgeHome() + "/.forge/forge.addr")
+	_ = os.Remove(filepath.Join(forgeHome(), ".forge", "forge.addr"))
 }
 
 func readAddr() string {
-	data, err := os.ReadFile(forgeHome() + "/.forge/forge.addr")
+	data, err := os.ReadFile(filepath.Join(forgeHome(), ".forge", "forge.addr"))
 	if err != nil {
 		return ""
 	}
@@ -189,16 +190,17 @@ func readAddr() string {
 
 func writePID(pid int) {
 	home := forgeHome()
-	_ = os.MkdirAll(home+"/.forge", 0o700)
-	_ = os.WriteFile(home+"/.forge/forge.pid", []byte(fmt.Sprintf("%d", pid)), 0o600)
+	dir := filepath.Join(home, ".forge")
+	_ = os.MkdirAll(dir, 0o700)
+	_ = os.WriteFile(filepath.Join(dir, "forge.pid"), []byte(fmt.Sprintf("%d", pid)), 0o600)
 }
 
 func cleanPID() {
-	_ = os.Remove(forgeHome() + "/.forge/forge.pid")
+	_ = os.Remove(filepath.Join(forgeHome(), ".forge", "forge.pid"))
 }
 
 func readPID() int {
-	data, err := os.ReadFile(forgeHome() + "/.forge/forge.pid")
+	data, err := os.ReadFile(filepath.Join(forgeHome(), ".forge", "forge.pid"))
 	if err != nil {
 		return 0
 	}

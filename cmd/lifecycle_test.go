@@ -61,9 +61,9 @@ func TestAddrRoundtrip(t *testing.T) {
 	if readAddr() != "" {
 		t.Fatal("expected empty addr before write")
 	}
-	writeAddr("/tmp/forge-test.sock")
-	if got := readAddr(); got != "/tmp/forge-test.sock" {
-		t.Errorf("readAddr = %q, want %q", got, "/tmp/forge-test.sock")
+	writeAddr("forge-test-addr")
+	if got := readAddr(); got != "forge-test-addr" {
+		t.Errorf("readAddr = %q, want %q", got, "forge-test-addr")
 	}
 	cleanAddr()
 	if readAddr() != "" {
@@ -280,9 +280,9 @@ func TestStatusOutput_DaemonDown(t *testing.T) {
 func TestStatusOutput_DaemonUp(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
-	writeAddr("unix:/tmp/forge-fake.sock")
+	writeAddr("forge-fake-addr")
 	out := captureStdout(statusOutput)
-	if !strings.Contains(out, "unix:/tmp/forge-fake.sock") {
+	if !strings.Contains(out, "forge-fake-addr") {
 		t.Errorf("expected addr string in status output, got: %q", out)
 	}
 }
@@ -330,7 +330,7 @@ func TestRunDoctor_StaleAddr(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
 	// Addr file exists but socket is unreachable — should report FAIL, not OK.
-	writeAddr("unix:/tmp/forge-fake.sock")
+	writeAddr("forge-fake-addr")
 	out := captureStdout(func() { runDoctor([]string{}) })
 	if !strings.Contains(out, "[FAIL] Daemon") {
 		t.Errorf("expected '[FAIL] Daemon' for stale addr, got: %q", out)
