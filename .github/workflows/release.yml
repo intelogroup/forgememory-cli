@@ -60,6 +60,6 @@ jobs:
       - name: Publish to npm
         working-directory: npm
         run: |
-          npm config set //registry.npmjs.org/:_authToken ${{ secrets.NPM_TOKEN }}
+          echo "//registry.npmjs.org/:_authToken=${{ secrets.NPM_TOKEN }}" >> "$NPM_CONFIG_USERCONFIG"
           npm version ${{ env.VERSION }} --no-git-tag-version --allow-same-version
           npm publish --access public
