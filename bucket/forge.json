@@ -1,0 +1,25 @@
+{
+    "version": "0.3.0",
+    "description": "Silent memory layer for AI coding agents",
+    "homepage": "https://github.com/intelogroup/forgememory-cli",
+    "license": "MIT",
+    "architecture": {
+        "amd64": {
+            "url": "https://github.com/intelogroup/forgememory-cli/releases/download/v0.3.0/forge-windows-amd64.zip",
+            "hash": "fbad47003f8a7f73738cd73469aa975ed4b98809832004ca8007ad8c4b03e953"
+        }
+    },
+    "bin": "forge.exe",
+    "checkver": {
+        "url": "https://api.github.com/repos/intelogroup/forgememory-cli/releases/latest",
+        "jsonpath": "$.tag_name",
+        "replace": "$1"
+    },
+    "autoupdate": {
+        "architecture": {
+            "amd64": {
+                "url": "https://github.com/intelogroup/forgememory-cli/releases/download/v{{version}}/forge-windows-amd64.zip"
+            }
+        }
+    }
+}
