@@ -17,7 +17,4 @@ func TestConfigureUnixBackground_DetachesUnixProcess(t *testing.T) {
 	if !cmd.SysProcAttr.Setsid {
 		t.Fatal("Unix background start should create a new session")
 	}
-	if !cmd.SysProcAttr.Noctty {
-		t.Fatal("Unix background start should detach from the controlling TTY")
-	}
 }
