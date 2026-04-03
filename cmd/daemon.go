@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"runtime"
 	"strconv"
 	"strings"
 	"sync"
@@ -234,6 +235,32 @@ func isDaemonAlive(addr string) bool {
 		return false
 	}
 	conn.Close()
+	return true
+}
+
+// isProcessAlive checks whether a process with the given PID exists.
+func isProcessAlive(pid int) bool {
+	proc, err := os.FindProcess(pid)
+	if err != nil {
+		return false
+	}
+	// On Unix, FindProcess succeeds even for zombie processes.
+	// We use syscall.Signal(0) to check if the process is actually alive.
+	if runtime.GOOS != "windows" {
+		err := proc.Signal(syscall.Signal(0))
+		return err == nil
+	}
+	// On Windows, FindProcess returns error if process doesn't exist.
+	return true
+}
+
+// isStaleLock checks whether the lock file exists but points to a dead process.
+func isStaleLock() bool {
+	lockPath := filepath.Join(forgeHome(), ".forge", "forge.lock")
+	_, err := os.Stat(lockPath)
+	if err != nil {
+		return false
+	}
 	return true
 }
 
