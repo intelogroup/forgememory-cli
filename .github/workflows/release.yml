@@ -59,8 +59,7 @@ jobs:
 
       - name: Publish to npm
         working-directory: npm
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
         run: |
+          npm config set //registry.npmjs.org/:_authToken ${{ secrets.NPM_TOKEN }}
           npm version ${{ env.VERSION }} --no-git-tag-version --allow-same-version
           npm publish --access public
