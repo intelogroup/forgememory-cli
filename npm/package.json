@@ -1,6 +1,6 @@
 {
   "name": "forgememory",
-  "version": "0.3.0",
+  "version": "0.3.1",
   "description": "Silent memory layer for AI coding agents — captures tool usage, distills insights, injects context",
   "license": "MIT",
   "repository": {
@@ -8,7 +8,14 @@
     "url": "https://github.com/intelogroup/forgememory-cli"
   },
   "homepage": "https://github.com/intelogroup/forgememory-cli",
-  "keywords": ["ai", "claude", "memory", "mcp", "cli", "agent"],
+  "keywords": [
+    "ai",
+    "claude",
+    "memory",
+    "mcp",
+    "cli",
+    "agent"
+  ],
   "bin": {
     "forge": "./forge.js"
   },
