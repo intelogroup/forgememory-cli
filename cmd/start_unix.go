@@ -9,9 +9,8 @@ import (
 
 func configureUnixBackground(cmd *exec.Cmd) {
 	cmd.SysProcAttr = &syscall.SysProcAttr{
-		Setsid:  true,
-		Setpgid: true,
-		Noctty:  true,
+		Setsid: true,
+		Noctty: true,
 	}
 }
 
