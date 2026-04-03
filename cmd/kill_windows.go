@@ -22,7 +22,7 @@ func killProcess(pid int) error {
 
 	// Wait up to 3 seconds for process to exit
 	for i := 0; i < 30; i++ {
-		if !proc.Signal(os.Signal(nil)) {
+		if _, err := os.FindProcess(pid); err != nil {
 			return nil // Process is gone
 		}
 		time.Sleep(100 * time.Millisecond)
