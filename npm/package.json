@@ -1,11 +1,11 @@
 {
-  "name": "forgememory",
-  "version": "0.3.4",
+  "name": "forgememo",
+  "version": "0.3.6",
   "description": "Silent memory layer for AI coding agents — captures tool usage, distills insights, injects context",
   "license": "MIT",
   "repository": {
     "type": "git",
-    "url": "https://github.com/intelogroup/forgememory-cli"
+    "url": "git+https://github.com/intelogroup/forgememory-cli.git"
   },
   "homepage": "https://github.com/intelogroup/forgememory-cli",
   "keywords": [
