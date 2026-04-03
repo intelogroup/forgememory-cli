@@ -107,19 +107,19 @@ jobs:
 
           function Invoke-Forge {
             param(
-              [string[]]$Args,
+              [string[]]$ForgeArgs,
               [string]$InputText
             )
 
             if ($PSBoundParameters.ContainsKey('InputText')) {
-              $output = $InputText | & .\forge.exe @Args 2>&1
+              $output = $InputText | & .\forge.exe @ForgeArgs 2>&1
             } else {
-              $output = & .\forge.exe @Args 2>&1
+              $output = & .\forge.exe @ForgeArgs 2>&1
             }
 
             $output | Out-Host
             if ($LASTEXITCODE -ne 0) {
-              throw "forge.exe $($Args -join ' ') failed with exit code $LASTEXITCODE"
+              throw "forge.exe $($ForgeArgs -join ' ') failed with exit code $LASTEXITCODE"
             }
 
             return ($output | Out-String)
@@ -134,14 +134,14 @@ jobs:
           $savedEventType = $env:FORGE_EVENT_TYPE
 
           try {
-            Invoke-Forge init
-            Invoke-Forge start
+            Invoke-Forge -ForgeArgs @('init')
+            Invoke-Forge -ForgeArgs @('start')
 
             $status = ''
             $running = $false
             for ($i = 0; $i -lt 20; $i++) {
               Start-Sleep -Seconds 1
-              $status = Invoke-Forge status
+              $status = Invoke-Forge -ForgeArgs @('status')
               if ($status -match 'Daemon:\s+running') {
                 $running = $true
                 break
@@ -149,23 +149,23 @@ jobs:
             }
 
             if (-not $running) {
-              Invoke-Forge doctor
+              Invoke-Forge -ForgeArgs @('doctor')
               throw "daemon did not reach the running state after start"
             }
 
-            $doctor = Invoke-Forge doctor
+            $doctor = Invoke-Forge -ForgeArgs @('doctor')
             if ($doctor -notmatch '\[OK\] Daemon') {
               throw "doctor did not report a healthy daemon"
             }
 
             $env:FORGE_SOURCE_TOOL = 'claude'
             $env:FORGE_EVENT_TYPE = 'PostToolUse'
-            Invoke-Forge hook '{"session_id":"ci-test","hook_event_name":"PostToolUse","tool_name":"Bash","tool_input":{"command":"echo test"}}'
+            Invoke-Forge -ForgeArgs @('hook') -InputText '{"session_id":"ci-test","hook_event_name":"PostToolUse","tool_name":"Bash","tool_input":{"command":"echo test"}}'
             Start-Sleep -Milliseconds 500
-            Invoke-Forge hook '{"session_id":"ci-test","hook_event_name":"PostToolUse","tool_name":"Edit","tool_input":{"file_path":"test.go"}}'
+            Invoke-Forge -ForgeArgs @('hook') -InputText '{"session_id":"ci-test","hook_event_name":"PostToolUse","tool_name":"Edit","tool_input":{"file_path":"test.go"}}'
             Start-Sleep -Milliseconds 500
 
-            $status = Invoke-Forge status
+            $status = Invoke-Forge -ForgeArgs @('status')
             if ($status -notmatch 'Events:\s+2') {
               throw "expected 2 captured events after hook calls"
             }
@@ -182,10 +182,10 @@ jobs:
               Remove-Item Env:FORGE_EVENT_TYPE -ErrorAction SilentlyContinue
             }
 
-            Invoke-Forge stop
+            Invoke-Forge -ForgeArgs @('stop')
           }
 
-          $finalStatus = Invoke-Forge status
+          $finalStatus = Invoke-Forge -ForgeArgs @('status')
           if ($finalStatus -notmatch 'Daemon:\s+not running') {
             throw "daemon should not be running after stop"
           }
