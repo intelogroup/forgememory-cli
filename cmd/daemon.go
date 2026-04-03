@@ -59,6 +59,10 @@ func runDaemon(args []string) {
 	}
 	defer database.Close()
 
+	// Get the parent PID before we daemonize (if started via forge start/mcp)
+	// The daemon should exit when its parent dies to avoid orphaned processes.
+	parentPID := os.Getppid()
+
 	// Listen for hook events
 	ln, addr, err := ipc.Listen()
 	if err != nil {
@@ -76,6 +80,40 @@ func runDaemon(args []string) {
 	// Graceful shutdown
 	shutdown := make(chan os.Signal, 1)
 	signal.Notify(shutdown, syscall.SIGINT, syscall.SIGTERM)
+
+	// Parent process monitor - exit when parent dies to avoid orphaned daemons.
+	// Only monitor if parent is not init (PID 1) - this means we were started
+	// by a specific process (like forge mcp) rather than as a system service.
+	if parentPID > 1 {
+		go func() {
+			ticker := time.NewTicker(5 * time.Second)
+			defer ticker.Stop()
+			for {
+				select {
+				case <-shutdown:
+					return
+				case <-ticker.C:
+					// Check if parent is still alive
+					proc, err := os.FindProcess(parentPID)
+					if err != nil {
+						// Parent process gone, exit
+						log.Printf("Parent process (pid %d) gone, shutting down", parentPID)
+						ln.Close()
+						return
+					}
+					// On Unix, we need to signal(0) to check if process exists
+					if runtime.GOOS != "windows" {
+						err := proc.Signal(syscall.Signal(0))
+						if err != nil {
+							log.Printf("Parent process (pid %d) gone, shutting down", parentPID)
+							ln.Close()
+							return
+						}
+					}
+				}
+			}
+		}()
+	}
 
 	// Accept connections
 	var wg sync.WaitGroup
