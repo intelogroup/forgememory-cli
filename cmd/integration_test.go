@@ -348,6 +348,9 @@ func TestBinary_StaleAddr_Gotcha(t *testing.T) {
 // ---- daemon SIGTERM handling ----
 
 func TestBinary_DaemonSIGTERM(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("SIGTERM not supported on Windows")
+	}
 	home := shortHome(t)
 	addrFile := filepath.Join(home, ".forge", "forge.addr")
 
@@ -368,6 +371,9 @@ func TestBinary_DaemonSIGTERM(t *testing.T) {
 }
 
 func TestBinary_DaemonSIGINT(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("SIGINT not supported on Windows")
+	}
 	home := shortHome(t)
 	addrFile := filepath.Join(home, ".forge", "forge.addr")
 
@@ -497,6 +503,9 @@ func TestBinary_Hook_ConcurrentHooks(t *testing.T) {
 // ---- socket / IPC edge cases ----
 
 func TestBinary_StaleSocketCleanup(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("Unix socket cleanup not applicable on Windows (IPC uses TCP)")
+	}
 	home := shortHome(t)
 	forgeDir := filepath.Join(home, ".forge")
 	if err := os.MkdirAll(forgeDir, 0o700); err != nil {
