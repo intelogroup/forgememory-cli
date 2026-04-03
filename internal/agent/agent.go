@@ -338,6 +338,14 @@ func setupCodex(home string) (string, error) {
 				"description": "Full-text search on event payloads.",
 				"when_to_use": "User asks 'did I fix this before?' or about past errors.",
 			},
+			"get_principles": map[string]any{
+				"description": "Returns distilled high-level principles (architecture decisions, patterns, preferences).",
+				"when_to_use": "User asks about project conventions or past decisions.",
+			},
+			"get_session_summaries": map[string]any{
+				"description": "Returns synthesized summaries of recent work sessions.",
+				"when_to_use": "User asks what they were working on before a break or yesterday.",
+			},
 		},
 		"hooks": map[string]any{
 			"UserPromptSubmit": fmt.Sprintf(`%s hook --event UserPromptSubmit`, forgePath),

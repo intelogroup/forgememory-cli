@@ -19,6 +19,14 @@
     "search_memories": {
       "description": "Full-text search on event payloads.",
       "when_to_use": "User asks 'did I fix this before?' or about past errors."
+    },
+    "get_principles": {
+      "description": "Returns distilled high-level principles (architecture decisions, patterns, preferences).",
+      "when_to_use": "User asks about project conventions or past decisions."
+    },
+    "get_session_summaries": {
+      "description": "Returns synthesized summaries of recent work sessions.",
+      "when_to_use": "User asks what they were working on before a break or yesterday."
     }
   },
   "hooks": {
