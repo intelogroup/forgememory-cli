@@ -1,10 +1,28 @@
 #!/bin/sh
 # install.sh — download and install forge from GitHub releases
-# Usage: curl -fsSL https://raw.githubusercontent.com/intelogroup/forgememory-cli/main/install.sh | sh
+# Usage: curl -fsSL https://raw.githubusercontent.com/inteligroup/forgememory-cli/main/install.sh | sh
+# Or with custom prefix: curl -fsSL ... | sh -s -- --prefix ~/.local
 set -e
 
 REPO="intelogroup/forgememory-cli"
-INSTALL_DIR="${FORGE_INSTALL_DIR:-/usr/local/bin}"
+
+# Parse arguments
+FORCE_PREFIX=""
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --prefix)
+      FORCE_PREFIX="$2"
+      shift 2
+      ;;
+    --prefix=*)
+      FORCE_PREFIX="${1#--prefix=}"
+      shift
+      ;;
+    *)
+      shift
+      ;;
+  esac
+done
 
 # Detect OS and arch
 OS=$(uname -s | tr '[:upper:]' '[:lower:]')
@@ -20,6 +38,28 @@ esac
 case "$OS" in
   msys*|cygwin*|mingw*) OS="windows" ;;
 esac
+
+# Determine install directory (try user-writable locations first)
+if [ -n "$FORCE_PREFIX" ]; then
+  INSTALL_DIR="$FORCE_PREFIX/bin"
+elif [ -d "$HOME/.local/bin" ] && [ -w "$HOME/.local/bin" ]; then
+  INSTALL_DIR="$HOME/.local/bin"
+elif [ -d "$HOME/bin" ] && [ -w "$HOME/bin" ]; then
+  INSTALL_DIR="$HOME/bin"
+elif [ -d "$(brew --prefix 2>/dev/null)/bin" ] && [ -w "$(brew --prefix)/bin" ]; then
+  INSTALL_DIR="$(brew --prefix)/bin"
+elif [ -w "/usr/local/bin" ]; then
+  INSTALL_DIR="/usr/local/bin"
+else
+  # Check if we can use sudo
+  if sudo -n true 2>/dev/null; then
+    INSTALL_DIR="/usr/local/bin"
+  else
+    # Try to create ~/.local/bin
+    mkdir -p "$HOME/.local/bin"
+    INSTALL_DIR="$HOME/.local/bin"
+  fi
+fi
 
 # Resolve latest tag if not specified
 VERSION="${FORGE_VERSION:-}"
@@ -38,6 +78,9 @@ TMP=$(mktemp -d)
 
 echo "Installing forge $VERSION ($OS/$ARCH) → $INSTALL_DIR"
 
+# Create install dir if needed
+mkdir -p "$INSTALL_DIR"
+
 if [ "$OS" = "windows" ]; then
   ARCHIVE="forge-windows-${ARCH}.zip"
   curl -fsSL "$BASE_URL/$ARCHIVE" -o "$TMP/$ARCHIVE"
@@ -47,7 +90,6 @@ if [ "$OS" = "windows" ]; then
   if [ -w "$INSTALL_DIR" ]; then
     mv "$TMP/$BINARY" "$INSTALL_DIR/forge.exe"
   else
-    echo "Needs sudo to write to $INSTALL_DIR"
     sudo mv "$TMP/$BINARY" "$INSTALL_DIR/forge.exe"
   fi
 else
@@ -64,7 +106,6 @@ else
   if [ -w "$INSTALL_DIR" ]; then
     mv "$BINARY" "$INSTALL_DIR/forge"
   else
-    echo "Needs sudo to write to $INSTALL_DIR"
     sudo mv "$BINARY" "$INSTALL_DIR/forge"
   fi
 fi
@@ -80,3 +121,6 @@ if [ "$OS" = "windows" ]; then
 else
   echo "Run: forge --help"
 fi
+echo ""
+echo "To add to your PATH, add this to your shell config:"
+echo "  export PATH=\"\$HOME/.local/bin:\$PATH\""

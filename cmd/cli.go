@@ -24,6 +24,29 @@ import (
 	"github.com/forge/forge/internal/service"
 )
 
+func min(a, b int) int {
+	if a < b {
+		return a
+	}
+	return b
+}
+
+func max(a, b int) int {
+	if a > b {
+		return a
+	}
+	return b
+}
+
+func contains(slice []string, item string) bool {
+	for _, v := range slice {
+		if v == item {
+			return true
+		}
+	}
+	return false
+}
+
 func runInit(args []string) {
 	fmt.Println("Initializing Forge...")
 
@@ -55,6 +78,18 @@ func runInit(args []string) {
 		}
 	}
 
+	// Prompt for provider setup
+	fmt.Println("\n  Configure your AI provider:")
+	fmt.Println("    forge config --provider anthropic --api-key YOUR_KEY")
+	fmt.Println("  Or run 'forge config' for interactive setup.")
+	fmt.Println("  Default provider is ollama (requires local Ollama running).")
+
+	// Show MCP restart notice for Claude Code
+	if contains(agents, "claude") {
+		fmt.Println("\n  NOTE: Claude Code requires restart to pick up MCP changes.")
+		fmt.Println("  Run 'forge start' to start the daemon, then restart Claude Code.")
+	}
+
 	fmt.Println("\nForge initialized. Run `forge start` to start the daemon.")
 }
 
@@ -68,7 +103,7 @@ func runStart(args []string) {
 	}
 
 	// Clear any stale daemon state before starting fresh — handles the
-	// case where daemon crashed/force-killed and left behind lock/addr/pid.
+	// case where daemon crashed/force-killed and left behind lock/addr/pid/socket.
 	// Only remove if the referenced process is not alive.
 	if addr != "" && !isDaemonAlive(addr) {
 		fmt.Println("  Cleaning stale daemon address...")
@@ -81,6 +116,11 @@ func runStart(args []string) {
 	if isStaleLock() {
 		fmt.Println("  Cleaning stale daemon lock...")
 		cleanLock()
+	}
+	// Clean up any stale socket file
+	if isStaleSocket() {
+		fmt.Println("  Cleaning stale daemon socket...")
+		cleanSocket()
 	}
 
 	// Start daemon as background process, redirecting its output to a log file
@@ -111,9 +151,12 @@ func runStart(args []string) {
 			return
 		}
 	}
+
+	// Daemon failed to start — run inline diagnostics
 	fmt.Fprintln(os.Stderr, "  Error: daemon process exited immediately — not responding.")
-	fmt.Fprintf(os.Stderr, "  Check logs: %s\n", logPath)
-	fmt.Fprintln(os.Stderr, "  Run 'forge doctor' to diagnose.")
+	fmt.Fprintln(os.Stderr, "\n  Running diagnostics...")
+	runDoctorInline()
+	fmt.Fprintln(os.Stderr, "\n  Run 'forge doctor --repair' to auto-fix stale state.")
 	os.Exit(1)
 }
 
@@ -135,6 +178,7 @@ func runStop(args []string) {
 	cleanAddr()
 	cleanPID()
 	cleanLock()
+	cleanSocket()
 	fmt.Println("  Daemon stopped.")
 }
 
@@ -459,6 +503,11 @@ func runDoctor(args []string) {
 			cleanLock()
 			hasIssues = true
 		}
+		if isStaleSocket() {
+			fmt.Println("  - Removing stale socket file...")
+			cleanSocket()
+			hasIssues = true
+		}
 		if !hasIssues {
 			fmt.Println("  No stale state found.")
 		}
@@ -504,6 +553,79 @@ func runDoctor(args []string) {
 
 	// Check binary
 	fmt.Printf("  [OK] Binary: %s\n", agent.ForgePath())
+}
+
+// runDoctorInline prints a compact diagnostic output for failed daemon starts.
+// This is shown inline when the daemon fails to start, so users see what's wrong immediately.
+func runDoctorInline() {
+	home, _ := os.UserHomeDir()
+
+	fmt.Println("  --- Diagnostics ---")
+
+	// Check database
+	database, err := db.Open("")
+	if err != nil {
+		fmt.Printf("  Database: [FAIL] %v\n", err)
+	} else {
+		total, _, _ := database.EventCount()
+		fmt.Printf("  Database: [OK] %d events\n", total)
+		database.Close()
+	}
+
+	// Check daemon state
+	addr := readAddr()
+	pid := readPID()
+	if addr == "" && pid == 0 {
+		fmt.Println("  Daemon: no state files (clean slate)")
+	} else if addr != "" && !isDaemonAlive(addr) {
+		fmt.Printf("  Daemon: stale address %s\n", addr)
+	}
+	if pid > 0 && !isProcessAlive(pid) {
+		fmt.Printf("  Daemon: stale PID %d\n", pid)
+	}
+	if isStaleLock() {
+		fmt.Println("  Daemon: stale lock file")
+	}
+	if isStaleSocket() {
+		fmt.Println("  Daemon: stale socket file")
+	}
+
+	// Check config
+	configPath := filepath.Join(forgeHome(), ".forge", "config")
+	if _, err := os.Stat(configPath); err == nil {
+		fmt.Println("  Config: [OK] ~/.forge/config exists")
+	} else {
+		fmt.Println("  Config: [WARN] no config file (run 'forge config' to set up provider)")
+	}
+
+	// Check agents
+	agents := agent.DetectAgents(home)
+	if len(agents) == 0 {
+		fmt.Println("  Agents: none detected")
+	} else {
+		fmt.Printf("  Agents: %v\n", agents)
+	}
+
+	// Check log
+	logPath := filepath.Join(forgeHome(), ".forge", "daemon.log")
+	if info, err := os.Stat(logPath); err == nil {
+		if info.Size() > 0 {
+			logSize := int(info.Size())
+			if logSize > 500 {
+				logSize = 500
+			}
+			fmt.Printf("  Log: last %d bytes:\n", logSize)
+			if data, err := os.ReadFile(logPath); err == nil {
+				lines := strings.Split(string(data), "\n")
+				start := max(0, len(lines)-5)
+				for _, line := range lines[start:] {
+					if line != "" {
+						fmt.Printf("    | %s\n", truncate(line, 80))
+					}
+				}
+			}
+		}
+	}
 }
 
 func truncate(s string, max int) string {

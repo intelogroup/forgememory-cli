@@ -15,6 +15,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/forge/forge/internal/config"
 	"github.com/forge/forge/internal/db"
 	"github.com/forge/forge/internal/distill"
 	"github.com/forge/forge/internal/ipc"
@@ -22,6 +23,25 @@ import (
 
 // runDaemon is the entrypoint for `forge daemon`.
 func runDaemon(args []string) {
+	// Load config at startup so daemon has the correct provider settings
+	// independent of shell environment.
+	cfg, err := config.Load()
+	if err == nil {
+		// Apply config to environment for distill to pick up
+		if cfg.Provider != "" {
+			os.Setenv("FORGE_PROVIDER", cfg.Provider)
+		}
+		if cfg.APIKey != "" {
+			os.Setenv("FORGE_API_KEY", cfg.APIKey)
+		}
+		if cfg.BaseURL != "" {
+			os.Setenv("FORGE_API_URL", cfg.BaseURL)
+		}
+		log.Printf("Loaded config: provider=%s", cfg.Provider)
+	} else {
+		log.Printf("No config found, using defaults (provider: ollama)")
+	}
+
 	// Acquire exclusive lock to prevent multiple daemons
 	lockFile, err := acquireDaemonLock()
 	if err != nil {
@@ -324,4 +344,17 @@ func acquireDaemonLock() (*os.File, error) {
 func cleanLock() {
 	lockPath := filepath.Join(forgeHome(), ".forge", "forge.lock")
 	_ = os.Remove(lockPath)
+}
+
+// cleanSocket removes the daemon socket file.
+func cleanSocket() {
+	socketPath := filepath.Join(forgeHome(), ".forge", "forge.sock")
+	_ = os.Remove(socketPath)
+}
+
+// isStaleSocket checks whether the socket file exists.
+func isStaleSocket() bool {
+	socketPath := filepath.Join(forgeHome(), ".forge", "forge.sock")
+	_, err := os.Stat(socketPath)
+	return err == nil
 }
