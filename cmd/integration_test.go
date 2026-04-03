@@ -52,6 +52,9 @@ func TestMain(m *testing.M) {
 	defer os.RemoveAll(tmp)
 
 	forgeBin = filepath.Join(tmp, "forge")
+	if runtime.GOOS == "windows" {
+		forgeBin = filepath.Join(tmp, "forge.exe")
+	}
 	// Build from the current directory (cmd/).
 	out, err := exec.Command("go", "build", "-o", forgeBin, ".").CombinedOutput()
 	if err != nil {
