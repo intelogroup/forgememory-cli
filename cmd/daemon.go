@@ -83,6 +83,20 @@ func runDaemon(args []string) {
 	// Graceful shutdown
 	shutdown := make(chan os.Signal, 1)
 	signal.Notify(shutdown, syscall.SIGINT, syscall.SIGTERM)
+	defer signal.Stop(shutdown)
+
+	stop := make(chan struct{})
+	var stopOnce sync.Once
+	requestStop := func() {
+		stopOnce.Do(func() {
+			close(stop)
+		})
+	}
+
+	go func() {
+		<-shutdown
+		requestStop()
+	}()
 
 	// Parent process monitor - exit when parent dies to avoid orphaned daemons.
 	// Only monitor if parent is not init (PID 1) - this means we were started
@@ -93,7 +107,7 @@ func runDaemon(args []string) {
 			defer ticker.Stop()
 			for {
 				select {
-				case <-shutdown:
+				case <-stop:
 					return
 				case <-ticker.C:
 					// Check if parent is still alive
@@ -101,7 +115,8 @@ func runDaemon(args []string) {
 					if err != nil {
 						// Parent process gone, exit
 						log.Printf("Parent process (pid %d) gone, shutting down", parentPID)
-						ln.Close()
+						requestStop()
+						_ = ln.Close()
 						return
 					}
 					// On Unix, we need to signal(0) to check if process exists
@@ -109,7 +124,8 @@ func runDaemon(args []string) {
 						err := proc.Signal(syscall.Signal(0))
 						if err != nil {
 							log.Printf("Parent process (pid %d) gone, shutting down", parentPID)
-							ln.Close()
+							requestStop()
+							_ = ln.Close()
 							return
 						}
 					}
@@ -125,7 +141,7 @@ func runDaemon(args []string) {
 			conn, err := ln.Accept()
 			if err != nil {
 				select {
-				case <-shutdown:
+				case <-stop:
 					return
 				default:
 					log.Printf("Accept error: %v", err)
@@ -144,9 +160,9 @@ func runDaemon(args []string) {
 	distiller := distill.New(database, distill.LoadConfig())
 	go distillLoop(distiller)
 
-	<-shutdown
+	<-stop
 	log.Println("Shutting down...")
-	ln.Close()
+	_ = ln.Close()
 	wg.Wait()
 	cleanAddr()
 	cleanPID()

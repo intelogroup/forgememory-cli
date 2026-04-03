@@ -158,7 +158,7 @@ func runStart(args []string) {
 func newDaemonCommand(logPath string, skipParentMonitor bool) (*exec.Cmd, func()) {
 	cmd := exec.Command(os.Args[0], "daemon")
 	cmd.Stdin = nil
-	cmd.Env = os.Environ()
+	cmd.Env = filteredEnv("FORGE_NO_EXIT_ON_PARENT_EXIT")
 	if skipParentMonitor {
 		cmd.Env = append(cmd.Env, "FORGE_NO_EXIT_ON_PARENT_EXIT=1")
 	}
@@ -171,6 +171,26 @@ func newDaemonCommand(logPath string, skipParentMonitor bool) (*exec.Cmd, func()
 	}
 
 	return cmd, closeLog
+}
+
+func filteredEnv(keys ...string) []string {
+	blocked := make(map[string]struct{}, len(keys))
+	for _, key := range keys {
+		blocked[key] = struct{}{}
+	}
+
+	var env []string
+	for _, entry := range os.Environ() {
+		key := entry
+		if idx := strings.IndexByte(entry, '='); idx >= 0 {
+			key = entry[:idx]
+		}
+		if _, skip := blocked[key]; skip {
+			continue
+		}
+		env = append(env, entry)
+	}
+	return env
 }
 
 func runStop(args []string) {

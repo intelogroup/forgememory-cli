@@ -168,6 +168,7 @@ func TestNewDaemonCommand_SetsDetachedDaemonEnvForStart(t *testing.T) {
 
 func TestNewDaemonCommand_KeepsParentMonitorForMCP(t *testing.T) {
 	logPath := filepath.Join(t.TempDir(), "daemon.log")
+	t.Setenv("FORGE_NO_EXIT_ON_PARENT_EXIT", "1")
 
 	cmd, closeLog := newDaemonCommand(logPath, false)
 	defer closeLog()
