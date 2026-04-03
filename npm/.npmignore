@@ -1,0 +1,4 @@
+bin/forge
+bin/forge.exe
+bin/*.tar.gz
+bin/*.zip

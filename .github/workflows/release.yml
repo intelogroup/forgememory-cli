@@ -21,6 +21,11 @@ jobs:
           go-version: '1.22'
           cache: true
 
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          registry-url: 'https://registry.npmjs.org'
+
       - name: Run tests
         run: go test ./... -count=1
 
@@ -51,3 +56,11 @@ jobs:
         with:
           files: dist/*
           generate_release_notes: true
+
+      - name: Publish to npm
+        working-directory: npm
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: |
+          npm version ${{ env.VERSION }} --no-git-tag-version --allow-same-version
+          npm publish --access public
