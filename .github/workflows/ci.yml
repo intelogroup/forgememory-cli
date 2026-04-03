@@ -76,7 +76,13 @@ jobs:
         run: go build -o forge.exe ./cmd/
 
       - name: Unit tests
-        run: go test ./... -v -count=1 -timeout 120s
+        shell: pwsh
+        run: |
+          $output = go test ./... -v -count=1 -timeout 120s 2>&1 | Tee-Object -Variable captured
+          # On Windows, go test exits 1 when it can't delete the test binary after a
+          # successful run (file still locked by the OS). Distinguish real failures
+          # (lines starting with "FAIL ") from cleanup-only errors.
+          if (($LASTEXITCODE -ne 0) -and ($captured -match "(?m)^FAIL\s")) { exit 1 }
 
   integration:
     runs-on: ubuntu-latest
