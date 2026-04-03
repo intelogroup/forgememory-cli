@@ -46,18 +46,18 @@ async function main() {
   const { osName, archName, isWindows } = getPlatformInfo();
   const ext = isWindows ? '.exe' : '';
   const archiveExt = isWindows ? '.zip' : '.tar.gz';
-  const archiveName = `forge-${osName}-${archName}${archiveExt}`;
-  const url = `https://github.com/${REPO}/releases/download/v${VERSION}/${archiveName}`;
+	const archiveName = `forge-${osName}-${archName}${archiveExt}`;
+	const url = `https://github.com/${REPO}/releases/download/v${VERSION}/${archiveName}`;
 
-  const binDir = path.join(__dirname, 'bin');
-  if (!fs.existsSync(binDir)) fs.mkdirSync(binDir, { recursive: true });
+	const binDir = path.join(__dirname, 'bin');
+	if (!fs.existsSync(binDir)) fs.mkdirSync(binDir, { recursive: true });
 
-  const binaryPath = path.join(binDir, `forge${ext}`);
-  if (fs.existsSync(binaryPath)) return; // already downloaded
+	const binaryPath = path.join(binDir, `forgememo${ext}`);
+	if (fs.existsSync(binaryPath)) return; // already downloaded
 
-  const archivePath = path.join(binDir, archiveName);
+	const archivePath = path.join(binDir, archiveName);
 
-  process.stdout.write(`  Downloading forge v${VERSION} (${osName}/${archName})... `);
+	process.stdout.write(`  Downloading forgememo v${VERSION} (${osName}/${archName})... `);
 
   try {
     await download(url, archivePath);

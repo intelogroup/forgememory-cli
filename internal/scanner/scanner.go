@@ -16,6 +16,7 @@ import (
 
 // Run scans ~/Developer for git repos, collects recent commits, and inserts
 // them as events for the normal distillation pipeline to process.
+// It also runs a second pass to scan AI tool memories (Gemini, Codex).
 // If dryRun is true, it prints repos found without writing anything.
 func Run(database *db.DB, d *distill.Distiller, dryRun bool) error {
 	home, _ := os.UserHomeDir()
@@ -68,15 +69,21 @@ func Run(database *db.DB, d *distill.Distiller, dryRun bool) error {
 
 	if inserted == 0 {
 		fmt.Println("No new commits found in the last 24 hours.")
-		return nil
+	} else {
+		fmt.Printf("Scanned %d repos, inserted %d event(s). Running distillation...\n", len(repos), inserted)
+		count, err := d.DistillBatch(inserted + 5)
+		if err != nil {
+			return fmt.Errorf("distill: %w", err)
+		}
+		fmt.Printf("Distilled %d principle(s) from scanner events.\n", count)
 	}
 
-	fmt.Printf("Scanned %d repos, inserted %d event(s). Running distillation...\n", len(repos), inserted)
-	count, err := d.DistillBatch(inserted + 5)
-	if err != nil {
-		return fmt.Errorf("distill: %w", err)
+	// Second pass: scan AI tool memories
+	scanner := &Scanner{DB: database}
+	if err := scanner.scanAIMemories(); err != nil {
+		fmt.Printf("AI memory scan error: %v\n", err)
 	}
-	fmt.Printf("Distilled %d principle(s) from scanner events.\n", count)
+
 	return nil
 }
 

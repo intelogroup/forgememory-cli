@@ -11,6 +11,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/forge/forge/internal/config"
 	"github.com/forge/forge/internal/db"
 	"github.com/google/uuid"
 )
@@ -69,6 +70,24 @@ func LoadConfig() Config {
 		Model:      os.Getenv("FORGE_MODEL"),
 		BaseURL:    os.Getenv("FORGE_BASE_URL"),
 		PaymentURL: os.Getenv("FORGE_PAYMENT_URL"),
+	}
+
+	// If env vars not set, load from config file
+	if cfg.Provider == "" || cfg.APIKey == "" {
+		if fileCfg, err := config.Load(); err == nil {
+			if cfg.Provider == "" && fileCfg.Provider != "" {
+				cfg.Provider = Provider(fileCfg.Provider)
+			}
+			if cfg.APIKey == "" && fileCfg.APIKey != "" {
+				cfg.APIKey = fileCfg.APIKey
+			}
+			if cfg.Model == "" && fileCfg.Model != "" {
+				cfg.Model = fileCfg.Model
+			}
+			if cfg.BaseURL == "" && fileCfg.BaseURL != "" {
+				cfg.BaseURL = fileCfg.BaseURL
+			}
+		}
 	}
 
 	if cfg.PaymentURL == "" {

@@ -17,7 +17,7 @@
     "agent"
   ],
   "bin": {
-    "forge": "./forge.js"
+    "forgememo": "./forge.js"
   },
   "scripts": {
     "postinstall": "node postinstall.js"
