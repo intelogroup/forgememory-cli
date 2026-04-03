@@ -47,7 +47,12 @@ func (d *DB) Conn() *sql.DB {
 }
 
 func defaultPath() string {
-	home, _ := os.UserHomeDir()
+	// Check HOME env var first so tests can override via t.Setenv("HOME", ...).
+	// On Windows os.UserHomeDir() reads USERPROFILE and ignores HOME.
+	home := os.Getenv("HOME")
+	if home == "" {
+		home, _ = os.UserHomeDir()
+	}
 	return filepath.Join(home, ".forge", "forge.db")
 }
 

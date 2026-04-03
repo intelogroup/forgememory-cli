@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"sync"
 	"syscall"
@@ -19,13 +20,16 @@ import (
 // forgeBin is the path to the compiled test binary, set by TestMain.
 var forgeBin string
 
-// shortHome creates a short temp dir under /tmp to avoid Unix socket path
-// length limits (104 bytes on macOS). t.TempDir() produces paths like
-// /var/folders/m1/49y7.../T/TestFoo.../001 which can exceed 103 chars
-// once /.forge/forge.sock is appended.
+// shortHome creates a short temp dir to avoid Unix socket path length limits
+// (104 bytes on macOS). On Unix we use /tmp; on Windows os.TempDir() is fine
+// because IPC uses TCP (no socket path length constraint).
 func shortHome(t *testing.T) string {
 	t.Helper()
-	dir, err := os.MkdirTemp("/tmp", "ft")
+	base := "/tmp"
+	if runtime.GOOS == "windows" {
+		base = os.TempDir()
+	}
+	dir, err := os.MkdirTemp(base, "ft")
 	if err != nil {
 		t.Fatalf("shortHome: %v", err)
 	}

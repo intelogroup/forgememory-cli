@@ -156,8 +156,19 @@ func distillLoop(d *distill.Distiller) {
 	}
 }
 
-func writeAddr(addr string) {
+// forgeHome returns the home directory for forge data files.
+// Checks the HOME env var first so that tests can override it via t.Setenv —
+// needed on Windows where os.UserHomeDir() ignores HOME and reads USERPROFILE.
+func forgeHome() string {
+	if h := os.Getenv("HOME"); h != "" {
+		return h
+	}
 	home, _ := os.UserHomeDir()
+	return home
+}
+
+func writeAddr(addr string) {
+	home := forgeHome()
 	path := home + "/.forge/forge.addr"
 	_ = os.MkdirAll(home+"/.forge", 0o700)
 	_ = os.WriteFile(path, []byte(addr), 0o600)
@@ -165,13 +176,11 @@ func writeAddr(addr string) {
 }
 
 func cleanAddr() {
-	home, _ := os.UserHomeDir()
-	_ = os.Remove(home + "/.forge/forge.addr")
+	_ = os.Remove(forgeHome() + "/.forge/forge.addr")
 }
 
 func readAddr() string {
-	home, _ := os.UserHomeDir()
-	data, err := os.ReadFile(home + "/.forge/forge.addr")
+	data, err := os.ReadFile(forgeHome() + "/.forge/forge.addr")
 	if err != nil {
 		return ""
 	}
@@ -179,19 +188,17 @@ func readAddr() string {
 }
 
 func writePID(pid int) {
-	home, _ := os.UserHomeDir()
+	home := forgeHome()
 	_ = os.MkdirAll(home+"/.forge", 0o700)
 	_ = os.WriteFile(home+"/.forge/forge.pid", []byte(fmt.Sprintf("%d", pid)), 0o600)
 }
 
 func cleanPID() {
-	home, _ := os.UserHomeDir()
-	_ = os.Remove(home + "/.forge/forge.pid")
+	_ = os.Remove(forgeHome() + "/.forge/forge.pid")
 }
 
 func readPID() int {
-	home, _ := os.UserHomeDir()
-	data, err := os.ReadFile(home + "/.forge/forge.pid")
+	data, err := os.ReadFile(forgeHome() + "/.forge/forge.pid")
 	if err != nil {
 		return 0
 	}
