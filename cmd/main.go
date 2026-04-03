@@ -14,6 +14,12 @@ func main() {
 		os.Exit(0)
 	}
 
+	// Handle flags before command dispatch
+	if os.Args[1] == "--version" || os.Args[1] == "-v" {
+		fmt.Printf("forge %s\n", version)
+		os.Exit(0)
+	}
+
 	switch os.Args[1] {
 	case "hook":
 		runHook(os.Args[2:])
