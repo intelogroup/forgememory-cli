@@ -1,6 +1,7 @@
 package agent
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -33,7 +34,9 @@ func DetectAgents(home string) []string {
 }
 
 // SetupAgent configures an agent to work with Forge.
-func SetupAgent(agent string, home string) error {
+// SetupAgent configures an agent to work with Forge and returns the path of
+// the installed skill file (empty string for agents that don't write one).
+func SetupAgent(agent string, home string) (string, error) {
 	switch agent {
 	case "claude":
 		return setupClaude(home)
@@ -42,23 +45,69 @@ func SetupAgent(agent string, home string) error {
 	case "codex":
 		return setupCodex(home)
 	default:
-		return fmt.Errorf("unknown agent: %s", agent)
+		return "", fmt.Errorf("unknown agent: %s", agent)
 	}
 }
 
 // --- Claude Code Integration ---
 
-func setupClaude(home string) error {
+// upsertHookArray returns a new hook array where the Forge entry for
+// forgeEventType is inserted (if absent) or replaced (if present), while all
+// other entries are left untouched. Duplicate Forge entries are collapsed.
+func upsertHookArray(existing []any, newEntry map[string]any, forgeEventType string) []any {
+	var result []any
+	inserted := false
+	for _, item := range existing {
+		if isForgeHookItem(item, forgeEventType) {
+			if !inserted {
+				result = append(result, newEntry)
+				inserted = true
+			}
+			// drop duplicate Forge entries
+		} else {
+			result = append(result, item)
+		}
+	}
+	if !inserted {
+		result = append(result, newEntry)
+	}
+	return result
+}
+
+// isForgeHookItem reports whether item is a hook array entry that Forge owns
+// for the given event type, identified by FORGE_EVENT_TYPE in the hook's env.
+func isForgeHookItem(item any, forgeEventType string) bool {
+	m, ok := item.(map[string]any)
+	if !ok {
+		return false
+	}
+	hooks, _ := m["hooks"].([]any)
+	for _, h := range hooks {
+		hm, ok := h.(map[string]any)
+		if !ok {
+			continue
+		}
+		env, _ := hm["env"].(map[string]any)
+		if v, _ := env["FORGE_EVENT_TYPE"].(string); v == forgeEventType {
+			return true
+		}
+	}
+	return false
+}
+
+func setupClaude(home string) (string, error) {
 	settingsPath := filepath.Join(home, ".claude", "settings.json")
 	forgePath := ForgePath()
 
-	// Read existing settings
+	// Read existing settings, preserving the raw bytes for the idempotency check.
 	settings := make(map[string]any)
+	var existingBytes []byte
 	if data, err := os.ReadFile(settingsPath); err == nil {
+		existingBytes = data
 		_ = json.Unmarshal(data, &settings)
 	}
 
-	// Register MCP server
+	// Register MCP server — keyed by "forge", other servers untouched.
 	mcpServers, _ := settings["mcpServers"].(map[string]any)
 	if mcpServers == nil {
 		mcpServers = make(map[string]any)
@@ -70,82 +119,80 @@ func setupClaude(home string) error {
 	}
 	settings["mcpServers"] = mcpServers
 
-	// Register hooks
+	// Register hooks — upsert so other tools' hook entries are preserved.
 	hooks, _ := settings["hooks"].(map[string]any)
 	if hooks == nil {
 		hooks = make(map[string]any)
 	}
 
-	// PostToolUse hook — capture every tool call
-	hooks["PostToolUse"] = []any{
-		map[string]any{
-			"matcher": "*",
-			"hooks": []any{
-				map[string]any{
-					"type":    "command",
-					"command": fmt.Sprintf(`"%s" hook`, forgePath),
-					"async":   true,
-					"env": map[string]string{
-						"FORGE_SOURCE_TOOL": "claude",
-						"FORGE_EVENT_TYPE":  "PostToolUse",
-					},
+	postToolUseEntry := map[string]any{
+		"matcher": "*",
+		"hooks": []any{
+			map[string]any{
+				"type":    "command",
+				"command": fmt.Sprintf(`"%s" hook`, forgePath),
+				"async":   true,
+				"env": map[string]string{
+					"FORGE_SOURCE_TOOL": "claude",
+					"FORGE_EVENT_TYPE":  "PostToolUse",
+				},
+			},
+		},
+	}
+	stopEntry := map[string]any{
+		"hooks": []any{
+			map[string]any{
+				"type":    "command",
+				"command": fmt.Sprintf(`"%s" hook`, forgePath),
+				"async":   true,
+				"env": map[string]string{
+					"FORGE_SOURCE_TOOL": "claude",
+					"FORGE_EVENT_TYPE":  "Stop",
+				},
+			},
+		},
+	}
+	sessionEndEntry := map[string]any{
+		"hooks": []any{
+			map[string]any{
+				"type":    "command",
+				"command": fmt.Sprintf(`"%s" hook`, forgePath),
+				"async":   true,
+				"env": map[string]string{
+					"FORGE_SOURCE_TOOL": "claude",
+					"FORGE_EVENT_TYPE":  "SessionEnd",
 				},
 			},
 		},
 	}
 
-	// Stop hook — trigger distillation at end of session
-	hooks["Stop"] = []any{
-		map[string]any{
-			"hooks": []any{
-				map[string]any{
-					"type":    "command",
-					"command": fmt.Sprintf(`"%s" hook`, forgePath),
-					"async":   true,
-					"env": map[string]string{
-						"FORGE_SOURCE_TOOL": "claude",
-						"FORGE_EVENT_TYPE":  "Stop",
-					},
-				},
-			},
-		},
-	}
-
-	// SessionEnd hook — clean up
-	hooks["SessionEnd"] = []any{
-		map[string]any{
-			"hooks": []any{
-				map[string]any{
-					"type":    "command",
-					"command": fmt.Sprintf(`"%s" hook`, forgePath),
-					"async":   true,
-					"env": map[string]string{
-						"FORGE_SOURCE_TOOL": "claude",
-						"FORGE_EVENT_TYPE":  "SessionEnd",
-					},
-				},
-			},
-		},
-	}
+	existing, _ := hooks["PostToolUse"].([]any)
+	hooks["PostToolUse"] = upsertHookArray(existing, postToolUseEntry, "PostToolUse")
+	existing, _ = hooks["Stop"].([]any)
+	hooks["Stop"] = upsertHookArray(existing, stopEntry, "Stop")
+	existing, _ = hooks["SessionEnd"].([]any)
+	hooks["SessionEnd"] = upsertHookArray(existing, sessionEndEntry, "SessionEnd")
 
 	settings["hooks"] = hooks
 
-	// Write settings
-	if err := os.MkdirAll(filepath.Dir(settingsPath), 0o700); err != nil {
-		return fmt.Errorf("create settings dir: %w", err)
-	}
+	// Marshal and write only if the content has changed.
 	data, err := json.MarshalIndent(settings, "", "  ")
 	if err != nil {
-		return fmt.Errorf("marshal settings: %w", err)
+		return "", fmt.Errorf("marshal settings: %w", err)
 	}
-	if err := os.WriteFile(settingsPath, data, 0o600); err != nil {
-		return fmt.Errorf("write settings: %w", err)
+	if !bytes.Equal(existingBytes, data) {
+		if err := os.MkdirAll(filepath.Dir(settingsPath), 0o700); err != nil {
+			return "", fmt.Errorf("create settings dir: %w", err)
+		}
+		if err := os.WriteFile(settingsPath, data, 0o600); err != nil {
+			return "", fmt.Errorf("write settings: %w", err)
+		}
 	}
 
 	// Install skill file
 	skillDir := filepath.Join(home, ".claude", "skills")
 	if err := os.MkdirAll(skillDir, 0o700); err != nil {
-		return fmt.Errorf("create skills dir: %w", err)
+		return "", fmt.Errorf("create skills dir: %w", err)
 	}
 
 	skillContent := "# Forge — Silent Memory Forger\n\n" +
@@ -177,25 +224,27 @@ func setupClaude(home string) error {
 		"```\nforge status\nforge search query\nforge distill\n```\n"
 	skillPath := filepath.Join(skillDir, "forge.md")
 	if err := os.WriteFile(skillPath, []byte(skillContent), 0o600); err != nil {
-		return fmt.Errorf("write skill: %w", err)
+		return "", fmt.Errorf("write skill: %w", err)
 	}
 
-	return nil
+	return skillPath, nil
 }
 
 // --- Gemini Integration ---
 
-func setupGemini(home string) error {
+func setupGemini(home string) (string, error) {
 	settingsPath := filepath.Join(home, ".gemini", "settings.json")
 	forgePath := ForgePath()
 
-	// Read existing settings
+	// Read existing settings, preserving the raw bytes for the idempotency check.
 	settings := make(map[string]any)
+	var existingBytes []byte
 	if data, err := os.ReadFile(settingsPath); err == nil {
+		existingBytes = data
 		_ = json.Unmarshal(data, &settings)
 	}
 
-	// Register MCP server
+	// Register MCP server — keyed by "forge", other servers untouched.
 	mcpServers, _ := settings["mcpServers"].(map[string]any)
 	if mcpServers == nil {
 		mcpServers = make(map[string]any)
@@ -207,22 +256,24 @@ func setupGemini(home string) error {
 	}
 	settings["mcpServers"] = mcpServers
 
-	// Write settings
-	if err := os.MkdirAll(filepath.Dir(settingsPath), 0o700); err != nil {
-		return fmt.Errorf("create settings dir: %w", err)
-	}
+	// Marshal and write only if the content has changed.
 	data, err := json.MarshalIndent(settings, "", "  ")
 	if err != nil {
-		return fmt.Errorf("marshal settings: %w", err)
+		return "", fmt.Errorf("marshal settings: %w", err)
 	}
-	if err := os.WriteFile(settingsPath, data, 0o600); err != nil {
-		return fmt.Errorf("write settings: %w", err)
+	if !bytes.Equal(existingBytes, data) {
+		if err := os.MkdirAll(filepath.Dir(settingsPath), 0o700); err != nil {
+			return "", fmt.Errorf("create settings dir: %w", err)
+		}
+		if err := os.WriteFile(settingsPath, data, 0o600); err != nil {
+			return "", fmt.Errorf("write settings: %w", err)
+		}
 	}
 
 	// Install skill file
 	skillDir := filepath.Join(home, ".gemini")
 	if err := os.MkdirAll(skillDir, 0o700); err != nil {
-		return fmt.Errorf("create skills dir: %w", err)
+		return "", fmt.Errorf("create skills dir: %w", err)
 	}
 
 	skillContent := "# Forge — Silent Memory Forger\n\n" +
@@ -235,15 +286,15 @@ func setupGemini(home string) error {
 		"```\nforge status\nforge search query\nforge distill\n```\n"
 	skillPath := filepath.Join(skillDir, "forge-skill.md")
 	if err := os.WriteFile(skillPath, []byte(skillContent), 0o600); err != nil {
-		return fmt.Errorf("write skill: %w", err)
+		return "", fmt.Errorf("write skill: %w", err)
 	}
 
-	return nil
+	return skillPath, nil
 }
 
 // --- Codex Integration ---
 
-func setupCodex(home string) error {
+func setupCodex(home string) (string, error) {
 	forgePath := ForgePath()
 
 	// Honour CODEX_HOME env var, fall back to ~/.codex
@@ -255,7 +306,14 @@ func setupCodex(home string) error {
 	// Install skill file — create the skills directory first
 	skillDir := filepath.Join(codexHome, "skills")
 	if err := os.MkdirAll(skillDir, 0o700); err != nil {
-		return fmt.Errorf("create skills dir %s: %w", skillDir, err)
+		return "", fmt.Errorf("create skills dir %s: %w", skillDir, err)
+	}
+
+	// Probe writability before doing any real work — catches Windows ACL issues
+	// early with a targeted message instead of a generic "Access is denied" on
+	// the final write.
+	if err := probeWritable(skillDir); err != nil {
+		return "", err
 	}
 
 	skillContent := map[string]any{
@@ -289,17 +347,42 @@ func setupCodex(home string) error {
 
 	data, err := json.MarshalIndent(skillContent, "", "  ")
 	if err != nil {
-		return fmt.Errorf("marshal skill: %w", err)
+		return "", fmt.Errorf("marshal skill: %w", err)
 	}
 
 	skillPath := filepath.Join(skillDir, "forge.json")
 	if err := os.WriteFile(skillPath, data, 0o600); err != nil {
-		// Provide a manual fallback — common on Windows when .codex has restricted ACLs.
 		fallback := manualCodexFallback(skillPath, data)
-		return fmt.Errorf("write skill: %w\n  Manual fallback:\n%s", err, fallback)
+		if os.IsPermission(err) {
+			return "", fmt.Errorf("write skill: permission denied writing %s\n  Manual fallback:\n%s", skillPath, fallback)
+		}
+		return "", fmt.Errorf("write skill: %w\n  Manual fallback:\n%s", err, fallback)
 	}
 
-	return nil
+	// Post-write verification: confirm the file landed at the expected path.
+	if _, err := os.Stat(skillPath); err != nil {
+		return "", fmt.Errorf("skill written but not found at %s: %w", skillPath, err)
+	}
+
+	return skillPath, nil
+}
+
+// probeWritable creates and removes a temp file inside dir to verify the
+// current process can create files there. Returns a targeted error on failure
+// so callers get "permission denied on <dir>" rather than a generic write error
+// on the actual payload file after doing all the marshaling work.
+func probeWritable(dir string) error {
+	probe := filepath.Join(dir, ".forge-probe")
+	err := os.WriteFile(probe, []byte{}, 0o600)
+	os.Remove(probe) // best-effort cleanup regardless of outcome
+	if err == nil {
+		return nil
+	}
+	if os.IsPermission(err) {
+		return fmt.Errorf("skills dir not writable (permission denied): %s\n"+
+			"  Grant your user write access to that directory, or set CODEX_HOME to a directory you own.", dir)
+	}
+	return fmt.Errorf("skills dir not writable: %w", err)
 }
 
 // manualCodexFallback returns shell commands to install the skill file manually.

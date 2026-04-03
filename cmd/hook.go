@@ -2,6 +2,7 @@ package main
 
 import (
 	"encoding/json"
+	"flag"
 	"fmt"
 	"io"
 	"os"
@@ -74,8 +75,31 @@ func isSessionEndEvent(eventType string) bool {
 // It reads the hook payload from stdin, packages it, and sends to the daemon.
 // Fails silently in <1ms if daemon is down.
 func runHook(args []string) {
-	sourceTool := envOr("FORGE_SOURCE_TOOL", "unknown")
-	eventType := envOr("FORGE_EVENT_TYPE", "unknown")
+	// Parse --event flag used by Codex hook invocations (e.g. forge hook --event Stop).
+	// Claude/Gemini hooks pass event type via FORGE_EVENT_TYPE env var instead.
+	fs := flag.NewFlagSet("hook", flag.ContinueOnError)
+	fs.SetOutput(io.Discard)
+	eventFlag := fs.String("event", "", "")
+	_ = fs.Parse(args)
+
+	sourceTool := envOr("FORGE_SOURCE_TOOL", "")
+	eventType := envOr("FORGE_EVENT_TYPE", "")
+
+	// If env vars not set but --event was provided, this is a Codex invocation.
+	if *eventFlag != "" {
+		if eventType == "" {
+			eventType = *eventFlag
+		}
+		if sourceTool == "" {
+			sourceTool = "codex"
+		}
+	}
+	if sourceTool == "" {
+		sourceTool = "unknown"
+	}
+	if eventType == "" {
+		eventType = "unknown"
+	}
 
 	// Read and strip private data from payload
 	payload := stripPrivate(string(readStdin()))

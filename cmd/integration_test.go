@@ -609,3 +609,160 @@ func TestBinary_ConcurrentStart_Gotcha(t *testing.T) {
 
 	t.Log("KNOWN GOTCHA: concurrent forge start calls may spawn multiple daemon processes — no start lock exists")
 }
+
+// ---- stale state: status and doctor report failure consistently ----
+
+// TestBinary_Status_StaleAddr verifies that `forge status` reports "stale" when
+// an addr file exists but nothing is listening on the recorded address.
+func TestBinary_Status_StaleAddr(t *testing.T) {
+	home := shortHome(t)
+	forgeDir := filepath.Join(home, ".forge")
+	if err := os.MkdirAll(forgeDir, 0o700); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(forgeDir, "forge.addr"), []byte("127.0.0.1:1"), 0o600); err != nil {
+		t.Fatalf("WriteFile stale addr: %v", err)
+	}
+
+	stdout, _, _ := runForge(t, home, "status")
+	if !strings.Contains(stdout, "stale") {
+		t.Errorf("forge status with stale addr should contain 'stale', got: %q", stdout)
+	}
+}
+
+// TestBinary_Doctor_StaleAddr verifies that `forge doctor` reports [FAIL] Daemon
+// when an addr file exists but the daemon is not responding.
+func TestBinary_Doctor_StaleAddr(t *testing.T) {
+	home := shortHome(t)
+	forgeDir := filepath.Join(home, ".forge")
+	if err := os.MkdirAll(forgeDir, 0o700); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(forgeDir, "forge.addr"), []byte("127.0.0.1:1"), 0o600); err != nil {
+		t.Fatalf("WriteFile stale addr: %v", err)
+	}
+
+	stdout, _, _ := runForge(t, home, "doctor")
+	if !strings.Contains(stdout, "[FAIL] Daemon") {
+		t.Errorf("forge doctor with stale addr should contain '[FAIL] Daemon', got: %q", stdout)
+	}
+}
+
+// TestBinary_Start_ClearsStaleState verifies that `forge start` clears both a
+// stale addr file and a stale pid file before starting a fresh daemon.
+func TestBinary_Start_ClearsStaleState(t *testing.T) {
+	home := shortHome(t)
+	forgeDir := filepath.Join(home, ".forge")
+	if err := os.MkdirAll(forgeDir, 0o700); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+
+	// Simulate a crashed daemon: stale addr at a port nothing is listening on,
+	// plus an orphaned pid file.
+	staleAddr := []byte("127.0.0.1:1")
+	if err := os.WriteFile(filepath.Join(forgeDir, "forge.addr"), staleAddr, 0o600); err != nil {
+		t.Fatalf("WriteFile stale addr: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(forgeDir, "forge.pid"), []byte("99999"), 0o600); err != nil {
+		t.Fatalf("WriteFile stale pid: %v", err)
+	}
+
+	stdout, _, code := runForge(t, home, "start")
+	if code != 0 {
+		t.Fatalf("forge start over stale state: expected exit 0, got %d (stdout: %q)", code, stdout)
+	}
+	t.Cleanup(func() { runForge(t, home, "stop") })
+
+	// After start, the addr must have changed (stale addr was cleared, new one written).
+	newAddr, _ := os.ReadFile(filepath.Join(forgeDir, "forge.addr"))
+	if string(newAddr) == string(staleAddr) {
+		t.Error("stale addr was not replaced: forge start should have cleared it and written a fresh one")
+	}
+
+	// Status must show daemon running, not stale.
+	statusOut, _, _ := runForge(t, home, "status")
+	if !strings.Contains(statusOut, "running") {
+		t.Errorf("forge status after start-over-stale should show running, got: %q", statusOut)
+	}
+}
+
+// TestBinary_Doctor_ShowsLogPath verifies that `forge doctor` prints the daemon
+// log file path once `forge start` has created it.
+func TestBinary_Doctor_ShowsLogPath(t *testing.T) {
+	home := shortHome(t)
+	addrFile := filepath.Join(home, ".forge", "forge.addr")
+
+	runForge(t, home, "start")
+	waitForFile(t, addrFile, 3*time.Second)
+	t.Cleanup(func() { runForge(t, home, "stop") })
+
+	stdout, _, _ := runForge(t, home, "doctor")
+	logPath := filepath.Join(home, ".forge", "daemon.log")
+	if !strings.Contains(stdout, logPath) {
+		t.Errorf("forge doctor should show daemon log path %s, got: %q", logPath, stdout)
+	}
+}
+
+// TestBinary_Upgrade_PreservesEvents verifies that running `forge init` a second
+// time does not wipe the existing database or corrupt existing event records.
+func TestBinary_Upgrade_PreservesEvents(t *testing.T) {
+	home := shortHome(t)
+
+	// First init + start daemon to accept hook events.
+	runForge(t, home, "init")
+	addrFile := filepath.Join(home, ".forge", "forge.addr")
+	runForge(t, home, "start")
+	waitForFile(t, addrFile, 3*time.Second)
+
+	// Send an event through the hook.
+	cmd := exec.Command(forgeBin, "hook")
+	cmd.Env = append(baseEnv(),
+		"HOME="+home,
+		"FORGE_SOURCE_TOOL=claude",
+		"FORGE_EVENT_TYPE=PostToolUse",
+		"FORGE_SESSION_ID=upgrade-test-session",
+	)
+	cmd.Stdin = strings.NewReader(`{"session_id":"upgrade-test-session","tool_name":"Bash"}`)
+	cmd.Run()
+
+	// Wait for event to land in DB.
+	dbPath := filepath.Join(home, ".forge", "forge.db")
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		if database, err := db.Open(dbPath); err == nil {
+			total, _, _ := database.EventCount()
+			database.Close()
+			if total > 0 {
+				break
+			}
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+
+	runForge(t, home, "stop")
+
+	// Record event count before second init.
+	database, err := db.Open(dbPath)
+	if err != nil {
+		t.Fatalf("db.Open before second init: %v", err)
+	}
+	countBefore, _, _ := database.EventCount()
+	database.Close()
+
+	// Second init — must not wipe or corrupt the DB.
+	_, _, code := runForge(t, home, "init")
+	if code != 0 {
+		t.Fatalf("forge init (second): expected exit 0, got %d", code)
+	}
+
+	database, err = db.Open(dbPath)
+	if err != nil {
+		t.Fatalf("db.Open after second init: %v", err)
+	}
+	countAfter, _, _ := database.EventCount()
+	database.Close()
+
+	if countAfter < countBefore {
+		t.Errorf("second forge init reduced event count from %d to %d — DB was corrupted or wiped", countBefore, countAfter)
+	}
+}

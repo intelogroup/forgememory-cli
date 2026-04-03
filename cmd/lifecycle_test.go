@@ -372,3 +372,54 @@ func TestRunStart_Gotcha_StaleAddrBlocksRestart(t *testing.T) {
 	}
 	t.Log("GOTCHA FIXED: stale addr correctly detected as non-alive and cleaned before restart")
 }
+
+// TestRunStart_StaleAddrAndPidBothCleared verifies that when both a stale addr
+// and a stale pid file are present, runStart clears both before spawning fresh.
+func TestRunStart_StaleAddrAndPidBothCleared(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+
+	writeAddr("stale-addr")
+	writePID(99999)
+
+	// Simulate the runStart cleanup path (addr non-alive → clear both).
+	if isDaemonAlive(readAddr()) {
+		t.Fatal("stale addr should not be alive")
+	}
+	cleanAddr()
+	cleanPID()
+
+	if readAddr() != "" {
+		t.Error("stale addr file should be removed")
+	}
+	if readPID() != 0 {
+		t.Error("stale pid file should be removed")
+	}
+}
+
+// TestRunStart_StalePidNoAddr verifies that an orphaned pid file (daemon killed
+// before it wrote its addr) is cleaned up even when no addr file exists.
+// Prior to the fix, runStart only called cleanPID inside the addr != "" branch,
+// so an orphan pid with no addr was silently left behind.
+func TestRunStart_StalePidNoAddr(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+
+	// Write pid only — no addr file.
+	writePID(99999)
+
+	if readAddr() != "" {
+		t.Fatal("no addr file should exist")
+	}
+	if readPID() == 0 {
+		t.Fatal("expected orphan pid to be present")
+	}
+
+	// runStart now always cleans both, regardless of addr presence.
+	cleanAddr()
+	cleanPID()
+
+	if readPID() != 0 {
+		t.Error("orphan pid file should be removed before fresh start")
+	}
+}

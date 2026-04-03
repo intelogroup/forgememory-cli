@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -35,10 +36,13 @@ func runInit(args []string) {
 	} else {
 		fmt.Printf("  Detected agents: %v\n", agents)
 		for _, a := range agents {
-			if err := agent.SetupAgent(a, home); err != nil {
+			skillPath, err := agent.SetupAgent(a, home)
+			if err != nil {
 				fmt.Fprintf(os.Stderr, "  Error setting up %s: %v\n", a, err)
+			} else if skillPath != "" {
+				fmt.Printf("  Configured %s (skill: %s)\n", a, skillPath)
 			} else {
-				fmt.Printf("  Configured %s (MCP + hooks)\n", a)
+				fmt.Printf("  Configured %s\n", a)
 			}
 		}
 	}
@@ -50,21 +54,27 @@ func runStart(args []string) {
 	fmt.Println("Starting Forge daemon...")
 
 	addr := readAddr()
-	if addr != "" {
-		if isDaemonAlive(addr) {
-			fmt.Println("  Daemon already running.")
-			return
-		}
-		// Stale addr file — clean up before starting fresh
-		cleanAddr()
-		cleanPID()
+	if addr != "" && isDaemonAlive(addr) {
+		fmt.Println("  Daemon already running.")
+		return
 	}
+	// Clear any stale addr/pid before starting fresh — handles both the
+	// addr-but-not-alive case and the orphan-pid-with-no-addr case.
+	cleanAddr()
+	cleanPID()
 
-	// Start daemon as background process
+	// Start daemon as background process, redirecting its output to a log file
+	// so crashes are diagnosable without attaching a debugger.
+	forgeDir := filepath.Join(forgeHome(), ".forge")
+	_ = os.MkdirAll(forgeDir, 0o700) // ensure dir exists before opening log
+	logPath := filepath.Join(forgeDir, "daemon.log")
 	cmd := exec.Command(os.Args[0], "daemon")
-	cmd.Stdout = nil
-	cmd.Stderr = nil
 	cmd.Stdin = nil
+	if lf, err := os.OpenFile(logPath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o600); err == nil {
+		cmd.Stdout = lf
+		cmd.Stderr = lf
+		defer lf.Close()
+	}
 
 	if err := startBackground(cmd); err != nil {
 		fmt.Fprintf(os.Stderr, "Error starting daemon: %v\n", err)
@@ -82,6 +92,7 @@ func runStart(args []string) {
 		}
 	}
 	fmt.Fprintln(os.Stderr, "  Error: daemon process exited immediately — not responding.")
+	fmt.Fprintf(os.Stderr, "  Check logs: %s\n", logPath)
 	fmt.Fprintln(os.Stderr, "  Run 'forge doctor' to diagnose.")
 	os.Exit(1)
 }
@@ -350,6 +361,10 @@ func runDoctor(args []string) {
 		fmt.Printf("[OK] Daemon: running (%s)\n", addr)
 	} else {
 		fmt.Printf("[FAIL] Daemon: stale addr file (%s) — daemon not responding\n", addr)
+	}
+	logPath := filepath.Join(forgeHome(), ".forge", "daemon.log")
+	if info, err := os.Stat(logPath); err == nil {
+		fmt.Printf("  [OK] Daemon log: %s (%d bytes)\n", logPath, info.Size())
 	}
 
 	// Check agents
