@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"flag"
 	"fmt"
 	"log"
@@ -115,7 +116,7 @@ func runStart(args []string) {
 }
 
 func newDaemonCommand(logPath string, skipParentMonitor bool) (*exec.Cmd, func()) {
-	cmd := exec.Command(os.Args[0], "daemon")
+	cmd := exec.Command(agent.ForgePath(), "daemon")
 	cmd.Stdin = nil
 	cmd.Env = filteredEnv("FORGE_NO_EXIT_ON_PARENT_EXIT")
 	if skipParentMonitor {
@@ -194,9 +195,15 @@ func runDistill(args []string) {
 	}
 
 	fmt.Printf("Distilling %d events...\n", len(events))
-	d := distill.New(database, distill.LoadConfig())
+	cfg := distill.LoadConfig()
+	d := distill.New(database, cfg)
 	count, err := d.DistillBatch(50)
 	if err != nil {
+		if shouldSkipDistillForMissingProvider(cfg, err) {
+			fmt.Printf("Skipping distillation: %s\n", distill.UserMessage(err))
+			fmt.Println("Events remain queued until you configure a provider or start Ollama.")
+			return
+		}
 		fmt.Fprintf(os.Stderr, "Error: %s\n", distill.UserMessage(err))
 		os.Exit(1)
 	}
@@ -205,6 +212,29 @@ func runDistill(args []string) {
 		return
 	}
 	fmt.Printf("Distilled %d principle(s).\n", count)
+}
+
+func shouldSkipDistillForMissingProvider(cfg distill.Config, err error) bool {
+	if hasExplicitInferenceProviderConfig() {
+		return false
+	}
+	if cfg.Provider != distill.ProviderOllama {
+		return false
+	}
+	return errors.Is(err, distill.ErrNoProvider) ||
+		errors.Is(err, distill.ErrProviderUnreachable) ||
+		strings.Contains(strings.ToLower(err.Error()), "connection refused")
+}
+
+func hasExplicitInferenceProviderConfig() bool {
+	if os.Getenv("FORGE_PROVIDER") != "" || os.Getenv("FORGE_API_KEY") != "" {
+		return true
+	}
+	cfg, err := config.Load()
+	if err != nil {
+		return false
+	}
+	return cfg.Provider != "" || cfg.APIKey != ""
 }
 
 func runSearch(args []string) {
@@ -461,7 +491,7 @@ func runDoctor(args []string) {
 	fmt.Println("Forge Doctor")
 	fmt.Println()
 
-	home, _ := os.UserHomeDir()
+	home := forgeHome()
 
 	// Repair mode: clean up stale daemon state
 	if repair {
@@ -502,6 +532,14 @@ func runDoctor(args []string) {
 		fmt.Println()
 	}
 
+	// Check forge home writability
+	fmt.Print("  ")
+	if err := probeForgeDirWritable(); err != nil {
+		fmt.Printf("[FAIL] Forge home: cannot write %s: %v\n", forgeDataDir(), err)
+	} else {
+		fmt.Printf("[OK] Forge home: writable (%s)\n", forgeDataDir())
+	}
+
 	// Check database
 	fmt.Print("  ")
 	database, err := db.Open("")
@@ -519,6 +557,7 @@ func runDoctor(args []string) {
 	// Check daemon
 	fmt.Print("  ")
 	addr := readAddr()
+	pid := readPID()
 	if addr == "" {
 		fmt.Println("[FAIL] Daemon: not running")
 	} else if isDaemonAlive(addr) {
@@ -526,9 +565,19 @@ func runDoctor(args []string) {
 	} else {
 		fmt.Printf("[FAIL] Daemon: stale addr file (%s) — daemon not responding\n", addr)
 	}
+	if lockPID, identity, foreign := lockOwnerIdentity(daemonLockPath()); foreign {
+		fmt.Printf("  [FAIL] Daemon lock: lock owned by non-Forge process (pid %d: %s)\n", lockPID, identity)
+	}
+	if isStaleSocket() && (pid <= 0 || !isProcessAlive(pid)) {
+		fmt.Printf("  [FAIL] Daemon socket: socket exists but no daemon process (%s)\n", filepath.Join(forgeDataDir(), "forge.sock"))
+	}
 	logPath := filepath.Join(forgeHome(), ".forge", "daemon.log")
 	if info, err := os.Stat(logPath); err == nil {
 		fmt.Printf("  [OK] Daemon log: %s (%d bytes)\n", logPath, info.Size())
+	}
+
+	for _, ref := range findTransientIntegrationRefs(home) {
+		fmt.Printf("  [FAIL] Integration: transient Forge path in %s (%s)\n", ref.path, ref.value)
 	}
 
 	// Check agents
@@ -545,9 +594,13 @@ func runDoctor(args []string) {
 // runDoctorInline prints a compact diagnostic output for failed daemon starts.
 // This is shown inline when the daemon fails to start, so users see what's wrong immediately.
 func runDoctorInline() {
-	home, _ := os.UserHomeDir()
+	home := forgeHome()
 
 	fmt.Println("  --- Diagnostics ---")
+
+	if err := probeForgeDirWritable(); err != nil {
+		fmt.Printf("  Forge home: [FAIL] cannot write %s: %v\n", forgeDataDir(), err)
+	}
 
 	// Check database
 	database, err := db.Open("")
@@ -573,11 +626,17 @@ func runDoctorInline() {
 	if isStaleLock() {
 		fmt.Println("  Daemon: stale lock file")
 	}
+	if lockPID, identity, foreign := lockOwnerIdentity(daemonLockPath()); foreign {
+		fmt.Printf("  Daemon lock: owned by non-Forge process (pid %d: %s)\n", lockPID, identity)
+	}
 	if isStaleStartupLock() {
 		fmt.Println("  Daemon: stale startup lock file")
 	}
 	if isStaleSocket() {
 		fmt.Println("  Daemon: stale socket file")
+	}
+	if isStaleSocket() && (pid <= 0 || !isProcessAlive(pid)) {
+		fmt.Println("  Daemon: socket exists but no daemon process")
 	}
 
 	// Check config
@@ -594,6 +653,10 @@ func runDoctorInline() {
 		fmt.Println("  Agents: none detected")
 	} else {
 		fmt.Printf("  Agents: %v\n", agents)
+	}
+
+	for _, ref := range findTransientIntegrationRefs(home) {
+		fmt.Printf("  Integration: transient Forge path in %s (%s)\n", ref.path, ref.value)
 	}
 
 	// Check log
@@ -616,6 +679,107 @@ func runDoctorInline() {
 			}
 		}
 	}
+}
+
+func forgeDataDir() string {
+	return filepath.Join(forgeHome(), ".forge")
+}
+
+func probeForgeDirWritable() error {
+	dir := forgeDataDir()
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		return err
+	}
+	probe := filepath.Join(dir, ".doctor-write-probe")
+	if err := os.WriteFile(probe, []byte("ok"), 0o600); err != nil {
+		return err
+	}
+	return os.Remove(probe)
+}
+
+type transientIntegrationRef struct {
+	path  string
+	value string
+}
+
+func findTransientIntegrationRefs(home string) []transientIntegrationRef {
+	codexHome := os.Getenv("CODEX_HOME")
+	if codexHome == "" {
+		codexHome = filepath.Join(home, ".codex")
+	}
+
+	candidates := []string{
+		filepath.Join(home, ".claude", "settings.json"),
+		filepath.Join(home, ".gemini", "settings.json"),
+		filepath.Join(codexHome, "skills", "forge.json"),
+	}
+
+	var refs []transientIntegrationRef
+	for _, path := range candidates {
+		value, ok := findTransientForgeReference(path)
+		if !ok {
+			continue
+		}
+		refs = append(refs, transientIntegrationRef{
+			path:  path,
+			value: truncate(value, 120),
+		})
+	}
+	return refs
+}
+
+func findTransientForgeReference(path string) (string, bool) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return "", false
+	}
+
+	var decoded any
+	if err := json.Unmarshal(data, &decoded); err == nil {
+		if ref := transientForgeString(decoded); ref != "" {
+			return ref, true
+		}
+	}
+
+	text := string(data)
+	for _, marker := range []string{string(filepath.Separator) + "go-build", string(filepath.Separator) + "forge-bin-"} {
+		if idx := strings.Index(text, marker); idx >= 0 {
+			start := idx
+			for start > 0 && text[start-1] != '"' && text[start-1] != '\n' {
+				start--
+			}
+			end := idx
+			for end < len(text) && text[end] != '"' && text[end] != '\n' {
+				end++
+			}
+			return text[start:end], true
+		}
+	}
+
+	return "", false
+}
+
+func transientForgeString(v any) string {
+	switch x := v.(type) {
+	case string:
+		if strings.Contains(x, string(filepath.Separator)+"go-build") ||
+			strings.Contains(x, string(filepath.Separator)+"forge-bin-") {
+			return x
+		}
+	case map[string]any:
+		for _, value := range x {
+			if ref := transientForgeString(value); ref != "" {
+				return ref
+			}
+		}
+	case []any:
+		for _, value := range x {
+			if ref := transientForgeString(value); ref != "" {
+				return ref
+			}
+		}
+	}
+	return ""
 }
 
 func truncate(s string, max int) string {

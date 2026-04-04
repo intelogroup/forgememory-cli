@@ -14,6 +14,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/forge/forge/internal/agent"
 	"github.com/forge/forge/internal/db"
 )
 
@@ -153,8 +154,8 @@ func TestNewDaemonCommand_SetsDetachedDaemonEnvForStart(t *testing.T) {
 	cmd, closeLog := newDaemonCommand(logPath, true)
 	defer closeLog()
 
-	if got := cmd.Path; got != os.Args[0] {
-		t.Fatalf("cmd.Path = %q, want %q", got, os.Args[0])
+	if got, want := cmd.Path, agent.ForgePath(); got != want {
+		t.Fatalf("cmd.Path = %q, want %q", got, want)
 	}
 	if len(cmd.Args) != 2 || cmd.Args[1] != "daemon" {
 		t.Fatalf("cmd.Args = %v, want [self daemon]", cmd.Args)
@@ -262,6 +263,76 @@ func TestRunDistill_NotEnoughEventsKeepsQueue(t *testing.T) {
 	}
 	if !strings.Contains(out, "Not enough undistilled events") {
 		t.Errorf("expected insufficient-events message, got: %q", out)
+	}
+}
+
+func TestRunDistill_UnconfiguredProviderSkipsAndKeepsQueue(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("FORGE_PROVIDER", "")
+	t.Setenv("FORGE_API_KEY", "")
+	t.Setenv("FORGE_BASE_URL", "http://127.0.0.1:1")
+	seedEvents(t, 3)
+
+	out := captureStdout(func() { runDistill([]string{}) })
+
+	database, err := db.Open("")
+	if err != nil {
+		t.Fatalf("db.Open: %v", err)
+	}
+	defer database.Close()
+	count, err := database.PrincipleCount()
+	if err != nil {
+		t.Fatalf("PrincipleCount: %v", err)
+	}
+	if count != 0 {
+		t.Errorf("runDistill extracted %d principles despite missing provider", count)
+	}
+	_, undistilled, err := database.EventCount()
+	if err != nil {
+		t.Fatalf("EventCount: %v", err)
+	}
+	if undistilled != 3 {
+		t.Fatalf("expected undistilled events to remain queued, got %d", undistilled)
+	}
+	if !strings.Contains(out, "Skipping distillation: Cannot reach inference provider") {
+		t.Errorf("expected skip message for missing provider, got: %q", out)
+	}
+	if !strings.Contains(out, "Events remain queued") {
+		t.Errorf("expected queued-events message, got: %q", out)
+	}
+}
+
+func TestRunDistill_ExplicitProviderUnreachableExits(t *testing.T) {
+	if os.Getenv("FORGE_TEST_SUBPROCESS") == "distill_unreachable" {
+		runDistill([]string{})
+		return
+	}
+
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	seedEvents(t, 3)
+
+	cmd := exec.Command(os.Args[0], "-test.run=TestRunDistill_ExplicitProviderUnreachableExits", "-test.v=false")
+	cmd.Env = append(
+		os.Environ(),
+		"FORGE_TEST_SUBPROCESS=distill_unreachable",
+		"HOME="+home,
+		"FORGE_PROVIDER=ollama",
+		"FORGE_API_KEY=",
+		"FORGE_BASE_URL=http://127.0.0.1:1",
+	)
+	out, err := cmd.CombinedOutput()
+
+	var exitErr *exec.ExitError
+	if !errors.As(err, &exitErr) {
+		t.Fatalf("expected non-zero exit, got err=%v output=%q", err, string(out))
+	}
+	if exitErr.ExitCode() != 1 {
+		t.Fatalf("expected exit 1, got %d output=%q", exitErr.ExitCode(), string(out))
+	}
+	if !strings.Contains(string(out), "Cannot reach inference provider") {
+		t.Fatalf("expected provider error in output, got %q", string(out))
 	}
 }
 

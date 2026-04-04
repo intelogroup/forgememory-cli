@@ -44,7 +44,7 @@ func TestMain(m *testing.M) {
 		os.Exit(m.Run())
 	}
 
-	tmp, err := os.MkdirTemp("", "forge-bin-*")
+	tmp, err := os.MkdirTemp("", "forge-install-*")
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "failed to create temp dir for binary: %v\n", err)
 		os.Exit(1)
@@ -83,8 +83,14 @@ func baseEnv() []string {
 // Returns stdout, stderr, and exit code. Fails the test on unexpected errors.
 func runForge(t *testing.T, home string, args ...string) (stdout, stderr string, exitCode int) {
 	t.Helper()
-	cmd := exec.Command(forgeBin, args...)
+	return runForgePath(t, forgeBin, home, nil, args...)
+}
+
+func runForgePath(t *testing.T, binaryPath, home string, extraEnv []string, args ...string) (stdout, stderr string, exitCode int) {
+	t.Helper()
+	cmd := exec.Command(binaryPath, args...)
 	cmd.Env = append(baseEnv(), "HOME="+home)
+	cmd.Env = append(cmd.Env, extraEnv...)
 	var outBuf, errBuf bytes.Buffer
 	cmd.Stdout = &outBuf
 	cmd.Stderr = &errBuf
@@ -96,6 +102,17 @@ func runForge(t *testing.T, home string, args ...string) (stdout, stderr string,
 		t.Fatalf("forge %v: unexpected error: %v", args, err)
 	}
 	return outBuf.String(), errBuf.String(), exitCode
+}
+
+func copyFile(t *testing.T, src, dst string) {
+	t.Helper()
+	data, err := os.ReadFile(src)
+	if err != nil {
+		t.Fatalf("read %s: %v", src, err)
+	}
+	if err := os.WriteFile(dst, data, 0o755); err != nil {
+		t.Fatalf("write %s: %v", dst, err)
+	}
 }
 
 // startTestDaemon starts `forge daemon` directly and registers a cleanup to kill it.
@@ -258,6 +275,118 @@ func TestBinary_DoubleStart(t *testing.T) {
 	}
 	if !strings.Contains(stdout, "already running") {
 		t.Errorf("second forge start should say 'already running', got: %q", stdout)
+	}
+}
+
+func TestBinary_TransientBinary_UsesStableInstallForCodexAndDaemon(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("uses a shell script fake codex and unix process inspection")
+	}
+
+	home := shortHome(t)
+	codexHome := filepath.Join(home, ".codex")
+	if err := os.MkdirAll(codexHome, 0o700); err != nil {
+		t.Fatalf("mkdir codex home: %v", err)
+	}
+
+	transientDir, err := os.MkdirTemp("", "forge-bin-*")
+	if err != nil {
+		t.Fatalf("mkdir transient dir: %v", err)
+	}
+	t.Cleanup(func() { os.RemoveAll(transientDir) })
+
+	transientBin := filepath.Join(transientDir, "forge")
+	copyFile(t, forgeBin, transientBin)
+
+	fakeCodexDir := t.TempDir()
+	codexLog := filepath.Join(home, "codex.log")
+	fakeCodex := filepath.Join(fakeCodexDir, "codex")
+	script := fmt.Sprintf(`#!/bin/sh
+printf '%%s\n' "$*" >> %q
+if [ "$1" = "--version" ]; then
+  echo "codex test"
+  exit 0
+fi
+if [ "$1" = "mcp" ] && [ "$2" = "add" ]; then
+  exit 0
+fi
+if [ "$1" = "mcp" ] && [ "$2" = "get" ]; then
+  exit 0
+fi
+exit 0
+`, codexLog)
+	if err := os.WriteFile(fakeCodex, []byte(script), 0o755); err != nil {
+		t.Fatalf("write fake codex: %v", err)
+	}
+
+	pathEnv := strings.Join([]string{fakeCodexDir, filepath.Dir(forgeBin), os.Getenv("PATH")}, string(os.PathListSeparator))
+	extraEnv := []string{
+		"PATH=" + pathEnv,
+		"CODEX_HOME=" + codexHome,
+	}
+
+	stdout, stderr, code := runForgePath(t, transientBin, home, extraEnv, "sync-integrations")
+	if code != 0 {
+		t.Fatalf("transient forge sync-integrations exited %d (stdout: %q, stderr: %q)", code, stdout, stderr)
+	}
+
+	codexArgs, err := os.ReadFile(codexLog)
+	if err != nil {
+		t.Fatalf("read fake codex log: %v", err)
+	}
+	if !strings.Contains(string(codexArgs), fmt.Sprintf("mcp add forge -- %s mcp", forgeBin)) {
+		t.Fatalf("codex mcp add should use stable forge path %q, got log: %q", forgeBin, string(codexArgs))
+	}
+	if strings.Contains(string(codexArgs), transientBin) {
+		t.Fatalf("codex mcp add should not use transient forge path %q, log: %q", transientBin, string(codexArgs))
+	}
+
+	skillData, err := os.ReadFile(filepath.Join(codexHome, "skills", "forge.json"))
+	if err != nil {
+		t.Fatalf("read codex skill: %v", err)
+	}
+	if !strings.Contains(string(skillData), forgeBin) {
+		t.Fatalf("codex skill should reference stable forge path %q, got: %q", forgeBin, string(skillData))
+	}
+	if strings.Contains(string(skillData), transientBin) {
+		t.Fatalf("codex skill should not reference transient forge path %q", transientBin)
+	}
+
+	stdout, stderr, code = runForgePath(t, transientBin, home, extraEnv, "start")
+	if code != 0 {
+		t.Fatalf("transient forge start exited %d (stdout: %q, stderr: %q)", code, stdout, stderr)
+	}
+	t.Cleanup(func() { runForgePath(t, transientBin, home, extraEnv, "stop") })
+	waitForFile(t, filepath.Join(home, ".forge", "forge.addr"), 3*time.Second)
+
+	pidData, err := os.ReadFile(filepath.Join(home, ".forge", "forge.pid"))
+	if err != nil {
+		t.Fatalf("read pid file: %v", err)
+	}
+	pid := 0
+	if _, err := fmt.Sscanf(strings.TrimSpace(string(pidData)), "%d", &pid); err != nil || pid <= 0 {
+		t.Fatalf("parse pid file %q: pid=%d err=%v", string(pidData), pid, err)
+	}
+	identity, err := processIdentity(pid)
+	if err != nil {
+		t.Fatalf("processIdentity(%d): %v", pid, err)
+	}
+	if !strings.Contains(identity, forgeBin) {
+		t.Fatalf("daemon should be launched from stable forge path %q, got identity %q", forgeBin, identity)
+	}
+	if strings.Contains(identity, transientBin) {
+		t.Fatalf("daemon should not be launched from transient forge path %q, got identity %q", transientBin, identity)
+	}
+
+	mcpCmd := exec.Command(transientBin, "mcp")
+	mcpCmd.Env = append(baseEnv(), "HOME="+home)
+	mcpCmd.Env = append(mcpCmd.Env, extraEnv...)
+	mcpCmd.Stdin = strings.NewReader("")
+	var mcpStdout, mcpStderr bytes.Buffer
+	mcpCmd.Stdout = &mcpStdout
+	mcpCmd.Stderr = &mcpStderr
+	if err := mcpCmd.Run(); err != nil {
+		t.Fatalf("transient forge mcp: %v (stdout: %q, stderr: %q)", err, mcpStdout.String(), mcpStderr.String())
 	}
 }
 
@@ -712,6 +841,129 @@ func TestBinary_Start_ClearsStaleState(t *testing.T) {
 	}
 }
 
+func TestBinary_Start_ClearsLockOwnedByNonForgeProcess(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("uses a unix sleep process as the foreign lock owner")
+	}
+
+	home := shortHome(t)
+	forgeDir := filepath.Join(home, ".forge")
+	if err := os.MkdirAll(forgeDir, 0o700); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+
+	foreign := exec.Command("sleep", "30")
+	if err := foreign.Start(); err != nil {
+		t.Fatalf("start foreign process: %v", err)
+	}
+	defer func() {
+		_ = foreign.Process.Kill()
+		_, _ = foreign.Process.Wait()
+	}()
+	if _, err := processIdentity(foreign.Process.Pid); err != nil {
+		t.Skipf("process inspection unavailable in this environment: %v", err)
+	}
+
+	lockPath := filepath.Join(forgeDir, "forge.lock")
+	if err := os.WriteFile(lockPath, []byte(fmt.Sprintf("%d", foreign.Process.Pid)), 0o600); err != nil {
+		t.Fatalf("WriteFile foreign lock: %v", err)
+	}
+
+	stdout, stderr, code := runForge(t, home, "start")
+	if code != 0 {
+		t.Fatalf("forge start with foreign lock exited %d (stdout: %q, stderr: %q)", code, stdout, stderr)
+	}
+	t.Cleanup(func() { runForge(t, home, "stop") })
+	waitForFile(t, filepath.Join(forgeDir, "forge.addr"), 3*time.Second)
+}
+
+func TestBinary_Doctor_ReportsForeignLockOwner(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("uses a unix sleep process as the foreign lock owner")
+	}
+
+	home := shortHome(t)
+	forgeDir := filepath.Join(home, ".forge")
+	if err := os.MkdirAll(forgeDir, 0o700); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+
+	foreign := exec.Command("sleep", "30")
+	if err := foreign.Start(); err != nil {
+		t.Fatalf("start foreign process: %v", err)
+	}
+	defer func() {
+		_ = foreign.Process.Kill()
+		_, _ = foreign.Process.Wait()
+	}()
+	if _, err := processIdentity(foreign.Process.Pid); err != nil {
+		t.Skipf("process inspection unavailable in this environment: %v", err)
+	}
+
+	if err := os.WriteFile(filepath.Join(forgeDir, "forge.lock"), []byte(fmt.Sprintf("%d", foreign.Process.Pid)), 0o600); err != nil {
+		t.Fatalf("WriteFile foreign lock: %v", err)
+	}
+
+	stdout, _, _ := runForge(t, home, "doctor")
+	if !strings.Contains(stdout, "lock owned by non-Forge process") {
+		t.Fatalf("forge doctor should identify foreign lock owner, got: %q", stdout)
+	}
+}
+
+func TestBinary_Doctor_ReportsTransientIntegrationReference(t *testing.T) {
+	home := shortHome(t)
+	claudeDir := filepath.Join(home, ".claude")
+	if err := os.MkdirAll(claudeDir, 0o700); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+	settings := `{"mcpServers":{"forge":{"command":"/var/folders/test/forge-bin-12345/forge","args":["mcp"]}}}`
+	if err := os.WriteFile(filepath.Join(claudeDir, "settings.json"), []byte(settings), 0o600); err != nil {
+		t.Fatalf("WriteFile settings.json: %v", err)
+	}
+
+	stdout, _, _ := runForge(t, home, "doctor")
+	if !strings.Contains(stdout, "transient Forge path") {
+		t.Fatalf("forge doctor should report transient integration paths, got: %q", stdout)
+	}
+}
+
+func TestBinary_Doctor_ReportsUnwritableForgeHome(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("permission semantics differ on windows")
+	}
+
+	home := shortHome(t)
+	forgeDir := filepath.Join(home, ".forge")
+	if err := os.MkdirAll(forgeDir, 0o700); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+	if err := os.Chmod(forgeDir, 0o500); err != nil {
+		t.Fatalf("Chmod: %v", err)
+	}
+	defer os.Chmod(forgeDir, 0o700)
+
+	stdout, _, _ := runForge(t, home, "doctor")
+	if !strings.Contains(stdout, "cannot write") {
+		t.Fatalf("forge doctor should report unwritable forge home, got: %q", stdout)
+	}
+}
+
+func TestBinary_Doctor_ReportsSocketWithoutDaemonProcess(t *testing.T) {
+	home := shortHome(t)
+	forgeDir := filepath.Join(home, ".forge")
+	if err := os.MkdirAll(forgeDir, 0o700); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(forgeDir, "forge.sock"), []byte(""), 0o600); err != nil {
+		t.Fatalf("WriteFile forge.sock: %v", err)
+	}
+
+	stdout, _, _ := runForge(t, home, "doctor")
+	if !strings.Contains(stdout, "socket exists but no daemon process") {
+		t.Fatalf("forge doctor should report orphaned socket, got: %q", stdout)
+	}
+}
+
 // TestBinary_Doctor_ShowsLogPath verifies that `forge doctor` prints the daemon
 // log file path once `forge start` has created it.
 func TestBinary_Doctor_ShowsLogPath(t *testing.T) {
@@ -726,6 +978,25 @@ func TestBinary_Doctor_ShowsLogPath(t *testing.T) {
 	logPath := filepath.Join(home, ".forge", "daemon.log")
 	if !strings.Contains(stdout, logPath) {
 		t.Errorf("forge doctor should show daemon log path %s, got: %q", logPath, stdout)
+	}
+}
+
+func TestBinary_Stop_DoesNotLogExpectedAcceptCloseError(t *testing.T) {
+	home := shortHome(t)
+	addrFile := filepath.Join(home, ".forge", "forge.addr")
+
+	runForge(t, home, "start")
+	waitForFile(t, addrFile, 3*time.Second)
+
+	runForge(t, home, "stop")
+	time.Sleep(300 * time.Millisecond)
+
+	logData, err := os.ReadFile(filepath.Join(home, ".forge", "daemon.log"))
+	if err != nil {
+		t.Fatalf("read daemon log: %v", err)
+	}
+	if strings.Contains(string(logData), "Accept error: use of closed network connection") {
+		t.Fatalf("daemon log should not treat listener close as an accept error, got: %q", string(logData))
 	}
 }
 

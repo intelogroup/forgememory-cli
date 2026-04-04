@@ -43,3 +43,53 @@ func TestBuildSessionRecallOutput_NextStepFallback(t *testing.T) {
 		t.Fatalf("expected next-step fallback, got: %q", out)
 	}
 }
+
+func TestLoadSessionRecallContext_FallsBackToGlobalRecentContext(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+
+	database, err := db.Open("")
+	if err != nil {
+		t.Fatalf("db.Open: %v", err)
+	}
+	defer database.Close()
+
+	if err := database.InsertPrinciple(&db.Principle{
+		ProjectID:   "forgememory-cli",
+		Title:       "Cross-project fallback",
+		Narrative:   "Use recent global context when project-specific recall is empty.",
+		Type:        "pattern",
+		ImpactScore: 0.6,
+	}); err != nil {
+		t.Fatalf("InsertPrinciple: %v", err)
+	}
+	if err := database.InsertSessionSummary(&db.SessionSummary{
+		SessionID: "s1",
+		ProjectID: "forgememory-cli",
+		Learnings: "Recent summaries should still surface when project IDs do not match.",
+	}); err != nil {
+		t.Fatalf("InsertSessionSummary: %v", err)
+	}
+
+	principles, summaries := loadSessionRecallContext(database, "proj")
+	if len(principles) == 0 {
+		t.Fatal("expected global principle fallback")
+	}
+	if len(summaries) == 0 {
+		t.Fatal("expected global session summary fallback")
+	}
+	if principles[0].ProjectID != "forgememory-cli" {
+		t.Fatalf("expected fallback principle project_id to be forgememory-cli, got %q", principles[0].ProjectID)
+	}
+	if summaries[0].ProjectID != "forgememory-cli" {
+		t.Fatalf("expected fallback summary project_id to be forgememory-cli, got %q", summaries[0].ProjectID)
+	}
+
+	out := buildSessionRecallOutput("proj", summaries, principles)
+	if !strings.Contains(out, "Recent lessons for proj") {
+		t.Fatalf("expected output to stay scoped to requested project id, got %q", out)
+	}
+	if !strings.Contains(out, "Active principle: Use recent global context when project-specific recall is empty.") {
+		t.Fatalf("expected fallback principle narrative in output, got %q", out)
+	}
+}

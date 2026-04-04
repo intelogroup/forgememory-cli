@@ -142,6 +142,9 @@ func runDaemon(args []string) {
 		for {
 			conn, err := ln.Accept()
 			if err != nil {
+				if errors.Is(err, net.ErrClosed) || strings.Contains(err.Error(), "use of closed network connection") {
+					return
+				}
 				select {
 				case <-stop:
 					return
@@ -312,8 +315,24 @@ func readLockPID(path string) int {
 	if err != nil {
 		return 0
 	}
-	pid, _ := strconv.Atoi(strings.TrimSpace(string(data)))
+	line := strings.TrimSpace(string(data))
+	if idx := strings.IndexByte(line, '\n'); idx >= 0 {
+		line = line[:idx]
+	}
+	pid, _ := strconv.Atoi(strings.TrimSpace(line))
 	return pid
+}
+
+func lockOwnerIdentity(lockPath string) (int, string, bool) {
+	pid := readLockPID(lockPath)
+	if pid <= 0 {
+		return pid, "", false
+	}
+	identity, err := processIdentity(pid)
+	if err != nil {
+		return pid, "", false
+	}
+	return pid, identity, !isForgeProcessIdentity(identity)
 }
 
 // isDaemonAlive checks whether the daemon behind addr is actually responding.
@@ -344,10 +363,15 @@ func isProcessAlive(pid int) bool {
 	// We use syscall.Signal(0) to check if the process is actually alive.
 	if runtime.GOOS != "windows" {
 		err := proc.Signal(syscall.Signal(0))
-		return err == nil
+		if err == nil {
+			return true
+		}
+		_, psErr := processIdentity(pid)
+		return psErr == nil
 	}
 	// On Windows, FindProcess returns error if process doesn't exist.
-	return true
+	_, psErr := processIdentity(pid)
+	return psErr == nil
 }
 
 // isStaleLock checks whether the lock file exists but points to a dead process.
@@ -444,7 +468,11 @@ func acquirePIDLock(lockPath, alreadyRunningMessage string) (*os.File, error) {
 
 func isPIDLockStale(lockPath string) bool {
 	pid := readLockPID(lockPath)
-	return pid <= 0 || !isProcessAlive(pid)
+	if pid <= 0 || !isProcessAlive(pid) {
+		return true
+	}
+	_, _, foreign := lockOwnerIdentity(lockPath)
+	return foreign
 }
 
 // cleanLock removes the daemon lock file.

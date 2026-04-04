@@ -11,13 +11,35 @@ import (
 	"strings"
 )
 
-// ForgePath returns the absolute path to the forge binary.
+// ForgePath returns the stable forge binary path to use for persistent
+// integrations and daemon respawn. It intentionally refuses to reuse the
+// current process image when that image is a temp/test artifact.
 func ForgePath() string {
-	exe, err := os.Executable()
-	if err != nil {
-		return "forge"
+	if exe, err := os.Executable(); err == nil && IsStableExecutablePath(exe) {
+		return exe
 	}
-	return exe
+	if path, err := exec.LookPath("forge"); err == nil {
+		if abs, absErr := filepath.Abs(path); absErr == nil {
+			return abs
+		}
+		return path
+	}
+	return "forge"
+}
+
+// IsStableExecutablePath reports whether path is suitable for persistent
+// registration and daemon respawn.
+func IsStableExecutablePath(path string) bool {
+	base := filepath.Base(path)
+	if base == "agent.test" {
+		return false
+	}
+	return !strings.Contains(path, string(filepath.Separator)+"go-build") &&
+		!strings.Contains(path, string(filepath.Separator)+"forge-bin-")
+}
+
+func stableExecutablePath(path string) bool {
+	return IsStableExecutablePath(path)
 }
 
 // DetectAgents returns which AI agents are installed.

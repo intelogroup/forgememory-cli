@@ -9,6 +9,34 @@ import (
 	"testing"
 )
 
+func TestStableExecutablePath_RejectsEphemeralBuildArtifacts(t *testing.T) {
+	cases := []string{
+		"/var/folders/tmp/go-build1234/b001/exe/forge",
+		"/var/folders/tmp/forge-bin-12345/forge",
+		"/tmp/go-build999/agent.test",
+	}
+
+	for _, candidate := range cases {
+		if stableExecutablePath(candidate) {
+			t.Fatalf("stableExecutablePath(%q) = true, want false", candidate)
+		}
+	}
+}
+
+func TestStableExecutablePath_AcceptsInstalledBinary(t *testing.T) {
+	cases := []string{
+		"/usr/local/bin/forge",
+		filepath.Join(os.TempDir(), "forge"),
+		filepath.Join(string(filepath.Separator), "Users", "me", "bin", "forge"),
+	}
+
+	for _, candidate := range cases {
+		if !stableExecutablePath(candidate) {
+			t.Fatalf("stableExecutablePath(%q) = false, want true", candidate)
+		}
+	}
+}
+
 // ---- upsertHookArray ----
 
 func TestUpsertHookArray_AppendsWhenEmpty(t *testing.T) {

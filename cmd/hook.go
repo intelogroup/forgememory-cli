@@ -172,8 +172,7 @@ func handleSessionRecall(projectID string) {
 	}
 	defer database.Close()
 
-	principles, _ := database.RecentPrinciplesByProject(projectID, 2)
-	summaries, _ := database.GetRecentSessionSummariesByProject(projectID, 2)
+	principles, summaries := loadSessionRecallContext(database, projectID)
 
 	text := buildSessionRecallOutput(projectID, summaries, principles)
 	if text == "" {
@@ -183,6 +182,16 @@ func handleSessionRecall(projectID string) {
 	output := map[string]any{"hookSpecificOutput": text}
 	data, _ := json.Marshal(output)
 	fmt.Println(string(data))
+}
+
+func loadSessionRecallContext(database *db.DB, projectID string) ([]db.Principle, []db.SessionSummary) {
+	principles, _ := database.RecentPrinciplesByProject(projectID, 2)
+	summaries, _ := database.GetRecentSessionSummariesByProject(projectID, 2)
+	if projectID != "" && len(principles) == 0 && len(summaries) == 0 {
+		principles, _ = database.RecentPrinciples(2)
+		summaries, _ = database.GetRecentSessionSummaries(2)
+	}
+	return principles, summaries
 }
 
 // spawnSessionSynthesis detaches a `forge synthesize-session` process so the
