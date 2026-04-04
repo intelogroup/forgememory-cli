@@ -1,9 +1,9 @@
 # Changelog
 
-## [0.4.9] - 2026-04-04
+## [0.4.10] - 2026-04-04
 
 ### Fixed
-- Switched GitHub Actions workflows to Node 24-capable action versions and replaced the release action with the GitHub CLI so tag releases no longer depend on Node 20 actions.
+- Switched GitHub Actions workflows to Node 24-capable action versions, replaced the release action with the GitHub CLI, and aligned the release workflow toolchain with `go.mod` so tag releases run with the required Go version.
 
 ## [0.4.8] - 2026-04-04
 
