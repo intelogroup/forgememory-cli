@@ -1,5 +1,14 @@
 # Changelog
 
+## [0.4.6] - 2026-04-04
+
+### Added
+- Added `make downloads-report` plus `scripts/download-report.sh` to compare npm download totals with GitHub release archive downloads by version and platform.
+
+### Fixed
+- Hardened daemon startup and lifecycle handling, including Linux CI preflight coverage and clearer startup recovery paths.
+- Improved Windows path handling and refused-connection recovery so lifecycle commands and distillation behave more reliably across platforms.
+
 ## [0.4.5] - 2026-04-03
 
 ### Fixed

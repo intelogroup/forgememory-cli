@@ -1,4 +1,4 @@
-.PHONY: build test lint clean cross dist
+.PHONY: build test lint clean cross dist downloads-report
 
 VERSION ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo "0.1.0")
 LDFLAGS := -ldflags "-s -w -X main.version=$(VERSION)"
@@ -34,3 +34,6 @@ dist: cross
 
 integration:
 	./test_integration.sh
+
+downloads-report:
+	./scripts/download-report.sh

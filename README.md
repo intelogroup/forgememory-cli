@@ -44,6 +44,14 @@ forge search "pattern"
 forge ui
 ```
 
+## Reporting
+
+```bash
+make downloads-report
+```
+
+The report compares npm download totals with GitHub release archive downloads by version and platform.
+
 ## Providers
 
 | Provider | Cost | Setup |
