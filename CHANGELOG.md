@@ -1,5 +1,10 @@
 # Changelog
 
+## [0.4.9] - 2026-04-04
+
+### Fixed
+- Switched GitHub Actions workflows to Node 24-capable action versions and replaced the release action with the GitHub CLI so tag releases no longer depend on Node 20 actions.
+
 ## [0.4.8] - 2026-04-04
 
 ### Fixed
