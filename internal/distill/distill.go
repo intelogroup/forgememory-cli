@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"os"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/forge/forge/internal/config"
@@ -346,7 +347,7 @@ func (d *Distiller) callOllama(prompt string) (string, error) {
 
 	resp, err := d.client.Post(url, "application/json", bytes.NewReader(jsonBody))
 	if err != nil {
-		if strings.Contains(err.Error(), "connection refused") || strings.Contains(err.Error(), "no such host") {
+		if isProviderUnreachableError(err) {
 			return "", fmt.Errorf("%w: %v", ErrProviderUnreachable, err)
 		}
 		return "", err
@@ -386,7 +387,7 @@ func (d *Distiller) callOpenAI(prompt string) (string, error) {
 
 	resp, err := d.client.Do(req)
 	if err != nil {
-		if strings.Contains(err.Error(), "connection refused") || strings.Contains(err.Error(), "no such host") {
+		if isProviderUnreachableError(err) {
 			return "", fmt.Errorf("%w: %v", ErrProviderUnreachable, err)
 		}
 		return "", err
@@ -441,7 +442,7 @@ func (d *Distiller) callAnthropic(prompt string) (string, error) {
 
 	resp, err := d.client.Do(req)
 	if err != nil {
-		if strings.Contains(err.Error(), "connection refused") || strings.Contains(err.Error(), "no such host") {
+		if isProviderUnreachableError(err) {
 			return "", fmt.Errorf("%w: %v", ErrProviderUnreachable, err)
 		}
 		return "", err
@@ -483,7 +484,10 @@ func (d *Distiller) callForge(prompt string) (string, error) {
 
 	resp, err := d.client.Post(url, "application/json", bytes.NewReader(jsonBody))
 	if err != nil {
-		return "", fmt.Errorf("%w: %v", ErrProviderUnreachable, err)
+		if isProviderUnreachableError(err) {
+			return "", fmt.Errorf("%w: %v", ErrProviderUnreachable, err)
+		}
+		return "", err
 	}
 	defer resp.Body.Close()
 
@@ -503,6 +507,16 @@ func (d *Distiller) callForge(prompt string) (string, error) {
 		return result.Response, nil
 	}
 	return "", fmt.Errorf("no response from Forge")
+}
+
+func isProviderUnreachableError(err error) bool {
+	if errors.Is(err, syscall.ECONNREFUSED) {
+		return true
+	}
+	text := strings.ToLower(err.Error())
+	return strings.Contains(text, "connection refused") ||
+		strings.Contains(text, "actively refused") ||
+		strings.Contains(text, "no such host")
 }
 
 func (d *Distiller) parsePrinciples(response string, projectID string) ([]db.Principle, error) {

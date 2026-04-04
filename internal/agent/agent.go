@@ -34,8 +34,9 @@ func IsStableExecutablePath(path string) bool {
 	if base == "agent.test" {
 		return false
 	}
-	return !strings.Contains(path, string(filepath.Separator)+"go-build") &&
-		!strings.Contains(path, string(filepath.Separator)+"forge-bin-")
+	normalized := strings.ToLower(strings.ReplaceAll(path, "\\", "/"))
+	return !strings.Contains(normalized, "/go-build") &&
+		!strings.Contains(normalized, "/forge-bin-")
 }
 
 func stableExecutablePath(path string) bool {

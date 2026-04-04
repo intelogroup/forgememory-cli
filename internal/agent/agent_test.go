@@ -14,6 +14,8 @@ func TestStableExecutablePath_RejectsEphemeralBuildArtifacts(t *testing.T) {
 		"/var/folders/tmp/go-build1234/b001/exe/forge",
 		"/var/folders/tmp/forge-bin-12345/forge",
 		"/tmp/go-build999/agent.test",
+		`C:\Users\runneradmin\AppData\Local\Temp\go-build1234\b001\exe\forge.exe`,
+		`C:\Users\runneradmin\AppData\Local\Temp\forge-bin-12345\forge.exe`,
 	}
 
 	for _, candidate := range cases {

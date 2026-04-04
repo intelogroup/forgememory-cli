@@ -316,6 +316,13 @@ func TestCallOllamaUnreachable(t *testing.T) {
 	}
 }
 
+func TestIsProviderUnreachableError_WindowsConnectex(t *testing.T) {
+	err := &testError{msg: `dial tcp 127.0.0.1:1: connectex: No connection could be made because the target machine actively refused it.`}
+	if !isProviderUnreachableError(err) {
+		t.Fatal("expected Windows connectex refusal to be treated as provider unreachable")
+	}
+}
+
 func TestCallOpenAIUnauthorized(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusUnauthorized)

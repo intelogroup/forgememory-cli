@@ -221,9 +221,11 @@ func shouldSkipDistillForMissingProvider(cfg distill.Config, err error) bool {
 	if cfg.Provider != distill.ProviderOllama {
 		return false
 	}
+	errText := strings.ToLower(err.Error())
 	return errors.Is(err, distill.ErrNoProvider) ||
 		errors.Is(err, distill.ErrProviderUnreachable) ||
-		strings.Contains(strings.ToLower(err.Error()), "connection refused")
+		strings.Contains(errText, "connection refused") ||
+		strings.Contains(errText, "actively refused")
 }
 
 func hasExplicitInferenceProviderConfig() bool {
@@ -742,8 +744,9 @@ func findTransientForgeReference(path string) (string, bool) {
 	}
 
 	text := string(data)
-	for _, marker := range []string{string(filepath.Separator) + "go-build", string(filepath.Separator) + "forge-bin-"} {
-		if idx := strings.Index(text, marker); idx >= 0 {
+	normalizedText := normalizePathLikeString(text)
+	for _, marker := range []string{"/go-build", "/forge-bin-"} {
+		if idx := strings.Index(normalizedText, marker); idx >= 0 {
 			start := idx
 			for start > 0 && text[start-1] != '"' && text[start-1] != '\n' {
 				start--
@@ -762,8 +765,9 @@ func findTransientForgeReference(path string) (string, bool) {
 func transientForgeString(v any) string {
 	switch x := v.(type) {
 	case string:
-		if strings.Contains(x, string(filepath.Separator)+"go-build") ||
-			strings.Contains(x, string(filepath.Separator)+"forge-bin-") {
+		normalized := normalizePathLikeString(x)
+		if strings.Contains(normalized, "/go-build") ||
+			strings.Contains(normalized, "/forge-bin-") {
 			return x
 		}
 	case map[string]any:
@@ -780,6 +784,10 @@ func transientForgeString(v any) string {
 		}
 	}
 	return ""
+}
+
+func normalizePathLikeString(s string) string {
+	return strings.ToLower(strings.ReplaceAll(s, "\\", "/"))
 }
 
 func truncate(s string, max int) string {

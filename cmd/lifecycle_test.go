@@ -336,6 +336,22 @@ func TestRunDistill_ExplicitProviderUnreachableExits(t *testing.T) {
 	}
 }
 
+func TestFindTransientForgeReference_WindowsStylePath(t *testing.T) {
+	settingsPath := filepath.Join(t.TempDir(), "settings.json")
+	settings := `{"mcpServers":{"forge":{"command":"C:\\Users\\runneradmin\\AppData\\Local\\Temp\\forge-bin-12345\\forge.exe","args":["mcp"]}}}`
+	if err := os.WriteFile(settingsPath, []byte(settings), 0o600); err != nil {
+		t.Fatalf("WriteFile settings.json: %v", err)
+	}
+
+	ref, ok := findTransientForgeReference(settingsPath)
+	if !ok {
+		t.Fatal("expected Windows-style transient forge path to be detected")
+	}
+	if !strings.Contains(strings.ToLower(ref), "forge-bin-12345") {
+		t.Fatalf("expected transient reference in output, got %q", ref)
+	}
+}
+
 func TestIsStaleLock_AlivePIDIsNotStale(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
