@@ -1,5 +1,10 @@
 # Changelog
 
+## [0.4.7] - 2026-04-04
+
+### Fixed
+- Forge config path resolution now honors `HOME` before falling back to the user profile, which keeps CI and temp-home test runs isolated on Windows and other platforms.
+
 ## [0.4.6] - 2026-04-04
 
 ### Added
