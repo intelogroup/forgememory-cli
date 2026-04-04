@@ -1,5 +1,10 @@
 # Changelog
 
+## [0.4.8] - 2026-04-04
+
+### Fixed
+- Recut the npm release after the `v0.4.7` tag was created from the pre-bump commit, ensuring the published package version matches the Git tag.
+
 ## [0.4.7] - 2026-04-04
 
 ### Fixed
