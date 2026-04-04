@@ -585,29 +585,55 @@ func TestBinary_Doctor_DaemonUp(t *testing.T) {
 	}
 }
 
-// ---- double-start race: concurrent starts may spawn two daemons ----
+// ---- concurrent start serialization ----
 
-// KNOWN GOTCHA: forge start has no file lock on the check/spawn sequence.
-// Two concurrent forge start calls can both see readAddr()=="" and both spawn
-// daemon processes. This test demonstrates the race; it is non-deterministic.
-func TestBinary_ConcurrentStart_Gotcha(t *testing.T) {
+// TestBinary_ConcurrentStart verifies that concurrent start calls serialize
+// around the bootstrap path instead of racing to spawn multiple daemons.
+func TestBinary_ConcurrentStart(t *testing.T) {
 	home := shortHome(t)
 	addrFile := filepath.Join(home, ".forge", "forge.addr")
 
+	var results []struct {
+		stdout string
+		code   int
+	}
+	var mu sync.Mutex
 	var wg sync.WaitGroup
 	for i := 0; i < 3; i++ {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			runForge(t, home, "start")
+			stdout, _, code := runForge(t, home, "start")
+			mu.Lock()
+			results = append(results, struct {
+				stdout string
+				code   int
+			}{stdout: stdout, code: code})
+			mu.Unlock()
 		}()
 	}
 	wg.Wait()
+	t.Cleanup(func() { runForge(t, home, "stop") })
 
-	// At least one daemon started
 	waitForFile(t, addrFile, 3*time.Second)
+	for _, result := range results {
+		if result.code != 0 {
+			t.Fatalf("concurrent forge start exited %d (stdout: %q)", result.code, result.stdout)
+		}
+	}
 
-	t.Log("KNOWN GOTCHA: concurrent forge start calls may spawn multiple daemon processes — no start lock exists")
+	statusOut, _, _ := runForge(t, home, "status")
+	if !strings.Contains(statusOut, "running") {
+		t.Fatalf("daemon should be running after concurrent starts, got: %q", statusOut)
+	}
+
+	secondStart, _, code := runForge(t, home, "start")
+	if code != 0 {
+		t.Fatalf("post-bootstrap forge start exited %d", code)
+	}
+	if !strings.Contains(secondStart, "already running") {
+		t.Fatalf("expected follow-up start to report already running, got: %q", secondStart)
+	}
 }
 
 // ---- stale state: status and doctor report failure consistently ----

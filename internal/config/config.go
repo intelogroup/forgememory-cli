@@ -48,7 +48,7 @@ func Load() (Config, error) {
 			cfg.APIKey = value
 		case "FORGE_MODEL":
 			cfg.Model = value
-		case "FORGE_BASE_URL":
+		case "FORGE_BASE_URL", "FORGE_API_URL":
 			cfg.BaseURL = value
 		}
 	}
@@ -95,6 +95,7 @@ func SetEnvFromFile() error {
 	}
 	if cfg.BaseURL != "" {
 		os.Setenv("FORGE_BASE_URL", cfg.BaseURL)
+		os.Setenv("FORGE_API_URL", cfg.BaseURL) // legacy compatibility for older paths
 	}
 	return nil
 }

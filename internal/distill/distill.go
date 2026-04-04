@@ -71,6 +71,9 @@ func LoadConfig() Config {
 		BaseURL:    os.Getenv("FORGE_BASE_URL"),
 		PaymentURL: os.Getenv("FORGE_PAYMENT_URL"),
 	}
+	if cfg.BaseURL == "" {
+		cfg.BaseURL = os.Getenv("FORGE_API_URL") // legacy compatibility
+	}
 
 	// If env vars not set, load from config file
 	if cfg.Provider == "" || cfg.APIKey == "" {

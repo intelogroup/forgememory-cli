@@ -2,6 +2,7 @@ package main
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
 	"net"
@@ -35,7 +36,8 @@ func runDaemon(args []string) {
 			os.Setenv("FORGE_API_KEY", cfg.APIKey)
 		}
 		if cfg.BaseURL != "" {
-			os.Setenv("FORGE_API_URL", cfg.BaseURL)
+			os.Setenv("FORGE_BASE_URL", cfg.BaseURL)
+			os.Setenv("FORGE_API_URL", cfg.BaseURL) // legacy compatibility
 		}
 		log.Printf("Loaded config: provider=%s", cfg.Provider)
 	} else {
@@ -297,6 +299,23 @@ func readPID() int {
 	return pid
 }
 
+func daemonLockPath() string {
+	return filepath.Join(forgeHome(), ".forge", "forge.lock")
+}
+
+func startupLockPath() string {
+	return filepath.Join(forgeHome(), ".forge", "forge.start.lock")
+}
+
+func readLockPID(path string) int {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return 0
+	}
+	pid, _ := strconv.Atoi(strings.TrimSpace(string(data)))
+	return pid
+}
+
 // isDaemonAlive checks whether the daemon behind addr is actually responding.
 // Returns false for empty addr or if the socket/port can't be dialed.
 func isDaemonAlive(addr string) bool {
@@ -333,12 +352,22 @@ func isProcessAlive(pid int) bool {
 
 // isStaleLock checks whether the lock file exists but points to a dead process.
 func isStaleLock() bool {
-	lockPath := filepath.Join(forgeHome(), ".forge", "forge.lock")
+	lockPath := daemonLockPath()
 	_, err := os.Stat(lockPath)
 	if err != nil {
 		return false
 	}
-	return true
+	pid := readLockPID(lockPath)
+	return pid <= 0 || !isProcessAlive(pid)
+}
+
+func isStaleStartupLock() bool {
+	lockPath := startupLockPath()
+	_, err := os.Stat(lockPath)
+	if err != nil {
+		return false
+	}
+	return isPIDLockStale(lockPath)
 }
 
 // Status output
@@ -371,36 +400,60 @@ func statusOutput() {
 // acquireDaemonLock creates an exclusive lock file to ensure only one daemon runs.
 // Returns nil, nil if no existing lock, or an error if lock cannot be acquired.
 func acquireDaemonLock() (*os.File, error) {
-	lockPath := filepath.Join(forgeHome(), ".forge", "forge.lock")
+	return acquirePIDLock(daemonLockPath(), "daemon already running or stale lock exists")
+}
+
+func acquireStartupLock() (*os.File, error) {
+	return acquirePIDLock(startupLockPath(), "daemon startup already in progress")
+}
+
+func acquirePIDLock(lockPath, alreadyRunningMessage string) (*os.File, error) {
 	if err := os.MkdirAll(filepath.Dir(lockPath), 0o700); err != nil {
 		return nil, fmt.Errorf("create lock dir: %w", err)
 	}
 
-	lockFile, err := os.OpenFile(lockPath, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o600)
-	if err != nil {
+	for attempt := 0; attempt < 2; attempt++ {
+		lockFile, err := os.OpenFile(lockPath, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o600)
+		if err == nil {
+			// Write PID to lock file for debugging and liveness checks.
+			if _, err := fmt.Fprintf(lockFile, "%d", os.Getpid()); err != nil {
+				lockFile.Close()
+				_ = os.Remove(lockPath)
+				return nil, fmt.Errorf("write lock pid: %w", err)
+			}
+			lockFile.Close()
+
+			// Re-open for holding the lock.
+			lockFile, err = os.OpenFile(lockPath, os.O_WRONLY, 0o600)
+			if err != nil {
+				return nil, fmt.Errorf("reopen lock: %w", err)
+			}
+			return lockFile, nil
+		}
+		if os.IsExist(err) && isPIDLockStale(lockPath) {
+			_ = os.Remove(lockPath)
+			continue
+		}
 		if os.IsExist(err) {
-			return nil, fmt.Errorf("daemon already running or stale lock exists")
+			return nil, errors.New(alreadyRunningMessage)
 		}
 		return nil, fmt.Errorf("acquire lock: %w", err)
 	}
+	return nil, errors.New(alreadyRunningMessage)
+}
 
-	// Write PID to lock file for debugging
-	fmt.Fprintf(lockFile, "%d", os.Getpid())
-	lockFile.Close()
-
-	// Re-open for holding the lock
-	lockFile, err = os.OpenFile(lockPath, os.O_WRONLY, 0o600)
-	if err != nil {
-		return nil, fmt.Errorf("reopen lock: %w", err)
-	}
-
-	return lockFile, nil
+func isPIDLockStale(lockPath string) bool {
+	pid := readLockPID(lockPath)
+	return pid <= 0 || !isProcessAlive(pid)
 }
 
 // cleanLock removes the daemon lock file.
 func cleanLock() {
-	lockPath := filepath.Join(forgeHome(), ".forge", "forge.lock")
-	_ = os.Remove(lockPath)
+	_ = os.Remove(daemonLockPath())
+}
+
+func cleanStartupLock() {
+	_ = os.Remove(startupLockPath())
 }
 
 // cleanSocket removes the daemon socket file.

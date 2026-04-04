@@ -9,6 +9,10 @@ import (
 )
 
 func TestLoadConfigDefaults(t *testing.T) {
+	// Isolate the config lookup so this test verifies code defaults rather than
+	// any developer-specific ~/.forge/config state.
+	t.Setenv("HOME", t.TempDir())
+
 	// Clear env vars
 	t.Setenv("FORGE_PROVIDER", "")
 	t.Setenv("FORGE_API_KEY", "")
@@ -28,6 +32,7 @@ func TestLoadConfigDefaults(t *testing.T) {
 }
 
 func TestLoadConfigOpenAI(t *testing.T) {
+	t.Setenv("FORGE_API_URL", "")
 	t.Setenv("FORGE_PROVIDER", "openai")
 	t.Setenv("FORGE_API_KEY", "sk-test123")
 	t.Setenv("FORGE_MODEL", "gpt-4o")
@@ -41,6 +46,20 @@ func TestLoadConfigOpenAI(t *testing.T) {
 	}
 	if cfg.APIKey != "sk-test123" {
 		t.Errorf("api key = %s, want sk-test123", cfg.APIKey)
+	}
+}
+
+func TestLoadConfigLegacyAPIURL(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	t.Setenv("FORGE_PROVIDER", "openai")
+	t.Setenv("FORGE_API_KEY", "sk-test123")
+	t.Setenv("FORGE_MODEL", "")
+	t.Setenv("FORGE_BASE_URL", "")
+	t.Setenv("FORGE_API_URL", "https://legacy.example.test")
+
+	cfg := LoadConfig()
+	if cfg.BaseURL != "https://legacy.example.test" {
+		t.Errorf("base URL = %s, want legacy API URL", cfg.BaseURL)
 	}
 }
 

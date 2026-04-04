@@ -2,11 +2,15 @@ package main
 
 import (
 	"bytes"
+	"encoding/json"
 	"errors"
 	"io"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -192,8 +196,19 @@ func TestRunDistill_WithEvents(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
 	seedEvents(t, 3)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		json.NewEncoder(w).Encode(map[string]string{
+			"response": `[{"type":"bugfix","title":"Windows daemon fix","narrative":"Use the real distillation path.","impact_score":0.8}]`,
+		})
+	}))
+	defer server.Close()
+	t.Setenv("FORGE_PROVIDER", "ollama")
+	t.Setenv("FORGE_BASE_URL", server.URL)
+	t.Setenv("FORGE_API_KEY", "")
+	t.Setenv("FORGE_MODEL", "")
 
-	captureStdout(func() { runDistill([]string{}) })
+	out := captureStdout(func() { runDistill([]string{}) })
 
 	database, err := db.Open("")
 	if err != nil {
@@ -207,17 +222,24 @@ func TestRunDistill_WithEvents(t *testing.T) {
 	if undistilled != 0 {
 		t.Errorf("expected 0 undistilled after runDistill, got %d", undistilled)
 	}
+	count, err := database.PrincipleCount()
+	if err != nil {
+		t.Fatalf("PrincipleCount: %v", err)
+	}
+	if count == 0 {
+		t.Fatal("expected principles to be extracted by runDistill")
+	}
+	if !strings.Contains(out, "Distilled 1 principle") {
+		t.Errorf("expected distill output to mention extracted principles, got: %q", out)
+	}
 }
 
-// KNOWN GOTCHA: runDistill marks events distilled without calling the LLM.
-// The daemon's distillLoop calls distiller.DistillBatch which actually extracts principles.
-// `forge distill` is therefore a no-op for principle extraction.
-func TestRunDistill_Gotcha_NoPrinciplesExtracted(t *testing.T) {
+func TestRunDistill_NotEnoughEventsKeepsQueue(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
-	seedEvents(t, 3)
+	seedEvents(t, 2)
 
-	captureStdout(func() { runDistill([]string{}) })
+	out := captureStdout(func() { runDistill([]string{}) })
 
 	database, err := db.Open("")
 	if err != nil {
@@ -229,9 +251,39 @@ func TestRunDistill_Gotcha_NoPrinciplesExtracted(t *testing.T) {
 		t.Fatalf("PrincipleCount: %v", err)
 	}
 	if count != 0 {
-		t.Errorf("runDistill extracted %d principles — unexpected (no LLM call should occur)", count)
+		t.Errorf("runDistill extracted %d principles with only 2 events", count)
 	}
-	t.Log("KNOWN GOTCHA: forge distill marks events as distilled but extracts no principles (LLM never called)")
+	_, undistilled, err := database.EventCount()
+	if err != nil {
+		t.Fatalf("EventCount: %v", err)
+	}
+	if undistilled != 2 {
+		t.Fatalf("expected undistilled events to remain queued, got %d", undistilled)
+	}
+	if !strings.Contains(out, "Not enough undistilled events") {
+		t.Errorf("expected insufficient-events message, got: %q", out)
+	}
+}
+
+func TestIsStaleLock_AlivePIDIsNotStale(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	lockPath := filepath.Join(home, ".forge", "forge.lock")
+	if err := os.MkdirAll(filepath.Dir(lockPath), 0o700); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+	if err := os.WriteFile(lockPath, []byte("garbage"), 0o600); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+	if !isStaleLock() {
+		t.Fatal("expected unparsable lock file to be stale")
+	}
+	if err := os.WriteFile(lockPath, []byte(strconv.Itoa(os.Getpid())), 0o600); err != nil {
+		t.Fatalf("WriteFile current pid: %v", err)
+	}
+	if isStaleLock() {
+		t.Fatal("expected live lock PID to be treated as healthy")
+	}
 }
 
 // ---- runSearch ----

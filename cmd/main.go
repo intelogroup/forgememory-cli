@@ -27,6 +27,8 @@ func main() {
 		runDaemon(os.Args[2:])
 	case "init":
 		runInit(os.Args[2:])
+	case "sync-integrations":
+		runSyncIntegrations(os.Args[2:])
 	case "start":
 		runStart(os.Args[2:])
 	case "stop":
@@ -80,6 +82,7 @@ func printUsage() {
 
  Commands:
    init          Detect agents, create DB, register hooks, install skills
+   sync-integrations Refresh Codex/Claude/Gemini MCP and hook integrations
    start         Start the daemon
    stop          Stop the daemon
    status        Show DB stats, daemon health, skill status

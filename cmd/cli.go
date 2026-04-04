@@ -12,7 +12,6 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
-	"time"
 
 	"github.com/forge/forge/internal/agent"
 	"github.com/forge/forge/internal/config"
@@ -61,21 +60,11 @@ func runInit(args []string) {
 
 	// Detect agents
 	home, _ := os.UserHomeDir()
-	agents := agent.DetectAgents(home)
+	agents := syncIntegrations(home)
 	if len(agents) == 0 {
 		fmt.Println("  No agents detected. Install Claude Code, Gemini CLI, or Codex first.")
 	} else {
 		fmt.Printf("  Detected agents: %v\n", agents)
-		for _, a := range agents {
-			skillPath, err := agent.SetupAgent(a, home)
-			if err != nil {
-				fmt.Fprintf(os.Stderr, "  Error setting up %s: %v\n", a, err)
-			} else if skillPath != "" {
-				fmt.Printf("  Configured %s (skill: %s)\n", a, skillPath)
-			} else {
-				fmt.Printf("  Configured %s\n", a)
-			}
-		}
 	}
 
 	// Prompt for provider setup
@@ -93,66 +82,36 @@ func runInit(args []string) {
 	fmt.Println("\nForge initialized. Run `forge start` to start the daemon.")
 }
 
+func runSyncIntegrations(args []string) {
+	fmt.Println("Refreshing Forge integrations...")
+	home, _ := os.UserHomeDir()
+	agents := syncIntegrations(home)
+	if len(agents) == 0 {
+		fmt.Println("  No agents detected.")
+		return
+	}
+	fmt.Printf("  Refreshed agents: %v\n", agents)
+}
+
 func runStart(args []string) {
 	fmt.Println("Starting Forge daemon...")
 
-	addr := readAddr()
-	if addr != "" && isDaemonAlive(addr) {
+	result, err := ensureDaemonRunning(true)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Error starting daemon: %v\n", err)
+		fmt.Fprintln(os.Stderr, "\n  Running diagnostics...")
+		runDoctorInline()
+		fmt.Fprintln(os.Stderr, "\n  Run 'forge doctor --repair' to auto-fix stale state.")
+		os.Exit(1)
+	}
+	for _, item := range result.cleanup {
+		fmt.Printf("  Cleaning stale %s...\n", item)
+	}
+	if !result.started {
 		fmt.Println("  Daemon already running.")
 		return
 	}
-
-	// Clear any stale daemon state before starting fresh — handles the
-	// case where daemon crashed/force-killed and left behind lock/addr/pid/socket.
-	// Only remove if the referenced process is not alive.
-	if addr != "" && !isDaemonAlive(addr) {
-		fmt.Println("  Cleaning stale daemon address...")
-		cleanAddr()
-	}
-	if pid := readPID(); pid > 0 && !isProcessAlive(pid) {
-		fmt.Println("  Cleaning stale daemon PID...")
-		cleanPID()
-	}
-	if isStaleLock() {
-		fmt.Println("  Cleaning stale daemon lock...")
-		cleanLock()
-	}
-	// Clean up any stale socket file
-	if isStaleSocket() {
-		fmt.Println("  Cleaning stale daemon socket...")
-		cleanSocket()
-	}
-
-	// Start daemon as background process, redirecting its output to a log file
-	// so crashes are diagnosable without attaching a debugger.
-	forgeDir := filepath.Join(forgeHome(), ".forge")
-	_ = os.MkdirAll(forgeDir, 0o700) // ensure dir exists before opening log
-	logPath := filepath.Join(forgeDir, "daemon.log")
-	cmd, closeLog := newDaemonCommand(logPath, true)
-	defer closeLog()
-
-	if err := startBackground(cmd); err != nil {
-		fmt.Fprintf(os.Stderr, "Error starting daemon: %v\n", err)
-		os.Exit(1)
-	}
-
-	// Wait up to 3 seconds for daemon to write its addr and start accepting.
-	// On Windows, the process may be killed by the parent job object if not
-	// properly detached — we catch that here before claiming success.
-	for i := 0; i < 15; i++ {
-		time.Sleep(200 * time.Millisecond)
-		if a := readAddr(); a != "" && isDaemonAlive(a) {
-			fmt.Println("  Daemon started.")
-			return
-		}
-	}
-
-	// Daemon failed to start — run inline diagnostics
-	fmt.Fprintln(os.Stderr, "  Error: daemon process exited immediately — not responding.")
-	fmt.Fprintln(os.Stderr, "\n  Running diagnostics...")
-	runDoctorInline()
-	fmt.Fprintln(os.Stderr, "\n  Run 'forge doctor --repair' to auto-fix stale state.")
-	os.Exit(1)
+	fmt.Println("  Daemon started.")
 }
 
 func newDaemonCommand(logPath string, skipParentMonitor bool) (*exec.Cmd, func()) {
@@ -235,17 +194,17 @@ func runDistill(args []string) {
 	}
 
 	fmt.Printf("Distilling %d events...\n", len(events))
-
-	var ids []string
-	for _, e := range events {
-		ids = append(ids, e.ID)
-	}
-	if err := database.MarkDistilled(ids); err != nil {
-		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+	d := distill.New(database, distill.LoadConfig())
+	count, err := d.DistillBatch(50)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Error: %s\n", distill.UserMessage(err))
 		os.Exit(1)
 	}
-
-	fmt.Printf("Distilled %d events.\n", len(ids))
+	if count == 0 {
+		fmt.Println("Not enough undistilled events to extract principles yet (need 3+ related events).")
+		return
+	}
+	fmt.Printf("Distilled %d principle(s).\n", count)
 }
 
 func runSearch(args []string) {
@@ -427,41 +386,20 @@ func runScan(args []string) {
 }
 
 func runMCP(args []string) {
-	// Check if daemon is running, start it if not
-	addr := readAddr()
-	if addr == "" || !isDaemonAlive(addr) {
+	// Check if daemon is running, start it if not.
+	if result, err := ensureDaemonRunning(false); err != nil {
+		fmt.Fprintf(os.Stderr, "Error starting daemon: %v\n", err)
+		if result.logPath != "" {
+			fmt.Fprintf(os.Stderr, "  Check logs: %s\n", result.logPath)
+		}
+		fmt.Fprintln(os.Stderr, "  Run 'forge doctor' to diagnose.")
+		os.Exit(1)
+	} else if result.started {
 		fmt.Println("Starting Forge daemon for MCP server...")
-
-		// Clear any stale addr/pid before starting fresh
-		cleanAddr()
-		cleanPID()
-
-		// Start daemon as background process
-		forgeDir := filepath.Join(forgeHome(), ".forge")
-		_ = os.MkdirAll(forgeDir, 0o700) // ensure dir exists before opening log
-		logPath := filepath.Join(forgeDir, "daemon.log")
-		cmd, closeLog := newDaemonCommand(logPath, false)
-		defer closeLog()
-
-		if err := startBackground(cmd); err != nil {
-			fmt.Fprintf(os.Stderr, "Error starting daemon: %v\n", err)
-			os.Exit(1)
+		for _, item := range result.cleanup {
+			fmt.Printf("  Cleaning stale %s...\n", item)
 		}
-
-		// Wait up to 3 seconds for daemon to write its addr and start accepting.
-		for i := 0; i < 15; i++ {
-			time.Sleep(200 * time.Millisecond)
-			if a := readAddr(); a != "" && isDaemonAlive(a) {
-				fmt.Println("  Daemon started.")
-				break
-			}
-			if i == 14 { // Last attempt
-				fmt.Fprintln(os.Stderr, "  Error: daemon process exited immediately — not responding.")
-				fmt.Fprintf(os.Stderr, "  Check logs: %s\n", logPath)
-				fmt.Fprintln(os.Stderr, "  Run 'forge doctor' to diagnose.")
-				os.Exit(1)
-			}
-		}
+		fmt.Println("  Daemon started.")
 	}
 
 	database, err := db.Open("")
@@ -477,6 +415,21 @@ func runMCP(args []string) {
 		fmt.Fprintf(os.Stderr, "MCP server error: %v\n", err)
 		os.Exit(1)
 	}
+}
+
+func syncIntegrations(home string) []string {
+	agents := agent.DetectAgents(home)
+	for _, a := range agents {
+		skillPath, err := agent.SetupAgent(a, home)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "  Error setting up %s: %v\n", a, err)
+		} else if skillPath != "" {
+			fmt.Printf("  Configured %s (skill: %s)\n", a, skillPath)
+		} else {
+			fmt.Printf("  Configured %s\n", a)
+		}
+	}
+	return agents
 }
 
 func runDashboard(args []string) {
@@ -530,6 +483,11 @@ func runDoctor(args []string) {
 		if isStaleLock() {
 			fmt.Println("  - Removing stale lock file...")
 			cleanLock()
+			hasIssues = true
+		}
+		if isStaleStartupLock() {
+			fmt.Println("  - Removing stale startup lock file...")
+			cleanStartupLock()
 			hasIssues = true
 		}
 		if isStaleSocket() {
@@ -614,6 +572,9 @@ func runDoctorInline() {
 	}
 	if isStaleLock() {
 		fmt.Println("  Daemon: stale lock file")
+	}
+	if isStaleStartupLock() {
+		fmt.Println("  Daemon: stale startup lock file")
 	}
 	if isStaleSocket() {
 		fmt.Println("  Daemon: stale socket file")
