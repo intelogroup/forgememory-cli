@@ -7,7 +7,6 @@ import (
 	"io"
 	"os"
 	"os/exec"
-	"path/filepath"
 	"regexp"
 	"runtime"
 	"strings"
@@ -123,15 +122,10 @@ func runHook(args []string) {
 		toolName = envOr("FORGE_TOOL_NAME", "")
 	}
 
-	// Session recall: inject recent context on session start
-	if eventType == "UserPromptSubmit" {
-		handleSessionRecall()
-		os.Exit(0)
-	}
+	projectID := detectProjectIDForPath(input.CWD)
 
 	// Session end: synthesize summary asynchronously then forward event
 	if isSessionEndEvent(eventType) {
-		projectID := detectProject()
 		spawnSessionSynthesis(sessionID, projectID)
 		// Fall through — still record the stop event
 	}
@@ -145,7 +139,7 @@ func runHook(args []string) {
 		Type:       "event",
 		ID:         uuid.New().String(),
 		TS:         time.Now().UTC().Format(time.RFC3339),
-		ProjectID:  detectProject(),
+		ProjectID:  projectID,
 		SourceTool: sourceTool,
 		EventType:  eventType,
 		SessionID:  sessionID,
@@ -155,52 +149,38 @@ func runHook(args []string) {
 
 	if err := ipc.Send(msg); err != nil {
 		// Silent failure — daemon is down, hook exits in <1ms
+		if eventType != "UserPromptSubmit" {
+			os.Exit(0)
+		}
+	}
+
+	// Session recall: inject recent context on session start after persisting the
+	// prompt event, so startup summaries can include the latest prompt history.
+	if eventType == "UserPromptSubmit" {
+		handleSessionRecall(projectID)
 		os.Exit(0)
 	}
 	os.Exit(0)
 }
 
-// handleSessionRecall injects recent memories as Claude Code hookSpecificOutput.
+// handleSessionRecall injects recent memories as hookSpecificOutput.
 // Opens the DB directly (read-only under WAL mode — safe with concurrent daemon writes).
-func handleSessionRecall() {
+func handleSessionRecall(projectID string) {
 	database, err := db.Open("")
 	if err != nil {
 		return
 	}
 	defer database.Close()
 
-	principles, _ := database.RecentPrinciples(5)
-	summaries, _ := database.GetRecentSessionSummaries(3)
+	principles, _ := database.RecentPrinciplesByProject(projectID, 2)
+	summaries, _ := database.GetRecentSessionSummariesByProject(projectID, 2)
 
-	if len(principles) == 0 && len(summaries) == 0 {
+	text := buildSessionRecallOutput(projectID, summaries, principles)
+	if text == "" {
 		return
 	}
 
-	var sb strings.Builder
-	if len(summaries) > 0 {
-		sb.WriteString("## Previous Sessions\n")
-		for _, s := range summaries {
-			ts := s.TS
-			if len(ts) >= 10 {
-				ts = ts[:10]
-			}
-			if s.Learnings != "" {
-				sb.WriteString(fmt.Sprintf("- [%s] %s\n", ts, s.Learnings))
-			} else if s.Summary != "" {
-				sb.WriteString(fmt.Sprintf("- [%s] %s\n", ts, s.Summary))
-			}
-		}
-		sb.WriteString("\n")
-	}
-	if len(principles) > 0 {
-		sb.WriteString("## Active Principles\n")
-		for _, p := range principles {
-			sb.WriteString(fmt.Sprintf("- **%s** (%s, %.1f): %s\n",
-				p.Title, p.Type, p.ImpactScore, p.Narrative))
-		}
-	}
-
-	output := map[string]any{"hookSpecificOutput": sb.String()}
+	output := map[string]any{"hookSpecificOutput": text}
 	data, _ := json.Marshal(output)
 	fmt.Println(string(data))
 }
@@ -242,16 +222,58 @@ func envOr(key, fallback string) string {
 	return fallback
 }
 
-func detectProject() string {
-	if out, err := execCommand("git", "rev-parse", "--show-toplevel"); err == nil {
-		return filepath.Base(strings.TrimSpace(out))
-	}
-	cwd, _ := os.Getwd()
-	return filepath.Base(cwd)
-}
-
 func execCommand(name string, args ...string) (string, error) {
 	cmd := exec.Command(name, args...)
 	out, err := cmd.Output()
 	return string(out), err
+}
+
+func buildSessionRecallOutput(projectID string, summaries []db.SessionSummary, principles []db.Principle) string {
+	var sentences []string
+
+	var learningBits []string
+	for _, summary := range summaries {
+		if text := firstNonEmpty(summary.Learnings, summary.Summary); text != "" {
+			learningBits = append(learningBits, trimSentence(text))
+		}
+	}
+	if len(learningBits) > 0 {
+		prefix := "Recent lessons"
+		if projectID != "" {
+			prefix = fmt.Sprintf("Recent lessons for %s", projectID)
+		}
+		sentences = append(sentences, fmt.Sprintf("%s: %s.", prefix, strings.Join(learningBits, "; ")))
+	}
+
+	if len(principles) > 0 {
+		sentences = append(sentences, fmt.Sprintf("Active principle: %s.", trimSentence(principles[0].Narrative)))
+	} else {
+		for _, summary := range summaries {
+			if next := trimSentence(summary.NextSteps); next != "" {
+				sentences = append(sentences, fmt.Sprintf("Next step: %s.", next))
+				break
+			}
+		}
+	}
+
+	if len(sentences) == 0 {
+		return ""
+	}
+
+	return "## Startup Context\n" + strings.Join(sentences, " ")
+}
+
+func firstNonEmpty(values ...string) string {
+	for _, value := range values {
+		if trimmed := strings.TrimSpace(value); trimmed != "" {
+			return trimmed
+		}
+	}
+	return ""
+}
+
+func trimSentence(text string) string {
+	text = strings.TrimSpace(text)
+	text = strings.TrimRight(text, ".!?\n\r\t ")
+	return text
 }

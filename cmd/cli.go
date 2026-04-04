@@ -664,14 +664,6 @@ func truncate(s string, max int) string {
 	return s[:max] + "..."
 }
 
-func detectProjectID() string {
-	if out, err := execCommand("git", "rev-parse", "--show-toplevel"); err == nil {
-		return strings.TrimSpace(out)
-	}
-	cwd, _ := os.Getwd()
-	return cwd
-}
-
 func runServiceInstall(args []string) {
 	fmt.Println("Installing Forge as system service...")
 

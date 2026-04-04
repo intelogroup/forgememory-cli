@@ -336,7 +336,7 @@ func setupCodex(home string) (string, error) {
 	}
 
 	skillContent := map[string]any{
-		"forge_skill_version": 1,
+		"forge_skill_version": 2,
 		"description":         "Forge — Silent Memory Forger for AI agents",
 		"setup": map[string]any{
 			"first_time": map[string]any{
@@ -347,6 +347,18 @@ func setupCodex(home string) (string, error) {
 				"commands": []string{"forge start"},
 				"note":     "Run after a reboot or if any tool returns 'Daemon unreachable'.",
 			},
+			"verification": map[string]any{
+				"commands": []string{"codex mcp get forge", "forge status"},
+				"note":     "Do not guess whether Forge is installed or running. Verify MCP registration and daemon health with these exact commands before suggesting install or repair steps.",
+			},
+			"mcp_repair": map[string]any{
+				"commands": []string{fmt.Sprintf("codex mcp add forge -- %s mcp", forgePath), "codex mcp get forge"},
+				"note":     "If Codex MCP is missing, install it with the exact command above and verify it immediately with 'codex mcp get forge'.",
+			},
+		},
+		"instructions": []string{
+			"Do not guess Forge installation state. Verify it with 'codex mcp get forge' and 'forge status'.",
+			"Use exact installation commands when repair is needed; do not paraphrase or infer them from memory.",
 		},
 		"tools": map[string]any{
 			"get_recent_context": map[string]any{
@@ -367,6 +379,7 @@ func setupCodex(home string) (string, error) {
 			},
 		},
 		"hooks": map[string]any{
+			"PostToolUse":      fmt.Sprintf(`%s hook --event PostToolUse`, forgePath),
 			"UserPromptSubmit": fmt.Sprintf(`%s hook --event UserPromptSubmit`, forgePath),
 			"Stop":             fmt.Sprintf(`%s hook --event Stop`, forgePath),
 		},

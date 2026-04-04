@@ -151,6 +151,69 @@ func TestInsertPrinciple(t *testing.T) {
 	}
 }
 
+func TestRecentPrinciplesByProject(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "test.db")
+	db, err := Open(path)
+	if err != nil {
+		t.Fatalf("Open failed: %v", err)
+	}
+	defer db.Close()
+
+	for _, p := range []*Principle{
+		{Type: "bugfix", Title: "Windows daemon fix", Narrative: "Use detached child process", ProjectID: "forgememory-cli"},
+		{Type: "pattern", Title: "Legacy manual save", Narrative: "Stored under absolute repo path", ProjectID: "/tmp/repos/forgememory-cli"},
+		{Type: "pattern", Title: "Other project lesson", Narrative: "Ignore me", ProjectID: "other-repo"},
+	} {
+		if err := db.InsertPrinciple(p); err != nil {
+			t.Fatalf("InsertPrinciple failed: %v", err)
+		}
+	}
+
+	principles, err := db.RecentPrinciplesByProject("forgememory-cli", 10)
+	if err != nil {
+		t.Fatalf("RecentPrinciplesByProject failed: %v", err)
+	}
+	if len(principles) != 2 {
+		t.Fatalf("len(principles) = %d, want 2", len(principles))
+	}
+	for _, p := range principles {
+		if p.ProjectID != "forgememory-cli" && p.ProjectID != "/tmp/repos/forgememory-cli" {
+			t.Fatalf("unexpected ProjectID %q in result set", p.ProjectID)
+		}
+	}
+}
+
+func TestGetRecentSessionSummariesByProject(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "test.db")
+	db, err := Open(path)
+	if err != nil {
+		t.Fatalf("Open failed: %v", err)
+	}
+	defer db.Close()
+
+	for _, s := range []*SessionSummary{
+		{SessionID: "s1", ProjectID: "forgememory-cli", Learnings: "Keep context project-scoped."},
+		{SessionID: "s2", ProjectID: "other-repo", Learnings: "Ignore me."},
+	} {
+		if err := db.InsertSessionSummary(s); err != nil {
+			t.Fatalf("InsertSessionSummary failed: %v", err)
+		}
+	}
+
+	summaries, err := db.GetRecentSessionSummariesByProject("forgememory-cli", 10)
+	if err != nil {
+		t.Fatalf("GetRecentSessionSummariesByProject failed: %v", err)
+	}
+	if len(summaries) != 1 {
+		t.Fatalf("len(summaries) = %d, want 1", len(summaries))
+	}
+	if summaries[0].ProjectID != "forgememory-cli" {
+		t.Fatalf("ProjectID = %q, want forgememory-cli", summaries[0].ProjectID)
+	}
+}
+
 func TestDefaultPath(t *testing.T) {
 	path := defaultPath()
 	if path == "" {

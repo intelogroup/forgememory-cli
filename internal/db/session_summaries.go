@@ -1,6 +1,7 @@
 package db
 
 import (
+	"database/sql"
 	"time"
 
 	"github.com/google/uuid"
@@ -53,8 +54,32 @@ func (d *DB) GetRecentSessionSummaries(limit int) ([]SessionSummary, error) {
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
+	return scanSessionSummaries(rows)
+}
+
+// GetRecentSessionSummariesByProject returns the most recent session summaries for a project.
+func (d *DB) GetRecentSessionSummariesByProject(projectID string, limit int) ([]SessionSummary, error) {
+	if projectID == "" {
+		return d.GetRecentSessionSummaries(limit)
+	}
+	exact, unixLike, windowsLike := projectIDSelectors(projectID)
+	rows, err := d.conn.Query(
+		`SELECT id, ts, session_id, project_id,
+		        COALESCE(summary,''), COALESCE(request,''), COALESCE(investigation,''),
+		        COALESCE(learnings,''), COALESCE(next_steps,''), tokens
+		 FROM session_summaries
+		 WHERE project_id = ? OR project_id LIKE ? OR project_id LIKE ?
+		 ORDER BY ts DESC LIMIT ?`, exact, unixLike, windowsLike, limit,
+	)
+	if err != nil {
+		return nil, err
+	}
+	return scanSessionSummaries(rows)
+}
+
+func scanSessionSummaries(rows *sql.Rows) ([]SessionSummary, error) {
 	var out []SessionSummary
+	defer rows.Close()
 	for rows.Next() {
 		var s SessionSummary
 		if err := rows.Scan(&s.ID, &s.TS, &s.SessionID, &s.ProjectID,

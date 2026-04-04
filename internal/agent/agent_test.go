@@ -248,6 +248,39 @@ func TestSetupCodex_HonorsCODEX_HOME(t *testing.T) {
 	}
 }
 
+func TestSetupCodex_WritesExplicitVerificationAndPostToolUseHook(t *testing.T) {
+	home := t.TempDir()
+	codexHome := t.TempDir()
+	t.Setenv("CODEX_HOME", codexHome)
+
+	installedPath, err := setupCodex(home)
+	if err != nil {
+		t.Fatalf("setupCodex: %v", err)
+	}
+
+	data, err := os.ReadFile(installedPath)
+	if err != nil {
+		t.Fatalf("read skill file: %v", err)
+	}
+
+	var skill map[string]any
+	if err := json.Unmarshal(data, &skill); err != nil {
+		t.Fatalf("unmarshal skill: %v", err)
+	}
+
+	hooks, _ := skill["hooks"].(map[string]any)
+	if _, ok := hooks["PostToolUse"].(string); !ok {
+		t.Fatalf("expected PostToolUse hook in Codex skill, got: %#v", hooks["PostToolUse"])
+	}
+
+	setup, _ := skill["setup"].(map[string]any)
+	verification, _ := setup["verification"].(map[string]any)
+	note, _ := verification["note"].(string)
+	if !strings.Contains(note, "Do not guess whether Forge is installed or running") {
+		t.Fatalf("verification note missing exact instruction, got: %q", note)
+	}
+}
+
 func TestSetupCodex_PermissionDenied(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("chmod read-only dirs behave differently on Windows — covered by integration")

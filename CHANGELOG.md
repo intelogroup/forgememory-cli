@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.4.5] - 2026-04-03
+
+### Fixed
+- Codex installs now register `PostToolUse` hooks and include explicit verification and repair commands so setup guidance uses exact commands instead of guessing installation state.
+- Startup recall now persists `UserPromptSubmit`, scopes recall to the current project, and injects a compact summary built from recent project summaries and principles.
+- Project-scoped recall remains compatible with older records saved under absolute-path project IDs.
+
 ## [0.4.4] - 2026-04-03
 
 ### Fixed

@@ -2,8 +2,10 @@ package db
 
 import (
 	"crypto/sha256"
+	"database/sql"
 	"encoding/json"
 	"fmt"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -13,11 +15,11 @@ import (
 // AllowedConcepts is the whitelist of concept tags for principles.
 // Matches forgememo's concept whitelist to keep tags consistent.
 var AllowedConcepts = map[string]bool{
-	"security":    true,
-	"pattern":     true,
-	"gotcha":      true,
-	"performance": true,
-	"trade-off":   true,
+	"security":     true,
+	"pattern":      true,
+	"gotcha":       true,
+	"performance":  true,
+	"trade-off":    true,
 	"how-it-works": true,
 }
 
@@ -82,8 +84,31 @@ func (d *DB) RecentPrinciples(limit int) ([]Principle, error) {
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
+	return scanPrinciples(rows)
+}
+
+// RecentPrinciplesByProject returns the most recent principles for a project.
+func (d *DB) RecentPrinciplesByProject(projectID string, limit int) ([]Principle, error) {
+	if projectID == "" {
+		return d.RecentPrinciples(limit)
+	}
+	exact, unixLike, windowsLike := projectIDSelectors(projectID)
+	rows, err := d.conn.Query(
+		`SELECT id, ts, type, title, narrative, impact_score, project_id, source_event, fingerprint,
+		        COALESCE(concepts,''), COALESCE(files_modified,'')
+		 FROM principles
+		 WHERE project_id = ? OR project_id LIKE ? OR project_id LIKE ?
+		 ORDER BY ts DESC LIMIT ?`, exact, unixLike, windowsLike, limit,
+	)
+	if err != nil {
+		return nil, err
+	}
+	return scanPrinciples(rows)
+}
+
+func scanPrinciples(rows *sql.Rows) ([]Principle, error) {
 	var principles []Principle
+	defer rows.Close()
 	for rows.Next() {
 		var p Principle
 		var conceptsJSON, filesJSON string
@@ -126,4 +151,12 @@ func decodeStringSlice(s string) []string {
 	var out []string
 	json.Unmarshal([]byte(s), &out)
 	return out
+}
+
+func projectIDSelectors(projectID string) (exact, unixLike, windowsLike string) {
+	base := filepath.Base(projectID)
+	if base == "" {
+		base = projectID
+	}
+	return projectID, "%/" + base, "%\\" + base
 }
