@@ -247,11 +247,19 @@ func TestSetupGemini_RewritesStaleForgeHookPath(t *testing.T) {
 	if strings.Contains(content, "/tmp/missing/forge") {
 		t.Fatalf("stale forge path still present in Gemini settings: %s", content)
 	}
-	if !strings.Contains(content, `"command": "`+stableForge+`"`) {
-		t.Fatalf("updated Forge path not found in Gemini settings: %s", content)
-	}
 	if !strings.Contains(content, `hook --source gemini --event UserPromptSubmit`) {
 		t.Fatalf("UserPromptSubmit hook missing from Gemini settings: %s", content)
+	}
+
+	var settings map[string]any
+	if err := json.Unmarshal(data, &settings); err != nil {
+		t.Fatalf("unmarshal settings: %v", err)
+	}
+	mcpServers, _ := settings["mcpServers"].(map[string]any)
+	forgeServer, _ := mcpServers["forge"].(map[string]any)
+	command, _ := forgeServer["command"].(string)
+	if command != ForgePath() {
+		t.Fatalf("mcp forge command = %q, want %q", command, ForgePath())
 	}
 }
 
