@@ -300,3 +300,21 @@ func TestProcessEvent_DoesNotResolveAlertOnUnrelatedSuccess(t *testing.T) {
 		t.Fatalf("expected unresolved alert to remain active, got %#v", alerts)
 	}
 }
+
+func TestCommandFamily_IgnoresPathLikeText(t *testing.T) {
+	if got := commandFamily("/tmp/api-service"); got != "" {
+		t.Fatalf("commandFamily(path) = %q, want empty", got)
+	}
+	if got := commandFamily(`C:\work\api-service`); got != "" {
+		t.Fatalf("commandFamily(windows path) = %q, want empty", got)
+	}
+}
+
+func TestCommandFamily_RecognizesKnownBuildCommands(t *testing.T) {
+	if got := commandFamily("cargo build"); got != "cargo build" {
+		t.Fatalf("commandFamily(cargo build) = %q, want cargo build", got)
+	}
+	if got := commandFamily("npm install"); got != "npm install" {
+		t.Fatalf("commandFamily(npm install) = %q, want npm install", got)
+	}
+}

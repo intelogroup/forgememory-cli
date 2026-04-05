@@ -347,15 +347,28 @@ func commandFamily(text string) string {
 	if len(fields) == 0 {
 		return ""
 	}
-	if len(fields) == 1 {
-		return fields[0]
+	head := fields[0]
+	if looksLikePath(head) || strings.Contains(head, "[") || strings.Contains(head, ":") {
+		return ""
 	}
 
-	head := fields[0]
 	switch head {
 	case "cargo", "go", "npm", "pnpm", "yarn", "bun", "rustc", "python", "pytest", "node", "vercel":
+		if len(fields) == 1 {
+			return head
+		}
 		return head + " " + fields[1]
 	default:
-		return head
+		return ""
 	}
+}
+
+func looksLikePath(value string) bool {
+	if strings.HasPrefix(value, "/") || strings.HasPrefix(value, "./") || strings.HasPrefix(value, "../") || strings.HasPrefix(value, `\`) {
+		return true
+	}
+	if len(value) >= 3 && value[1] == ':' && (value[2] == '\\' || value[2] == '/') {
+		return true
+	}
+	return false
 }
