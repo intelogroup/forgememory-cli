@@ -497,6 +497,15 @@ func TestRunStatus_JSON(t *testing.T) {
 	}
 }
 
+func TestRunHealth_PrintsDistillationSection(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	out := captureStdout(func() { runHealth(nil) })
+	if !strings.Contains(out, "Distillation Health:") {
+		t.Fatalf("expected health heading, got: %q", out)
+	}
+}
+
 // ---- runDoctor ----
 
 func TestRunDoctor_DBExists(t *testing.T) {

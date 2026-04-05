@@ -41,6 +41,7 @@ forgememo login --email user --password pass --purchase  # Paid credits
 
 # Check status
 forgememo status
+forgememo health
 
 # Search memories
 forgememo search "pattern"
@@ -96,6 +97,7 @@ Machine-readable output for agents:
 forgememo status --json
 forgememo search "query" --json
 forgememo config --show --json
+forgememo health
 ```
 
 ## Commands
@@ -103,6 +105,7 @@ forgememo config --show --json
 - `forgememo init` - Initialize database and hooks
 - `forgememo start` / `forgememo stop` - Daemon lifecycle
 - `forgememo status` - Show stats
+- `forgememo health` - Show distillation health and alerts
 - `forgememo search <query>` - Full-text search
 - `forgememo distill` - Run distillation manually
 - `forgememo ui` - Open memory dashboard

@@ -336,10 +336,14 @@ func runSearch(args []string) {
 
 func runStatus(args []string) {
 	jsonOutput := false
+	detailed := false
 	for _, a := range args {
 		if a == "--json" {
 			jsonOutput = true
 			break
+		}
+		if a == "--detailed" {
+			detailed = true
 		}
 	}
 	if jsonOutput {
@@ -347,6 +351,9 @@ func runStatus(args []string) {
 		return
 	}
 	statusOutput()
+	if detailed {
+		runHealth([]string{})
+	}
 }
 
 func runHelp(args []string) {
@@ -357,9 +364,61 @@ func runHelp(args []string) {
 		fmt.Println("  get_principles           Get high-level patterns and decisions")
 		fmt.Println("  get_session_summaries    Get synthesized summaries of recent sessions")
 		fmt.Println("  get_project_timeline     Get cross-agent timeline for the current project")
+		fmt.Println("  get_distillation_health  Get last run status, failures, and backlog data")
+		fmt.Println("  get_alerts               Get active distillation/backlog alerts")
 		return
 	}
 	printUsage()
+}
+
+func runHealth(args []string) {
+	report, err := collectStatusReport()
+	if err != nil {
+		fmt.Printf("Error: %v\n", err)
+		return
+	}
+
+	status := report.Distillation.LastStatus
+	if status == "" {
+		status = "pending"
+	}
+	fmt.Println("Distillation Health:")
+	if report.Distillation.LastSuccessAt != "" {
+		fmt.Printf("  Last distilled: %s\n", formatRelativeTime(report.Distillation.LastSuccessAt))
+	} else {
+		fmt.Println("  Last distilled: never")
+	}
+	if report.Distillation.NextScheduledAt != "" {
+		fmt.Printf("  Next scheduled: %s\n", formatRelativeTime(report.Distillation.NextScheduledAt))
+	}
+	fmt.Printf("  Status: %s\n", strings.ToUpper(status))
+	fmt.Printf("  Failed attempts: %d\n", report.Distillation.ConsecutiveFailures)
+	fmt.Printf("  Events stuck: %d\n", report.Events.Undistilled)
+	if report.Distillation.LastErrorMessage != "" {
+		fmt.Printf("  Error: %s\n", report.Distillation.LastErrorMessage)
+	}
+
+	alerts := healthAlerts(report)
+	if len(alerts) > 0 {
+		fmt.Println("Alerts:")
+		for _, a := range alerts {
+			fmt.Printf("  - %s\n", a)
+		}
+	}
+}
+
+func healthAlerts(report statusReport) []string {
+	var alerts []string
+	if report.Distillation.ConsecutiveFailures >= 3 {
+		alerts = append(alerts, "distillation_failed: 3+ consecutive failures")
+	}
+	if report.Events.Undistilled >= 25 && report.Distillation.LastStatus == "failed" {
+		alerts = append(alerts, "event_backlog_high: undistilled backlog is growing")
+	}
+	if report.Distillation.LastErrorMessage != "" {
+		alerts = append(alerts, "last_error: "+truncate(report.Distillation.LastErrorMessage, 120))
+	}
+	return alerts
 }
 
 // runSave stores a memory directly, bypassing the daemon.

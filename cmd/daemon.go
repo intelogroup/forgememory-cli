@@ -176,7 +176,7 @@ func runDaemon(args []string) {
 	// Distillation loop
 	distillCfg := distill.LoadConfig()
 	distiller := distill.New(database, distillCfg)
-	go distillLoop(distiller, distillCfg.DistillInterval)
+	go distillLoop(distiller, database, distillCfg.DistillInterval)
 
 	<-stop
 	log.Println("Shutting down...")
@@ -251,18 +251,32 @@ func handleEventMsg(raw map[string]json.RawMessage, database *db.DB) {
 	}
 }
 
-func distillLoop(d *distill.Distiller, interval time.Duration) {
+func distillLoop(d *distill.Distiller, database *db.DB, interval time.Duration) {
 	if interval <= 0 {
 		interval = 10 * time.Minute
 	}
 	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
 	for range ticker.C {
+		runAt := time.Now().UTC()
+		start := time.Now()
+		_, undistilled, _ := database.EventCount()
 		count, err := d.DistillBatch(50)
+		next := runAt.Add(interval)
 		if err != nil {
 			log.Printf("Distillation error: %v", err)
+			if recErr := database.RecordDistillationFailure(runAt, time.Since(start), undistilled, err.Error(), next); recErr != nil {
+				log.Printf("Distillation health record error: %v", recErr)
+			}
 		} else if count > 0 {
 			log.Printf("Distilled %d principles from events", count)
+			if recErr := database.RecordDistillationSuccess(runAt, time.Since(start), undistilled, count, next); recErr != nil {
+				log.Printf("Distillation health record error: %v", recErr)
+			}
+		} else {
+			if recErr := database.RecordDistillationSuccess(runAt, time.Since(start), undistilled, 0, next); recErr != nil {
+				log.Printf("Distillation health record error: %v", recErr)
+			}
 		}
 	}
 }
@@ -425,6 +439,19 @@ type statusReport struct {
 	Daemon        string `json:"daemon"`
 	DaemonAddress string `json:"daemon_address,omitempty"`
 	LastDistilled string `json:"last_distilled,omitempty"`
+	Distillation  struct {
+		LastRunAt            string `json:"last_run_at,omitempty"`
+		LastSuccessAt        string `json:"last_success_at,omitempty"`
+		LastErrorAt          string `json:"last_error_at,omitempty"`
+		LastErrorMessage     string `json:"last_error_message,omitempty"`
+		LastStatus           string `json:"last_status"`
+		ConsecutiveFailures  int    `json:"consecutive_failures"`
+		TotalSuccesses       int    `json:"total_successes"`
+		TotalFailures        int    `json:"total_failures"`
+		NextScheduledAt      string `json:"next_scheduled_at,omitempty"`
+		LastAttemptedEvents  int    `json:"last_attempted_events"`
+		LastDistilledResults int    `json:"last_distilled_results"`
+	} `json:"distillation"`
 }
 
 func loadLastDistilled(database *db.DB) string {
@@ -457,6 +484,19 @@ func collectStatusReport() (statusReport, error) {
 	report.Principles = principles
 	report.Sessions = sessions
 	report.LastDistilled = loadLastDistilled(database)
+	if h, hErr := database.GetDistillationHealth(); hErr == nil {
+		report.Distillation.LastRunAt = h.LastRunAt
+		report.Distillation.LastSuccessAt = h.LastSuccessAt
+		report.Distillation.LastErrorAt = h.LastErrorAt
+		report.Distillation.LastErrorMessage = h.LastErrorMessage
+		report.Distillation.LastStatus = h.LastStatus
+		report.Distillation.ConsecutiveFailures = h.ConsecutiveFailures
+		report.Distillation.TotalSuccesses = h.TotalSuccesses
+		report.Distillation.TotalFailures = h.TotalFailures
+		report.Distillation.NextScheduledAt = h.NextScheduledAt
+		report.Distillation.LastAttemptedEvents = h.LastAttemptedEvents
+		report.Distillation.LastDistilledResults = h.LastDistilledPrinciples
+	}
 	if addr != "" && isDaemonAlive(addr) {
 		report.Daemon = "running"
 		report.DaemonAddress = addr
@@ -508,6 +548,11 @@ func statusOutput() {
 		fmt.Printf("Daemon:     %s\n", report.Daemon)
 	}
 	fmt.Printf("Last distilled: %s\n", formatRelativeTime(report.LastDistilled))
+	fmt.Printf("Distillation: %s", report.Distillation.LastStatus)
+	if report.Distillation.ConsecutiveFailures > 0 {
+		fmt.Printf(" (%d consecutive failures)", report.Distillation.ConsecutiveFailures)
+	}
+	fmt.Println()
 }
 
 func statusOutputJSON() {

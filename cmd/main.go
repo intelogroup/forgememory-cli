@@ -35,6 +35,8 @@ func main() {
 		runStop(os.Args[2:])
 	case "status":
 		runStatus(os.Args[2:])
+	case "health":
+		runHealth(os.Args[2:])
 	case "distill":
 		runDistill(os.Args[2:])
 	case "search":
@@ -86,6 +88,7 @@ func printUsage() {
    start         Start the daemon
    stop          Stop the daemon
    status        Show DB stats, daemon health, skill status
+   health        Show distillation health and alerts
    save          Save a memory directly (--type --content [--principle])
    scan          Mine recent git history for learnings (--dry-run)
    distill       Run distillation manually

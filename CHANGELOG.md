@@ -1,5 +1,19 @@
 # Changelog
 
+## [0.4.14] - 2026-04-05
+
+### Added
+- Added persistent distillation health tracking in SQLite (`distillation_health`) with last run/success/failure timestamps, last error, next schedule, and failure counters.
+- Added `forge health` command for direct CLI visibility into distillation status, failure streaks, and backlog alerts.
+- Added MCP health tools: `get_distillation_health` and `get_alerts` for agent-readable failure/backlog monitoring.
+
+### Changed
+- Extended `forge status --json` to include a `distillation` object with run health metadata.
+- Added `forge status --detailed` to print status plus health summary in one command.
+
+### Fixed
+- Distillation failures are now observable without manual log tailing; daemon loop records success/failure state every cycle.
+
 ## [0.4.13] - 2026-04-05
 
 ### Added
