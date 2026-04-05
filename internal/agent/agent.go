@@ -289,6 +289,17 @@ func setupGemini(home string) (string, error) {
 	}
 	settings["mcpServers"] = mcpServers
 
+	// Register hooks and replace stale Forge paths from previous installs.
+	hooks, _ := settings["hooks"].(map[string]any)
+	if hooks == nil {
+		hooks = make(map[string]any)
+	}
+	ensureGeminiHook(hooks, "AfterTool", "PostToolUse", forgePath, ".*")
+	ensureGeminiHook(hooks, "AfterAgent", "Stop", forgePath, "")
+	ensureGeminiHook(hooks, "BeforeAgent", "UserPromptSubmit", forgePath, "")
+	ensureGeminiHook(hooks, "SessionEnd", "SessionEnd", forgePath, "")
+	settings["hooks"] = hooks
+
 	// Marshal and write only if the content has changed.
 	data, err := json.MarshalIndent(settings, "", "  ")
 	if err != nil {
@@ -323,6 +334,65 @@ func setupGemini(home string) (string, error) {
 	}
 
 	return skillPath, nil
+}
+
+func ensureGeminiHook(hooks map[string]any, phase, eventType, forgePath, matcher string) {
+	newEntry := map[string]any{
+		"hooks": []any{
+			map[string]any{
+				"type":    "command",
+				"command": fmt.Sprintf(`"%s" hook --source gemini --event %s`, forgePath, eventType),
+			},
+		},
+	}
+	if matcher != "" {
+		newEntry["matcher"] = matcher
+	}
+
+	existing, _ := hooks[phase].([]any)
+	hooks[phase] = upsertGeminiHookArray(existing, newEntry, eventType)
+}
+
+func upsertGeminiHookArray(existing []any, newEntry map[string]any, eventType string) []any {
+	var result []any
+	inserted := false
+	for _, item := range existing {
+		if isGeminiForgeHookItem(item, eventType) {
+			if !inserted {
+				result = append(result, newEntry)
+				inserted = true
+			}
+			continue
+		}
+		result = append(result, item)
+	}
+	if !inserted {
+		result = append(result, newEntry)
+	}
+	return result
+}
+
+func isGeminiForgeHookItem(item any, eventType string) bool {
+	m, ok := item.(map[string]any)
+	if !ok {
+		return false
+	}
+	hooks, _ := m["hooks"].([]any)
+	if len(hooks) == 0 {
+		return false
+	}
+	expected := " hook --source gemini --event " + eventType
+	for _, h := range hooks {
+		hm, ok := h.(map[string]any)
+		if !ok {
+			continue
+		}
+		command, _ := hm["command"].(string)
+		if strings.Contains(command, expected) {
+			return true
+		}
+	}
+	return false
 }
 
 // --- Codex Integration ---

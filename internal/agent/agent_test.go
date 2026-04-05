@@ -192,6 +192,69 @@ func TestSetupClaude_NoDuplicateHooks(t *testing.T) {
 	}
 }
 
+func TestSetupGemini_RewritesStaleForgeHookPath(t *testing.T) {
+	home := t.TempDir()
+	geminiDir := filepath.Join(home, ".gemini")
+	if err := os.MkdirAll(geminiDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+
+	stale := `{
+  "hooks": {
+    "BeforeAgent": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "\"/tmp/missing/forge\" hook --source gemini --event UserPromptSubmit"
+          }
+        ]
+      }
+    ]
+  },
+  "mcpServers": {
+    "forge": {
+      "command": "/tmp/missing/forge",
+      "args": ["mcp"],
+      "env": {}
+    }
+  }
+}`
+	if err := os.WriteFile(filepath.Join(geminiDir, "settings.json"), []byte(stale), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	// Ensure ForgePath() resolves to a stable path during the test.
+	pathDir := filepath.Join(home, "bin")
+	if err := os.MkdirAll(pathDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	stableForge := filepath.Join(pathDir, "forge")
+	if err := os.WriteFile(stableForge, []byte("#!/bin/sh\n"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", pathDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+
+	if _, err := setupGemini(home); err != nil {
+		t.Fatalf("setupGemini: %v", err)
+	}
+
+	data, err := os.ReadFile(filepath.Join(geminiDir, "settings.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	content := string(data)
+	if strings.Contains(content, "/tmp/missing/forge") {
+		t.Fatalf("stale forge path still present in Gemini settings: %s", content)
+	}
+	if !strings.Contains(content, `"command": "`+stableForge+`"`) {
+		t.Fatalf("updated Forge path not found in Gemini settings: %s", content)
+	}
+	if !strings.Contains(content, `hook --source gemini --event UserPromptSubmit`) {
+		t.Fatalf("UserPromptSubmit hook missing from Gemini settings: %s", content)
+	}
+}
+
 // ---- probeWritable ----
 
 func TestProbeWritable_WritableDir(t *testing.T) {
