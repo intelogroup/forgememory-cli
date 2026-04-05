@@ -90,10 +90,17 @@ func (s *Server) Run() error {
 
 		resp := s.handleRequest(req)
 		if resp != nil {
-			data, _ := json.Marshal(resp)
+			data, err := json.Marshal(resp)
+			if err != nil {
+				return fmt.Errorf("marshal response: %w", err)
+			}
 			data = append(data, '\n')
-			s.writer.Write(data)
-			s.writer.Flush()
+			if _, err := s.writer.Write(data); err != nil {
+				return fmt.Errorf("write response: %w", err)
+			}
+			if err := s.writer.Flush(); err != nil {
+				return fmt.Errorf("flush response: %w", err)
+			}
 		}
 	}
 }
@@ -285,7 +292,7 @@ func (s *Server) getRecentContext(args map[string]any) ToolResult {
 		text += "### Principles\n"
 		for _, p := range principles {
 			text += fmt.Sprintf("#### %s\n", p.Title)
-			text += fmt.Sprintf("- **Type**: %s | **Score**: %.1f | **Date**: %s\n", p.Type, p.ImpactScore, p.TS[:10])
+			text += fmt.Sprintf("- **Type**: %s | **Score**: %.1f | **Date**: %s\n", p.Type, p.ImpactScore, prefix(p.TS, 10))
 			if len(p.Concepts) > 0 {
 				text += fmt.Sprintf("- **Concepts**: %s\n", strings.Join(p.Concepts, ", "))
 			}
@@ -319,7 +326,7 @@ func (s *Server) searchMemories(args map[string]any) ToolResult {
 		text += "No matching events found.\n"
 	} else {
 		for _, e := range events {
-			text += fmt.Sprintf("### [%s] %s (%s)\n", e.TS[:10], e.EventType, e.SourceTool)
+			text += fmt.Sprintf("### [%s] %s (%s)\n", prefix(e.TS, 10), e.EventType, e.SourceTool)
 			payload := e.Payload
 			if len(payload) > 300 {
 				payload = payload[:300] + "..."
@@ -349,7 +356,7 @@ func (s *Server) getPrinciples(args map[string]any) ToolResult {
 		for _, p := range principles {
 			text += fmt.Sprintf("### %s [%s]\n", p.Title, p.Type)
 			text += fmt.Sprintf("- **Impact**: %.1f | **Date**: %s | **Project**: %s\n",
-				p.ImpactScore, p.TS[:10], p.ProjectID)
+				p.ImpactScore, prefix(p.TS, 10), p.ProjectID)
 			if len(p.Concepts) > 0 {
 				text += fmt.Sprintf("- **Concepts**: %s\n", strings.Join(p.Concepts, ", "))
 			}
@@ -464,7 +471,7 @@ func (s *Server) getProjectTimeline(args map[string]any) ToolResult {
 				end = end[:10]
 			}
 			text += fmt.Sprintf("| `%s` | %s | %d | %s | %s |\n",
-				e.SessionID[:8], e.PrimaryAgent, e.EventCount, start, end)
+				prefix(e.SessionID, 8), e.PrimaryAgent, e.EventCount, start, end)
 		}
 	}
 
@@ -481,4 +488,11 @@ func detectProject() string {
 		return parts[len(parts)-1]
 	}
 	return cwd
+}
+
+func prefix(s string, n int) string {
+	if len(s) <= n {
+		return s
+	}
+	return s[:n]
 }
