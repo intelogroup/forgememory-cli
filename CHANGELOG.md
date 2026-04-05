@@ -1,5 +1,15 @@
 # Changelog
 
+## [0.4.11] - 2026-04-05
+
+### Added
+- Added comprehensive `internal/service` unit tests covering launchd/systemd/Windows routing, status checks, and Windows scheduled-task fallback behavior.
+- Added focused CLI service command tests for install/uninstall/start/stop success and exit-on-error paths.
+
+### Fixed
+- Added a CI coverage gate enforcing `internal/service` coverage at or above 65% to prevent regression to untested service lifecycle code.
+- Aligned repo and npm package versioning to `0.4.11` so release artifacts stay consistent.
+
 ## [0.4.10] - 2026-04-04
 
 ### Fixed

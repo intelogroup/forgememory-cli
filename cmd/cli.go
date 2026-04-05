@@ -24,6 +24,16 @@ import (
 	"github.com/forge/forge/internal/service"
 )
 
+var (
+	serviceNew         = service.New
+	serviceIsInstalled = func(m *service.Manager) bool { return m.IsServiceInstalled() }
+	serviceInstall     = func(m *service.Manager) error { return m.Install() }
+	serviceUninstall   = func(m *service.Manager) error { return m.Uninstall() }
+	serviceStart       = func(m *service.Manager) error { return m.Start() }
+	serviceStop        = func(m *service.Manager) error { return m.Stop() }
+	exitWithCode       = os.Exit
+)
+
 func min(a, b int) int {
 	if a < b {
 		return a
@@ -800,20 +810,20 @@ func truncate(s string, max int) string {
 func runServiceInstall(args []string) {
 	fmt.Println("Installing Forge as system service...")
 
-	mgr, err := service.New()
+	mgr, err := serviceNew()
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "  Error: %v\n", err)
-		os.Exit(1)
+		exitWithCode(1)
 	}
 
-	if mgr.IsServiceInstalled() {
+	if serviceIsInstalled(mgr) {
 		fmt.Println("  Service already installed.")
 		return
 	}
 
-	if err := mgr.Install(); err != nil {
+	if err := serviceInstall(mgr); err != nil {
 		fmt.Fprintf(os.Stderr, "  Error installing service: %v\n", err)
-		os.Exit(1)
+		exitWithCode(1)
 	}
 
 	fmt.Println("  Service installed successfully.")
@@ -823,20 +833,20 @@ func runServiceInstall(args []string) {
 func runServiceUninstall(args []string) {
 	fmt.Println("Uninstalling Forge service...")
 
-	mgr, err := service.New()
+	mgr, err := serviceNew()
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "  Error: %v\n", err)
-		os.Exit(1)
+		exitWithCode(1)
 	}
 
-	if !mgr.IsServiceInstalled() {
+	if !serviceIsInstalled(mgr) {
 		fmt.Println("  Service not installed.")
 		return
 	}
 
-	if err := mgr.Uninstall(); err != nil {
+	if err := serviceUninstall(mgr); err != nil {
 		fmt.Fprintf(os.Stderr, "  Error uninstalling service: %v\n", err)
-		os.Exit(1)
+		exitWithCode(1)
 	}
 
 	fmt.Println("  Service uninstalled successfully.")
@@ -845,15 +855,15 @@ func runServiceUninstall(args []string) {
 func runServiceStart(args []string) {
 	fmt.Println("Starting Forge service...")
 
-	mgr, err := service.New()
+	mgr, err := serviceNew()
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "  Error: %v\n", err)
-		os.Exit(1)
+		exitWithCode(1)
 	}
 
-	if err := mgr.Start(); err != nil {
+	if err := serviceStart(mgr); err != nil {
 		fmt.Fprintf(os.Stderr, "  Error starting service: %v\n", err)
-		os.Exit(1)
+		exitWithCode(1)
 	}
 
 	fmt.Println("  Service started.")
@@ -862,15 +872,15 @@ func runServiceStart(args []string) {
 func runServiceStop(args []string) {
 	fmt.Println("Stopping Forge service...")
 
-	mgr, err := service.New()
+	mgr, err := serviceNew()
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "  Error: %v\n", err)
-		os.Exit(1)
+		exitWithCode(1)
 	}
 
-	if err := mgr.Stop(); err != nil {
+	if err := serviceStop(mgr); err != nil {
 		fmt.Fprintf(os.Stderr, "  Error stopping service: %v\n", err)
-		os.Exit(1)
+		exitWithCode(1)
 	}
 
 	fmt.Println("  Service stopped.")

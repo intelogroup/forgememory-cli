@@ -22,6 +22,11 @@ jobs:
       - name: Unit tests
         run: go test ./... -v -count=1
 
+      - name: Coverage gate (internal/service >= 65%)
+        run: |
+          go test ./internal/service -coverprofile=service.cover.out -covermode=atomic -count=1
+          go tool cover -func=service.cover.out | awk '/^total:/ { gsub("%","",$3); if (($3+0) < 65) { printf("internal/service coverage %.1f%% is below 65%%\n", $3+0); exit 1 } else { printf("internal/service coverage %.1f%%\n", $3+0) } }'
+
       - name: Lint
         run: go vet ./...
 
