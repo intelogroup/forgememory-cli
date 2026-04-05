@@ -1,8 +1,10 @@
-# Forge - Silent Memory Layer for AI Agents
+# Forgememo - Silent Memory Layer for AI Agents
 
 Captures tool usage, distills insights into principles, and injects context for coding agents.
 
 ## Quick Install
+
+No npm required.
 
 ### macOS / Linux
 ```bash
@@ -13,6 +15,8 @@ curl -fsSL https://raw.githubusercontent.com/intelogroup/forgememory-cli/main/in
 ```powershell
 irm https://raw.githubusercontent.com/intelogroup/forgememory-cli/main/install.ps1 | iex
 ```
+
+The installer adds both `forgememo` (primary) and `forge` (alias) commands.
 
 Or download directly:
 - [Windows x64](https://github.com/intelogroup/forgememory-cli/releases/latest/download/forge-windows-amd64.zip)
@@ -25,23 +29,24 @@ Or download directly:
 
 ```bash
 # Initialize
-forge init
+forgememo init
 
 # Start daemon
-forge start
+forgememo start
 
-# Configure inference (optional, free Ollama is default)
-forge config --provider openai --api-key sk-...
-forge login --email user --password pass --purchase  # Paid credits
+# Configure inference (optional, Forgememo is default)
+forgememo config --provider forgememo   # auto-cheapest, includes free tier
+forgememo config --provider openai --api-key sk-...
+forgememo login --email user --password pass --purchase  # Paid credits
 
 # Check status
-forge status
+forgememo status
 
 # Search memories
-forge search "pattern"
+forgememo search "pattern"
 
 # Open dashboard
-forge ui
+forgememo ui
 ```
 
 ## Reporting
@@ -56,22 +61,54 @@ The report compares npm download totals with GitHub release archive downloads by
 
 | Provider | Cost | Setup |
 |----------|------|-------|
+| Forgememo | Cheapest | `forgememo config --provider forgememo` |
 | Ollama | Free | Just run `ollama serve` |
-| OpenAI | Paid | `forge config --provider openai --api-key sk-...` |
-| Anthropic | Paid | `forge config --provider anthropic --api-key sk-ant-...` |
-| Forge Credits | Paid | `forge login --email user --password pass` |
+| OpenAI | Paid | `forgememo config --provider openai --api-key sk-...` |
+| Anthropic | Paid | `forgememo config --provider anthropic --api-key sk-ant-...` |
+| Forgememo Credits | Paid | `forgememo login --email user --password pass` |
+
+Defaults by provider:
+- `forgememo`: `claude-haiku-4-5-20251001`
+- `anthropic`: `claude-haiku-4-5-20251001`
+- `openai`: `gpt-4o`
+- `ollama`: `llama3:latest`
+
+Priority when unset: `forgememo` first.
+
+## Config File
+
+`~/.forge/config` format:
+
+```bash
+FORGE_PROVIDER=anthropic
+FORGE_API_KEY=sk-ant-...
+FORGE_MODEL=claude-haiku-4-5-20251001
+FORGE_TIMEOUT=30s
+FORGE_RETRIES=3
+FORGE_DISTILL_INTERVAL=10m
+```
+
+## JSON Output
+
+Machine-readable output for agents:
+
+```bash
+forgememo status --json
+forgememo search "query" --json
+forgememo config --show --json
+```
 
 ## Commands
 
-- `forge init` - Initialize database and hooks
-- `forge start` / `forge stop` - Daemon lifecycle
-- `forge status` - Show stats
-- `forge search <query>` - Full-text search
-- `forge distill` - Run distillation manually
-- `forge ui` - Open memory dashboard
-- `forge mcp` - Start MCP server
-- `forge config` - Configure provider
-- `forge login` - Login with credits
+- `forgememo init` - Initialize database and hooks
+- `forgememo start` / `forgememo stop` - Daemon lifecycle
+- `forgememo status` - Show stats
+- `forgememo search <query>` - Full-text search
+- `forgememo distill` - Run distillation manually
+- `forgememo ui` - Open memory dashboard
+- `forgememo mcp` - Start MCP server
+- `forgememo config` - Configure provider
+- `forgememo login` - Login with credits
 
 ## License
 

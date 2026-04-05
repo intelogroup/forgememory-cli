@@ -295,7 +295,7 @@ func TestRunDistill_UnconfiguredProviderSkipsAndKeepsQueue(t *testing.T) {
 	if undistilled != 3 {
 		t.Fatalf("expected undistilled events to remain queued, got %d", undistilled)
 	}
-	if !strings.Contains(out, "Skipping distillation: Cannot reach inference provider") {
+	if !strings.Contains(out, "Skipping distillation:") {
 		t.Errorf("expected skip message for missing provider, got: %q", out)
 	}
 	if !strings.Contains(out, "Events remain queued") {
@@ -479,6 +479,21 @@ func TestStatusOutput_ShowsEventCounts(t *testing.T) {
 	out := captureStdout(statusOutput)
 	if !strings.Contains(out, "2") {
 		t.Errorf("expected event count in status output, got: %q", out)
+	}
+}
+
+func TestRunStatus_JSON(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	seedEvents(t, 1)
+
+	out := captureStdout(func() { runStatus([]string{"--json"}) })
+	var payload map[string]any
+	if err := json.Unmarshal([]byte(out), &payload); err != nil {
+		t.Fatalf("status --json output should be JSON, got err: %v, output: %q", err, out)
+	}
+	if payload["schema_version"] != "1" {
+		t.Fatalf("schema_version = %v, want 1", payload["schema_version"])
 	}
 }
 

@@ -146,8 +146,9 @@ jobs:
             $running = $false
             for ($i = 0; $i -lt 20; $i++) {
               Start-Sleep -Seconds 1
-              $status = Invoke-Forge -ForgeArgs @('status')
-              if ($status -match 'Daemon:\s+running') {
+              $status = Invoke-Forge -ForgeArgs @('status', '--json')
+              $statusObj = $status | ConvertFrom-Json
+              if ($statusObj.daemon -eq 'running') {
                 $running = $true
                 break
               }
@@ -170,8 +171,9 @@ jobs:
             Invoke-Forge -ForgeArgs @('hook') -InputText '{"session_id":"ci-test","hook_event_name":"PostToolUse","tool_name":"Edit","tool_input":{"file_path":"test.go"}}'
             Start-Sleep -Milliseconds 500
 
-            $status = Invoke-Forge -ForgeArgs @('status')
-            if ($status -notmatch 'Events:\s+2') {
+            $status = Invoke-Forge -ForgeArgs @('status', '--json')
+            $statusObj = $status | ConvertFrom-Json
+            if ($statusObj.events.total -ne 2) {
               throw "expected 2 captured events after hook calls"
             }
           } finally {
@@ -190,8 +192,9 @@ jobs:
             Invoke-Forge -ForgeArgs @('stop')
           }
 
-          $finalStatus = Invoke-Forge -ForgeArgs @('status')
-          if ($finalStatus -notmatch 'Daemon:\s+not running') {
+          $finalStatus = Invoke-Forge -ForgeArgs @('status', '--json')
+          $finalStatusObj = $finalStatus | ConvertFrom-Json
+          if ($finalStatusObj.daemon -ne 'not running') {
             throw "daemon should not be running after stop"
           }
 

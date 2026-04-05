@@ -20,14 +20,20 @@ func TestLoadConfigDefaults(t *testing.T) {
 	t.Setenv("FORGE_BASE_URL", "")
 
 	cfg := LoadConfig()
-	if cfg.Provider != ProviderOllama {
-		t.Errorf("default provider = %s, want %s", cfg.Provider, ProviderOllama)
+	if cfg.Provider != ProviderForgememo {
+		t.Errorf("default provider = %s, want %s", cfg.Provider, ProviderForgememo)
 	}
-	if cfg.Model != "llama3.2" {
-		t.Errorf("default model = %s, want llama3.2", cfg.Model)
+	if cfg.Model != "claude-haiku-4-5-20251001" {
+		t.Errorf("default model = %s, want claude-haiku-4-5-20251001", cfg.Model)
 	}
-	if cfg.BaseURL != "http://localhost:11434" {
-		t.Errorf("default base URL = %s, want http://localhost:11434", cfg.BaseURL)
+	if cfg.BaseURL == "" {
+		t.Errorf("default base URL should be set")
+	}
+	if cfg.Timeout != 30*time.Second {
+		t.Errorf("default timeout = %s, want 30s", cfg.Timeout)
+	}
+	if cfg.Retries != 3 {
+		t.Errorf("default retries = %d, want 3", cfg.Retries)
 	}
 }
 
@@ -156,8 +162,9 @@ func TestCallOllama(t *testing.T) {
 	d := &Distiller{
 		config: Config{
 			Provider: ProviderOllama,
-			Model:    "llama3.2",
+			Model:    "llama3:latest",
 			BaseURL:  server.URL,
+			Retries:  1,
 		},
 		client: server.Client(),
 	}
@@ -304,8 +311,9 @@ func TestCallOllamaUnreachable(t *testing.T) {
 	d := &Distiller{
 		config: Config{
 			Provider: ProviderOllama,
-			Model:    "llama3.2",
+			Model:    "llama3:latest",
 			BaseURL:  "http://localhost:19999",
+			Retries:  0,
 		},
 		client: &http.Client{Timeout: 2 * time.Second},
 	}
@@ -313,6 +321,19 @@ func TestCallOllamaUnreachable(t *testing.T) {
 	_, err := d.callOllama("test")
 	if err == nil {
 		t.Error("expected error for unreachable Ollama")
+	}
+}
+
+func TestLoadConfigTimeoutFromEnv(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	t.Setenv("FORGE_TIMEOUT", "45s")
+	t.Setenv("FORGE_RETRIES", "6")
+	cfg := LoadConfig()
+	if cfg.Timeout != 45*time.Second {
+		t.Fatalf("timeout = %s, want 45s", cfg.Timeout)
+	}
+	if cfg.Retries != 6 {
+		t.Fatalf("retries = %d, want 6", cfg.Retries)
 	}
 }
 

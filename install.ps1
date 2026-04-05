@@ -30,15 +30,22 @@ Invoke-WebRequest -Uri $URL -OutFile $TMP
 # Extract
 Expand-Archive -Path $TMP -DestinationPath $INSTALL_DIR -Force
 
-# Find exe
-$EXE = Get-ChildItem -Path $INSTALL_DIR -Filter "*.exe" | Select-Object -First 1
+# Find extracted exe and normalize command names
+$EXE = Get-ChildItem -Path $INSTALL_DIR -Filter "forge-windows-*.exe" | Select-Object -First 1
 if ($EXE) {
-    # Create shim
-    $SHIM = "$env:LOCALAPPDATA\Microsoft\WindowsApps\forge.exe"
-    Copy-Item $EXE.FullName $SHIM -Force
-    
+    $FORGEMEMO_EXE = Join-Path $INSTALL_DIR "forgememo.exe"
+    $FORGE_EXE = Join-Path $INSTALL_DIR "forge.exe"
+    Copy-Item $EXE.FullName $FORGEMEMO_EXE -Force
+    Copy-Item $EXE.FullName $FORGE_EXE -Force
+    Remove-Item $EXE.FullName -Force -ErrorAction SilentlyContinue
+
+    # Create user command shims
+    $SHIM_DIR = "$env:LOCALAPPDATA\Microsoft\WindowsApps"
+    Copy-Item $FORGEMEMO_EXE (Join-Path $SHIM_DIR "forgememo.exe") -Force
+    Copy-Item $FORGE_EXE (Join-Path $SHIM_DIR "forge.exe") -Force
+
     Write-Host ""
-    Write-Host "Done! Run: forge --help"
+    Write-Host "Done! Run: forgememo --help"
 } else {
     Write-Host "Error: Binary not found" -ForegroundColor Red
 }

@@ -34,7 +34,7 @@ func main() {
 	case "stop":
 		runStop(os.Args[2:])
 	case "status":
-		statusOutput()
+		runStatus(os.Args[2:])
 	case "distill":
 		runDistill(os.Args[2:])
 	case "search":
@@ -66,7 +66,7 @@ func main() {
 	case "version":
 		fmt.Printf("forge %s\n", version)
 	case "help", "--help", "-h":
-		printUsage()
+		runHelp(os.Args[2:])
 	default:
 		fmt.Fprintf(os.Stderr, "Unknown command: %s\n", os.Args[1])
 		printUsage()
@@ -93,12 +93,13 @@ func printUsage() {
    mcp           Start MCP server (stdio transport, for Claude Code)
    ui            Start memory dashboard web UI (http://localhost:5555)
     doctor        Self-test: check DB, daemon, agents, binary
-    config        Configure inference provider (--provider --api-key)
+    config        Configure inference provider (--provider --api-key [--model --timeout --retries])
     login         Login to Forge (--email --password [--purchase])
     hook          (internal) Hook entrypoint — called by agents
    daemon        (internal) Daemon entrypoint — long-running service
    version       Print version
    help          Print this help
+   help mcp      Show MCP tool docs
 
  Environment:
    FORGE_SESSION_ID    Session identifier (set by hook)
@@ -106,7 +107,11 @@ func printUsage() {
    FORGE_EVENT_TYPE    Event type: PostToolUse/SessionEnd/UserPromptSubmit (set by hook)
    FORGE_TOOL_NAME     Tool name if applicable (set by hook)
    FORGE_PIPE_ADDR     Daemon IPC address (set by daemon)
-   FORGE_PROVIDER      Inference provider: anthropic/openai/ollama
+   FORGE_PROVIDER      Inference provider: forgememo/anthropic/openai/ollama
    FORGE_API_KEY       API key for inference provider
+   FORGE_MODEL         Model override (provider default if omitted)
+   FORGE_TIMEOUT       Inference timeout (e.g. 30s)
+   FORGE_RETRIES       Retry attempts for transient failures
+   FORGE_DISTILL_INTERVAL Daemon distillation interval (e.g. 10m)
  `)
 }

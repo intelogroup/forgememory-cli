@@ -1,5 +1,28 @@
 # Changelog
 
+## [0.4.13] - 2026-04-05
+
+### Added
+- Added configurable distillation controls: `forge config --timeout`, `--retries`, and `--interval`, plus interactive setup and provider/model selection prompts.
+- Added machine-readable output flags for automation: `forge status --json`, `forge search ... --json`, and `forge config --show --json`.
+- Added `forge help mcp` command to list MCP tools and intended usage.
+
+### Changed
+- Set Anthropic default model to `claude-haiku-4-5-20251001`.
+- Promoted `forgememo` as the default provider and added `forge` alias compatibility for existing config.
+- Expanded status output to include provider, model, database path, and relative last-distilled time.
+
+### Fixed
+- Added Ollama retry/backoff handling and clearer distillation diagnostics with actionable remediation steps.
+- Updated Windows CI integration checks to parse `status --json` for stable assertions.
+- Documented provider defaults and `~/.forge/config` format in README.
+
+## [0.4.12] - 2026-04-05
+
+### Fixed
+- Updated release installers to install `forgememo` directly without npm as the primary command and keep `forge` as a compatibility alias.
+- Updated Quick Install and usage docs to standardize on no-npm installation and `forgememo` command examples.
+
 ## [0.4.11] - 2026-04-05
 
 ### Added
