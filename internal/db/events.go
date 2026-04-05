@@ -173,7 +173,12 @@ func (d *DB) RecentEvents(limit int) ([]Event, error) {
 // Groups events by session and aggregates across all agents (claude/gemini/codex).
 func (d *DB) ProjectTimeline(projectID string, limit int) ([]ProjectTimelineEntry, error) {
 	rows, err := d.conn.Query(`
-		SELECT DISTINCT session_id, source_tool, MIN(ts) as start_ts, MAX(ts) as end_ts,
+		SELECT session_id,
+			CASE
+				WHEN COUNT(DISTINCT source_tool)=1 THEN MIN(source_tool)
+				ELSE 'multi'
+			END as primary_agent,
+			MIN(ts) as start_ts, MAX(ts) as end_ts,
 			COUNT(*) as event_count
 		FROM events
 		WHERE project_id = ?
