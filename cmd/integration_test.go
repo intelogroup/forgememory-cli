@@ -818,6 +818,7 @@ func TestBinary_Hook_RepeatedFailureInjectsOfficialDocsHintAfterRetrieval(t *tes
 		"FORGE_CONTEXT7_MCP_CMD=" + os.Args[0],
 		"FORGE_CONTEXT7_MCP_ARGS=-test.run=TestContext7MCPHelperProcess --",
 		"GO_WANT_CONTEXT7_MCP_HELPER=1",
+		"FORGE_TEST_SUBPROCESS=context7_mcp_helper",
 	})
 
 	failPayload := `{"session_id":"rust-fail-3","cwd":"/tmp/api-service","tool_name":"Bash","hook_event_name":"PostToolUse","tool_input":{"command":"cargo build"},"tool_response":{"stderr":"error[E0599]: no method named serve found for struct AppState\ncould not compile api-service due to previous error"}}`
@@ -911,6 +912,7 @@ func TestBinary_Hook_RepeatedFailureInjectsAIRefinedOfficialDocsHint(t *testing.
 		"FORGE_CONTEXT7_MCP_CMD=" + os.Args[0],
 		"FORGE_CONTEXT7_MCP_ARGS=-test.run=TestContext7MCPHelperProcess --",
 		"GO_WANT_CONTEXT7_MCP_HELPER=1",
+		"FORGE_TEST_SUBPROCESS=context7_mcp_helper",
 		"FORGE_PROVIDER=anthropic",
 		"FORGE_API_KEY=sk-ant-test",
 		"FORGE_BASE_URL=" + server.URL,
@@ -994,6 +996,7 @@ func TestBinary_Hook_RepeatedFailureWaitsBrieflyForOfficialDocsHint(t *testing.T
 		"FORGE_CONTEXT7_MCP_CMD=" + os.Args[0],
 		"FORGE_CONTEXT7_MCP_ARGS=-test.run=TestContext7MCPHelperProcess --",
 		"GO_WANT_CONTEXT7_MCP_HELPER=1",
+		"FORGE_TEST_SUBPROCESS=context7_mcp_helper",
 		"GO_WANT_CONTEXT7_MCP_DELAY_MS=350",
 		"FORGE_HOOK_RECALL_WAIT_MS=2000",
 		"FORGE_HOOK_RECALL_POLL_MS=50",
