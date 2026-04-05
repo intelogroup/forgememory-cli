@@ -8,10 +8,11 @@ import (
 )
 
 type Config struct {
-	Provider string
-	APIKey   string
-	Model    string
-	BaseURL  string
+	Provider       string
+	APIKey         string
+	Model          string
+	BaseURL        string
+	Context7APIKey string
 }
 
 func Path() string {
@@ -53,6 +54,8 @@ func Load() (Config, error) {
 			cfg.Model = value
 		case "FORGE_BASE_URL", "FORGE_API_URL":
 			cfg.BaseURL = value
+		case "CONTEXT7_API_KEY":
+			cfg.Context7APIKey = value
 		}
 	}
 	return cfg, nil
@@ -78,6 +81,9 @@ func Save(cfg Config) error {
 	if cfg.BaseURL != "" {
 		lines = append(lines, fmt.Sprintf("FORGE_BASE_URL=%s", cfg.BaseURL))
 	}
+	if cfg.Context7APIKey != "" {
+		lines = append(lines, fmt.Sprintf("CONTEXT7_API_KEY=%s", cfg.Context7APIKey))
+	}
 
 	return os.WriteFile(path, []byte(strings.Join(lines, "\n")+"\n"), 0o600)
 }
@@ -99,6 +105,9 @@ func SetEnvFromFile() error {
 	if cfg.BaseURL != "" {
 		os.Setenv("FORGE_BASE_URL", cfg.BaseURL)
 		os.Setenv("FORGE_API_URL", cfg.BaseURL) // legacy compatibility for older paths
+	}
+	if cfg.Context7APIKey != "" {
+		os.Setenv("CONTEXT7_API_KEY", cfg.Context7APIKey)
 	}
 	return nil
 }

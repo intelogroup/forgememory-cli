@@ -879,10 +879,11 @@ func runServiceStop(args []string) {
 func runConfig(args []string) {
 	fs := flag.NewFlagSet("config", flag.ContinueOnError)
 	showFlag := fs.Bool("show", false, "Show current config")
-	providerFlag := fs.String("provider", "", "Provider: anthropic/openai/ollama")
+	providerFlag := fs.String("provider", "", "Provider: anthropic/openai/ollama/codex")
 	apiKeyFlag := fs.String("api-key", "", "API key for provider")
 	modelFlag := fs.String("model", "", "Model name (optional, defaults vary by provider)")
 	baseURLFlag := fs.String("base-url", "", "Base URL for API (optional)")
+	context7APIKeyFlag := fs.String("context7-api-key", "", "Context7 API key for official docs")
 	if err := fs.Parse(args); err != nil {
 		os.Exit(1)
 	}
@@ -915,30 +916,34 @@ func runConfig(args []string) {
 		fmt.Println("")
 		fmt.Println("Options:")
 		fmt.Println("  --show           Show current configuration")
-		fmt.Println("  --provider       Provider: anthropic, openai, or ollama")
+		fmt.Println("  --provider       Provider: anthropic, openai, ollama, or codex")
 		fmt.Println("  --api-key        API key for the provider")
 		fmt.Println("  --model          Model name (optional)")
 		fmt.Println("  --base-url       Base URL for API (optional)")
+		fmt.Println("  --context7-api-key Context7 API key for official docs")
 		fmt.Println("")
 		fmt.Println("Examples:")
 		fmt.Println("  forge config --show")
 		fmt.Println("  forge config --provider openai --api-key sk-...")
 		fmt.Println("  forge config --provider anthropic --api-key sk-ant-...")
 		fmt.Println("  forge config --provider ollama --model llama3.2")
+		fmt.Println("  forge config --provider codex")
+		fmt.Println("  forge config --provider openai --context7-api-key ctx7sk-...")
 		os.Exit(0)
 	}
 
-	validProviders := map[string]bool{"anthropic": true, "openai": true, "ollama": true}
+	validProviders := map[string]bool{"anthropic": true, "openai": true, "ollama": true, "codex": true}
 	if !validProviders[*providerFlag] {
-		fmt.Fprintf(os.Stderr, "Error: provider must be one of: anthropic, openai, ollama\n")
+		fmt.Fprintf(os.Stderr, "Error: provider must be one of: anthropic, openai, ollama, codex\n")
 		os.Exit(1)
 	}
 
 	cfg := config.Config{
-		Provider: *providerFlag,
-		APIKey:   *apiKeyFlag,
-		Model:    *modelFlag,
-		BaseURL:  *baseURLFlag,
+		Provider:       *providerFlag,
+		APIKey:         *apiKeyFlag,
+		Model:          *modelFlag,
+		BaseURL:        *baseURLFlag,
+		Context7APIKey: *context7APIKeyFlag,
 	}
 
 	if err := config.Save(cfg); err != nil {
@@ -950,6 +955,9 @@ func runConfig(args []string) {
 	fmt.Printf("Provider: %s\n", *providerFlag)
 	if *apiKeyFlag != "" {
 		fmt.Println("API Key: " + maskKey(*apiKeyFlag))
+	}
+	if *context7APIKeyFlag != "" {
+		fmt.Println("Context7 API Key: " + maskKey(*context7APIKeyFlag))
 	}
 	fmt.Println("\nTo apply, either:")
 	fmt.Println("  1. Run: export $(cat ~/.forge/config | xargs)  # in your shell")

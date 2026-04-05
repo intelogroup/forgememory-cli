@@ -18,8 +18,10 @@ import (
 
 	"github.com/forge/forge/internal/config"
 	"github.com/forge/forge/internal/db"
+	"github.com/forge/forge/internal/detect"
 	"github.com/forge/forge/internal/distill"
 	"github.com/forge/forge/internal/ipc"
+	"github.com/forge/forge/internal/retrieve"
 )
 
 // runDaemon is the entrypoint for `forge daemon`.
@@ -164,6 +166,10 @@ func runDaemon(args []string) {
 	// Distillation loop
 	distiller := distill.New(database, distill.LoadConfig())
 	go distillLoop(distiller)
+	retrievalWake := make(chan struct{}, 1)
+	retrieve.SetImmediateWakeChannel(retrievalWake)
+	defer retrieve.SetImmediateWakeChannel(nil)
+	go retrievalLoop(retrieve.NewWorker(database), retrievalWake)
 
 	<-stop
 	log.Println("Shutting down...")
@@ -235,6 +241,10 @@ func handleEventMsg(raw map[string]json.RawMessage, database *db.DB) {
 
 	if err := database.InsertEvent(event); err != nil {
 		log.Printf("Insert event error: %v", err)
+		return
+	}
+	if err := detect.ProcessEvent(database, event); err != nil {
+		log.Printf("Failure detection error: %v", err)
 	}
 }
 
@@ -247,6 +257,33 @@ func distillLoop(d *distill.Distiller) {
 			log.Printf("Distillation error: %v", err)
 		} else if count > 0 {
 			log.Printf("Distilled %d principles from events", count)
+		}
+	}
+}
+
+func retrievalLoop(worker *retrieve.Worker, wake <-chan struct{}) {
+	ticker := time.NewTicker(30 * time.Second)
+	defer ticker.Stop()
+	runBatch := func() {
+		for i := 0; i < 3; i++ {
+			count, err := worker.RunOnce()
+			if err != nil {
+				log.Printf("Retrieval error: %v", err)
+				break
+			}
+			if count == 0 {
+				break
+			}
+			log.Printf("Processed %d retrieval job", count)
+		}
+	}
+	runBatch()
+	for {
+		select {
+		case <-ticker.C:
+			runBatch()
+		case <-wake:
+			runBatch()
 		}
 	}
 }

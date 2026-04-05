@@ -4,6 +4,8 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"strings"
 	"testing"
 	"time"
 )
@@ -77,6 +79,21 @@ func TestLoadConfigAnthropic(t *testing.T) {
 	}
 	if cfg.APIKey != "sk-ant-test" {
 		t.Errorf("api key = %s, want sk-ant-test", cfg.APIKey)
+	}
+}
+
+func TestLoadConfigCodex(t *testing.T) {
+	t.Setenv("FORGE_PROVIDER", "codex")
+	t.Setenv("FORGE_API_KEY", "")
+	t.Setenv("FORGE_MODEL", "")
+	t.Setenv("FORGE_BASE_URL", "")
+
+	cfg := LoadConfig()
+	if cfg.Provider != ProviderCodex {
+		t.Errorf("provider = %s, want %s", cfg.Provider, ProviderCodex)
+	}
+	if cfg.Model != "" {
+		t.Errorf("model = %q, want empty string to use Codex CLI default", cfg.Model)
 	}
 }
 
@@ -229,6 +246,41 @@ func TestCallAnthropic(t *testing.T) {
 	if response == "" {
 		t.Error("expected non-empty response")
 	}
+}
+
+func TestCallCodex(t *testing.T) {
+	t.Setenv("FORGE_CODEX_CMD", os.Args[0])
+	t.Setenv("FORGE_CODEX_ARGS", "-test.run=TestCodexProviderHelperProcess --")
+	t.Setenv("GO_WANT_CODEX_HELPER", "1")
+
+	d := &Distiller{
+		config: Config{
+			Provider: ProviderCodex,
+		},
+	}
+
+	response, err := d.callCodex("test prompt")
+	if err != nil {
+		t.Fatalf("callCodex failed: %v", err)
+	}
+	if response != `{"relevant":true,"confidence":0.91,"hint":"Use the documented API surface instead of calling the missing method directly."}` {
+		t.Fatalf("unexpected codex response %q", response)
+	}
+}
+
+func TestCodexProviderHelperProcess(t *testing.T) {
+	if os.Getenv("GO_WANT_CODEX_HELPER") != "1" {
+		return
+	}
+	for i := 0; i < len(os.Args)-1; i++ {
+		if os.Args[i] == "-o" {
+			if err := os.WriteFile(os.Args[i+1], []byte(`{"relevant":true,"confidence":0.91,"hint":"Use the documented API surface instead of calling the missing method directly."}`), 0o600); err != nil {
+				t.Fatalf("write codex output: %v", err)
+			}
+			os.Exit(0)
+		}
+	}
+	t.Fatalf("missing -o output flag in args %q", strings.Join(os.Args, " "))
 }
 
 func containsStr(s, substr string) bool {

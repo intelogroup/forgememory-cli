@@ -2,12 +2,15 @@ package distill
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"net/http"
 	"os"
+	"os/exec"
 	"strings"
 	"syscall"
 	"time"
@@ -24,6 +27,7 @@ const (
 	ProviderOllama    Provider = "ollama"
 	ProviderOpenAI    Provider = "openai"
 	ProviderAnthropic Provider = "anthropic"
+	ProviderCodex     Provider = "codex"
 )
 
 // Error types for provider configuration issues.
@@ -37,9 +41,9 @@ var (
 func UserMessage(err error) string {
 	switch {
 	case errors.Is(err, ErrNoProvider):
-		return "No inference provider configured. Set FORGE_PROVIDER (anthropic/openai/ollama) and run 'forge config -i' to configure."
+		return "No inference provider configured. Set FORGE_PROVIDER (anthropic/openai/ollama/codex) and run 'forge config -i' to configure."
 	case errors.Is(err, ErrProviderInvalid):
-		return "Invalid provider or credentials. Check your FORGE_PROVIDER and FORGE_API_KEY settings."
+		return "Invalid provider or credentials. Check your FORGE_PROVIDER setting and any required login or API key."
 	case errors.Is(err, ErrProviderUnreachable):
 		return "Cannot reach inference provider. Ensure Ollama is running or your API key is valid."
 	case strings.Contains(err.Error(), "connection refused"):
@@ -115,6 +119,8 @@ func LoadConfig() Config {
 			cfg.Model = "gpt-4o-mini"
 		case ProviderAnthropic:
 			cfg.Model = "claude-haiku-4-5-20251001"
+		case ProviderCodex:
+			cfg.Model = ""
 		case "forge":
 			cfg.Model = "claude-sonnet-4-20250514"
 		}
@@ -127,6 +133,8 @@ func LoadConfig() Config {
 			cfg.BaseURL = "https://api.openai.com"
 		case ProviderAnthropic:
 			cfg.BaseURL = "https://api.anthropic.com"
+		case ProviderCodex:
+			cfg.BaseURL = ""
 		case "forge":
 			cfg.BaseURL = cfg.PaymentURL + "/api/forge"
 		}
@@ -327,6 +335,8 @@ func (d *Distiller) callLLM(prompt string) (string, error) {
 		return d.callOpenAI(prompt)
 	case ProviderAnthropic:
 		return d.callAnthropic(prompt)
+	case ProviderCodex:
+		return d.callCodex(prompt)
 	case "forge":
 		return d.callForge(prompt)
 	default:
@@ -472,6 +482,59 @@ func (d *Distiller) callAnthropic(prompt string) (string, error) {
 	return "", fmt.Errorf("no response from Anthropic")
 }
 
+func (d *Distiller) callCodex(prompt string) (string, error) {
+	cmdName, args := codexCommand()
+	outFile, err := os.CreateTemp("", "forge-codex-output-*.txt")
+	if err != nil {
+		return "", err
+	}
+	outPath := outFile.Name()
+	_ = outFile.Close()
+	defer os.Remove(outPath)
+
+	args = append(args, "exec", "--skip-git-repo-check", "--sandbox", "read-only", "--ephemeral", "-o", outPath)
+	if strings.TrimSpace(d.config.Model) != "" {
+		args = append(args, "-m", d.config.Model)
+	}
+	args = append(args, "-")
+
+	ctx, cancel := context.WithTimeout(context.Background(), 45*time.Second)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, cmdName, args...)
+	cmd.Stdin = strings.NewReader(prompt)
+	var stderr bytes.Buffer
+	cmd.Stdout = io.Discard
+	cmd.Stderr = &stderr
+	if err := cmd.Run(); err != nil {
+		if isProviderUnreachableError(err) {
+			return "", fmt.Errorf("%w: %v", ErrProviderUnreachable, err)
+		}
+		msg := strings.TrimSpace(stderr.String())
+		if msg == "" {
+			msg = err.Error()
+		}
+		lowered := strings.ToLower(msg)
+		switch {
+		case strings.Contains(lowered, "login"), strings.Contains(lowered, "auth"), strings.Contains(lowered, "not authenticated"):
+			return "", fmt.Errorf("%w: %s", ErrProviderInvalid, msg)
+		case errors.Is(err, fs.ErrNotExist), strings.Contains(lowered, "executable file not found"), strings.Contains(lowered, "no such file or directory"):
+			return "", fmt.Errorf("%w: %s", ErrProviderUnreachable, msg)
+		default:
+			return "", fmt.Errorf("codex exec failed: %s", msg)
+		}
+	}
+
+	data, err := os.ReadFile(outPath)
+	if err != nil {
+		return "", fmt.Errorf("read codex output: %w", err)
+	}
+	response := strings.TrimSpace(string(data))
+	if response == "" {
+		return "", fmt.Errorf("no response from Codex")
+	}
+	return response, nil
+}
+
 func (d *Distiller) callForge(prompt string) (string, error) {
 	url := d.config.PaymentURL + "/api/distill"
 
@@ -517,6 +580,36 @@ func isProviderUnreachableError(err error) bool {
 	return strings.Contains(text, "connection refused") ||
 		strings.Contains(text, "actively refused") ||
 		strings.Contains(text, "no such host")
+}
+
+func codexCommand() (string, []string) {
+	if cmd := strings.TrimSpace(os.Getenv("FORGE_CODEX_CMD")); cmd != "" {
+		return cmd, strings.Fields(os.Getenv("FORGE_CODEX_ARGS"))
+	}
+	return "codex", nil
+}
+
+// HasExplicitProviderConfig reports whether Forge has an explicit provider
+// configuration instead of relying on the implicit Ollama default.
+func HasExplicitProviderConfig() bool {
+	if strings.TrimSpace(os.Getenv("FORGE_PROVIDER")) != "" || strings.TrimSpace(os.Getenv("FORGE_API_KEY")) != "" {
+		return true
+	}
+	cfg, err := config.Load()
+	if err != nil {
+		return false
+	}
+	return strings.TrimSpace(cfg.Provider) != "" || strings.TrimSpace(cfg.APIKey) != ""
+}
+
+// CompletePrompt runs a single best-effort completion against the configured
+// provider without needing a database-backed Distiller.
+func CompletePrompt(cfg Config, prompt string) (string, error) {
+	d := &Distiller{
+		config: cfg,
+		client: &http.Client{Timeout: 45 * time.Second},
+	}
+	return d.callLLM(prompt)
 }
 
 func (d *Distiller) parsePrinciples(response string, projectID string) ([]db.Principle, error) {

@@ -1,13 +1,19 @@
 package main
 
 import (
+	"bufio"
 	"bytes"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"strconv"
 	"strings"
 	"sync"
 	"syscall"
@@ -121,8 +127,14 @@ func copyFile(t *testing.T, src, dst string) {
 // file already exists in the directory.
 func startTestDaemon(t *testing.T, home string) *exec.Cmd {
 	t.Helper()
+	return startTestDaemonEnv(t, home, nil)
+}
+
+func startTestDaemonEnv(t *testing.T, home string, extraEnv []string) *exec.Cmd {
+	t.Helper()
 	cmd := exec.Command(forgeBin, "daemon")
 	cmd.Env = append(baseEnv(), "HOME="+home)
+	cmd.Env = append(cmd.Env, extraEnv...)
 	cmd.Stdout = nil
 	var errBuf bytes.Buffer
 	cmd.Stderr = &errBuf
@@ -152,6 +164,113 @@ func startTestDaemon(t *testing.T, home string) *exec.Cmd {
 	}
 	t.Fatalf("daemon did not write addr file within 3s: %s", addrPath)
 	return nil
+}
+
+func TestContext7MCPHelperProcess(t *testing.T) {
+	if os.Getenv("GO_WANT_CONTEXT7_MCP_HELPER") != "1" {
+		return
+	}
+
+	reader := bufio.NewReader(os.Stdin)
+	writer := bufio.NewWriter(os.Stdout)
+	defer writer.Flush()
+
+	for {
+		line, err := reader.ReadString('\n')
+		if err != nil {
+			if errors.Is(err, io.EOF) {
+				os.Exit(0)
+			}
+			fmt.Fprintln(os.Stderr, err)
+			os.Exit(1)
+		}
+
+		var msg map[string]any
+		if err := json.Unmarshal([]byte(strings.TrimRight(line, "\r\n")), &msg); err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			os.Exit(1)
+		}
+
+		method, _ := msg["method"].(string)
+		switch method {
+		case "initialize":
+			writeMCPHelperMessage(writer, map[string]any{
+				"jsonrpc": "2.0",
+				"id":      msg["id"],
+				"result": map[string]any{
+					"protocolVersion": "2024-11-05",
+					"capabilities":    map[string]any{"tools": map[string]any{}},
+					"serverInfo":      map[string]any{"name": "context7-test", "version": "1.0.0"},
+				},
+			})
+		case "notifications/initialized":
+			continue
+		case "tools/list":
+			writeMCPHelperMessage(writer, map[string]any{
+				"jsonrpc": "2.0",
+				"id":      msg["id"],
+				"result": map[string]any{
+					"tools": []any{
+						map[string]any{"name": "resolve-library-id"},
+						map[string]any{"name": "query-docs"},
+					},
+				},
+			})
+		case "tools/call":
+			params, _ := msg["params"].(map[string]any)
+			name, _ := params["name"].(string)
+			switch name {
+			case "resolve-library-id":
+				writeMCPHelperMessage(writer, map[string]any{
+					"jsonrpc": "2.0",
+					"id":      msg["id"],
+					"result": map[string]any{
+						"content": []any{
+							map[string]any{
+								"type": "text",
+								"text": `[{"libraryId":"/rust-lang/book","title":"Rust"}]`,
+							},
+						},
+					},
+				})
+			case "query-docs":
+				if delayMS, _ := strconv.Atoi(os.Getenv("GO_WANT_CONTEXT7_MCP_DELAY_MS")); delayMS > 0 {
+					time.Sleep(time.Duration(delayMS) * time.Millisecond)
+				}
+				writeMCPHelperMessage(writer, map[string]any{
+					"jsonrpc": "2.0",
+					"id":      msg["id"],
+					"result": map[string]any{
+						"content": []any{
+							map[string]any{
+								"type": "text",
+								"text": `[{"title":"E0599","content":"Rust E0599 usually means the method is not in scope or the trait providing it is not imported. Import the trait or call a method that exists for the type."}]`,
+							},
+						},
+					},
+				})
+			default:
+				writeMCPHelperMessage(writer, map[string]any{
+					"jsonrpc": "2.0",
+					"id":      msg["id"],
+					"error":   map[string]any{"code": -32601, "message": "unknown tool"},
+				})
+			}
+		default:
+			writeMCPHelperMessage(writer, map[string]any{
+				"jsonrpc": "2.0",
+				"id":      msg["id"],
+				"error":   map[string]any{"code": -32601, "message": "unknown method"},
+			})
+		}
+	}
+}
+
+func writeMCPHelperMessage(writer *bufio.Writer, msg map[string]any) {
+	body, _ := json.Marshal(msg)
+	writer.Write(body)
+	writer.WriteByte('\n')
+	writer.Flush()
 }
 
 // waitForFile polls until path exists or timeout elapses.
@@ -580,6 +699,346 @@ func TestBinary_Hook_DaemonUp(t *testing.T) {
 		time.Sleep(50 * time.Millisecond)
 	}
 	t.Error("hook event did not appear in DB within 2s")
+}
+
+func TestBinary_Hook_RepeatedFailureCreatesAlertAndInjectsRecall(t *testing.T) {
+	home := shortHome(t)
+	startTestDaemon(t, home)
+
+	payload := `{"session_id":"rust-fail-1","cwd":"/tmp/api-service","tool_name":"Bash","hook_event_name":"PostToolUse","tool_input":{"command":"cargo build"},"tool_response":{"stderr":"error[E0599]: no method named serve found for struct AppState\ncould not compile api-service due to previous error"}}`
+	for i := 0; i < 3; i++ {
+		cmd := exec.Command(forgeBin, "hook")
+		cmd.Env = append(baseEnv(),
+			"HOME="+home,
+			"FORGE_SOURCE_TOOL=codex",
+			"FORGE_EVENT_TYPE=PostToolUse",
+			"FORGE_SESSION_ID=rust-fail-1",
+		)
+		cmd.Stdin = strings.NewReader(payload)
+		if err := cmd.Run(); err != nil {
+			t.Fatalf("forge hook failure event %d: %v", i+1, err)
+		}
+	}
+
+	dbPath := filepath.Join(home, ".forge", "forge.db")
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		database, err := db.Open(dbPath)
+		if err == nil {
+			alerts, _ := database.ActiveAlertsByProject("api-service", 5)
+			database.Close()
+			if len(alerts) > 0 {
+				break
+			}
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+
+	database, err := db.Open(dbPath)
+	if err != nil {
+		t.Fatalf("db.Open: %v", err)
+	}
+	alerts, err := database.ActiveAlertsByProject("api-service", 5)
+	database.Close()
+	if err != nil {
+		t.Fatalf("ActiveAlertsByProject: %v", err)
+	}
+	if len(alerts) == 0 {
+		t.Fatal("expected at least one active repeated-failure alert")
+	}
+
+	cmd := exec.Command(forgeBin, "hook")
+	cmd.Env = append(baseEnv(),
+		"HOME="+home,
+		"FORGE_SOURCE_TOOL=codex",
+		"FORGE_EVENT_TYPE=UserPromptSubmit",
+		"FORGE_SESSION_ID=rust-fail-1",
+	)
+	cmd.Stdin = strings.NewReader(`{"session_id":"rust-fail-1","cwd":"/tmp/api-service","hook_event_name":"UserPromptSubmit","messages":[{"role":"user","content":[{"type":"text","text":"fix the cargo build failure"}]}]}`)
+	out, err := cmd.Output()
+	if err != nil {
+		t.Fatalf("forge hook recall output: %v", err)
+	}
+	if !strings.Contains(string(out), "Active repeated failure") {
+		t.Fatalf("expected repeated-failure recall injection, got %q", string(out))
+	}
+}
+
+func TestBinary_Hook_RepeatedFailureClearsAfterSuccess(t *testing.T) {
+	home := shortHome(t)
+	startTestDaemon(t, home)
+
+	failPayload := `{"session_id":"rust-fail-2","cwd":"/tmp/api-service","tool_name":"Bash","hook_event_name":"PostToolUse","tool_input":{"command":"cargo build"},"tool_response":{"stderr":"error[E0599]: no method named serve found for struct AppState\ncould not compile api-service due to previous error"}}`
+	for i := 0; i < 3; i++ {
+		cmd := exec.Command(forgeBin, "hook")
+		cmd.Env = append(baseEnv(),
+			"HOME="+home,
+			"FORGE_SOURCE_TOOL=codex",
+			"FORGE_EVENT_TYPE=PostToolUse",
+			"FORGE_SESSION_ID=rust-fail-2",
+		)
+		cmd.Stdin = strings.NewReader(failPayload)
+		if err := cmd.Run(); err != nil {
+			t.Fatalf("forge hook failure event %d: %v", i+1, err)
+		}
+	}
+
+	successCmd := exec.Command(forgeBin, "hook")
+	successCmd.Env = append(baseEnv(),
+		"HOME="+home,
+		"FORGE_SOURCE_TOOL=codex",
+		"FORGE_EVENT_TYPE=PostToolUse",
+		"FORGE_SESSION_ID=rust-fail-2",
+	)
+	successCmd.Stdin = strings.NewReader(`{"session_id":"rust-fail-2","cwd":"/tmp/api-service","tool_name":"Bash","hook_event_name":"PostToolUse","tool_input":{"command":"cargo build"},"tool_response":{"stdout":"Compiling api-service v0.1.0\nFinished dev profile target(s) in 0.84s"}}`)
+	if err := successCmd.Run(); err != nil {
+		t.Fatalf("forge hook success event: %v", err)
+	}
+
+	cmd := exec.Command(forgeBin, "hook")
+	cmd.Env = append(baseEnv(),
+		"HOME="+home,
+		"FORGE_SOURCE_TOOL=codex",
+		"FORGE_EVENT_TYPE=UserPromptSubmit",
+		"FORGE_SESSION_ID=rust-fail-2",
+	)
+	cmd.Stdin = strings.NewReader(`{"session_id":"rust-fail-2","cwd":"/tmp/api-service","hook_event_name":"UserPromptSubmit","messages":[{"role":"user","content":[{"type":"text","text":"fix the cargo build failure"}]}]}`)
+	out, err := cmd.Output()
+	if err != nil {
+		t.Fatalf("forge hook recall output: %v", err)
+	}
+	if strings.Contains(string(out), "Active repeated failure") {
+		t.Fatalf("expected repeated-failure alert to be cleared after success, got %q", string(out))
+	}
+}
+
+func TestBinary_Hook_RepeatedFailureInjectsOfficialDocsHintAfterRetrieval(t *testing.T) {
+	home := shortHome(t)
+	startTestDaemonEnv(t, home, []string{
+		"FORGE_CONTEXT7_MCP_CMD=" + os.Args[0],
+		"FORGE_CONTEXT7_MCP_ARGS=-test.run=TestContext7MCPHelperProcess --",
+		"GO_WANT_CONTEXT7_MCP_HELPER=1",
+	})
+
+	failPayload := `{"session_id":"rust-fail-3","cwd":"/tmp/api-service","tool_name":"Bash","hook_event_name":"PostToolUse","tool_input":{"command":"cargo build"},"tool_response":{"stderr":"error[E0599]: no method named serve found for struct AppState\ncould not compile api-service due to previous error"}}`
+	for i := 0; i < 3; i++ {
+		cmd := exec.Command(forgeBin, "hook")
+		cmd.Env = append(baseEnv(),
+			"HOME="+home,
+			"FORGE_SOURCE_TOOL=codex",
+			"FORGE_EVENT_TYPE=PostToolUse",
+			"FORGE_SESSION_ID=rust-fail-3",
+		)
+		cmd.Stdin = strings.NewReader(failPayload)
+		if err := cmd.Run(); err != nil {
+			t.Fatalf("forge hook failure event %d: %v", i+1, err)
+		}
+	}
+
+	dbPath := filepath.Join(home, ".forge", "forge.db")
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) {
+		database, err := db.Open(dbPath)
+		if err == nil {
+			summaries, _ := database.FreshExternalContextSummariesByProject("api-service", 5)
+			database.Close()
+			if len(summaries) > 0 && summaries[0].Hint != "" {
+				break
+			}
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+
+	database, err := db.Open(dbPath)
+	if err != nil {
+		t.Fatalf("db.Open: %v", err)
+	}
+	summaries, err := database.FreshExternalContextSummariesByProject("api-service", 5)
+	if err != nil {
+		database.Close()
+		t.Fatalf("FreshExternalContextSummariesByProject: %v", err)
+	}
+	if len(summaries) == 0 {
+		database.Close()
+		t.Fatal("expected context7 summary after repeated failure retrieval")
+	}
+	if summaries[0].SummaryKind != "official_hint" {
+		database.Close()
+		t.Fatalf("SummaryKind = %q, want official_hint", summaries[0].SummaryKind)
+	}
+	if !strings.Contains(summaries[0].Hint, "Rust E0599 usually means the method is not in scope") {
+		database.Close()
+		t.Fatalf("unexpected hint %q", summaries[0].Hint)
+	}
+	database.Close()
+
+	cmd := exec.Command(forgeBin, "hook")
+	cmd.Env = append(baseEnv(),
+		"HOME="+home,
+		"FORGE_SOURCE_TOOL=codex",
+		"FORGE_EVENT_TYPE=UserPromptSubmit",
+		"FORGE_SESSION_ID=rust-fail-3",
+	)
+	cmd.Stdin = strings.NewReader(`{"session_id":"rust-fail-3","cwd":"/tmp/api-service","hook_event_name":"UserPromptSubmit","messages":[{"role":"user","content":[{"type":"text","text":"fix the cargo build failure"}]}]}`)
+	out, err := cmd.Output()
+	if err != nil {
+		t.Fatalf("forge hook recall output: %v", err)
+	}
+	if !strings.Contains(string(out), "Official docs hint from context7 rust: Rust E0599 usually means the method is not in scope or the trait providing it is not imported.") {
+		t.Fatalf("expected official docs hint injection, got %q", string(out))
+	}
+	if strings.Contains(string(out), "Active repeated failure") {
+		t.Fatalf("expected official docs hint to replace repeated-failure alert, got %q", string(out))
+	}
+}
+
+func TestBinary_Hook_RepeatedFailureInjectsAIRefinedOfficialDocsHint(t *testing.T) {
+	home := shortHome(t)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/v1/messages" {
+			t.Fatalf("unexpected path %s", r.URL.Path)
+		}
+		w.WriteHeader(http.StatusOK)
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"content": []map[string]string{
+				{"text": `{"relevant":true,"confidence":0.96,"hint":"Import the trait that defines the missing method before calling serve."}`},
+			},
+		})
+	}))
+	defer server.Close()
+
+	startTestDaemonEnv(t, home, []string{
+		"FORGE_CONTEXT7_MCP_CMD=" + os.Args[0],
+		"FORGE_CONTEXT7_MCP_ARGS=-test.run=TestContext7MCPHelperProcess --",
+		"GO_WANT_CONTEXT7_MCP_HELPER=1",
+		"FORGE_PROVIDER=anthropic",
+		"FORGE_API_KEY=sk-ant-test",
+		"FORGE_BASE_URL=" + server.URL,
+	})
+
+	failPayload := `{"session_id":"rust-fail-ai","cwd":"/tmp/api-service","tool_name":"Bash","hook_event_name":"PostToolUse","tool_input":{"command":"cargo build"},"tool_response":{"stderr":"error[E0599]: no method named serve found for struct AppState\ncould not compile api-service due to previous error"}}`
+	for i := 0; i < 3; i++ {
+		cmd := exec.Command(forgeBin, "hook")
+		cmd.Env = append(baseEnv(),
+			"HOME="+home,
+			"FORGE_SOURCE_TOOL=codex",
+			"FORGE_EVENT_TYPE=PostToolUse",
+			"FORGE_SESSION_ID=rust-fail-ai",
+		)
+		cmd.Stdin = strings.NewReader(failPayload)
+		if err := cmd.Run(); err != nil {
+			t.Fatalf("forge hook failure event %d: %v", i+1, err)
+		}
+	}
+
+	dbPath := filepath.Join(home, ".forge", "forge.db")
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) {
+		database, err := db.Open(dbPath)
+		if err == nil {
+			summaries, _ := database.FreshExternalContextSummariesByProject("api-service", 5)
+			database.Close()
+			if len(summaries) > 0 && summaries[0].SummaryKind == "official_hint_ai" {
+				break
+			}
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+
+	database, err := db.Open(dbPath)
+	if err != nil {
+		t.Fatalf("db.Open: %v", err)
+	}
+	summaries, err := database.FreshExternalContextSummariesByProject("api-service", 5)
+	if err != nil {
+		database.Close()
+		t.Fatalf("FreshExternalContextSummariesByProject: %v", err)
+	}
+	if len(summaries) == 0 {
+		database.Close()
+		t.Fatal("expected context7 summary after AI refinement")
+	}
+	if summaries[0].SummaryKind != "official_hint_ai" {
+		database.Close()
+		t.Fatalf("SummaryKind = %q, want official_hint_ai", summaries[0].SummaryKind)
+	}
+	if summaries[0].Hint != "Import the trait that defines the missing method before calling serve." {
+		database.Close()
+		t.Fatalf("unexpected AI hint %q", summaries[0].Hint)
+	}
+	database.Close()
+
+	cmd := exec.Command(forgeBin, "hook")
+	cmd.Env = append(baseEnv(),
+		"HOME="+home,
+		"FORGE_SOURCE_TOOL=codex",
+		"FORGE_EVENT_TYPE=UserPromptSubmit",
+		"FORGE_SESSION_ID=rust-fail-ai",
+	)
+	cmd.Stdin = strings.NewReader(`{"session_id":"rust-fail-ai","cwd":"/tmp/api-service","hook_event_name":"UserPromptSubmit","messages":[{"role":"user","content":[{"type":"text","text":"fix the cargo build failure"}]}]}`)
+	out, err := cmd.Output()
+	if err != nil {
+		t.Fatalf("forge hook recall output: %v", err)
+	}
+	if !strings.Contains(string(out), "Official docs hint from context7 rust: Import the trait that defines the missing method before calling serve.") {
+		t.Fatalf("expected AI-refined official docs hint injection, got %q", string(out))
+	}
+	if strings.Contains(string(out), "Active repeated failure") {
+		t.Fatalf("expected official docs hint to replace repeated-failure alert, got %q", string(out))
+	}
+}
+
+func TestBinary_Hook_RepeatedFailureWaitsBrieflyForOfficialDocsHint(t *testing.T) {
+	home := shortHome(t)
+	startTestDaemonEnv(t, home, []string{
+		"FORGE_CONTEXT7_MCP_CMD=" + os.Args[0],
+		"FORGE_CONTEXT7_MCP_ARGS=-test.run=TestContext7MCPHelperProcess --",
+		"GO_WANT_CONTEXT7_MCP_HELPER=1",
+		"GO_WANT_CONTEXT7_MCP_DELAY_MS=350",
+		"FORGE_HOOK_RECALL_WAIT_MS=2000",
+		"FORGE_HOOK_RECALL_POLL_MS=50",
+	})
+
+	failPayload := `{"session_id":"rust-fail-wait","cwd":"/tmp/api-service","tool_name":"Bash","hook_event_name":"PostToolUse","tool_input":{"command":"cargo build"},"tool_response":{"stderr":"error[E0599]: no method named serve found for struct AppState\ncould not compile api-service due to previous error"}}`
+	for i := 0; i < 3; i++ {
+		cmd := exec.Command(forgeBin, "hook")
+		cmd.Env = append(baseEnv(),
+			"HOME="+home,
+			"FORGE_SOURCE_TOOL=codex",
+			"FORGE_EVENT_TYPE=PostToolUse",
+			"FORGE_SESSION_ID=rust-fail-wait",
+		)
+		cmd.Stdin = strings.NewReader(failPayload)
+		if err := cmd.Run(); err != nil {
+			t.Fatalf("forge hook failure event %d: %v", i+1, err)
+		}
+	}
+
+	start := time.Now()
+	cmd := exec.Command(forgeBin, "hook")
+	cmd.Env = append(baseEnv(),
+		"HOME="+home,
+		"FORGE_SOURCE_TOOL=codex",
+		"FORGE_EVENT_TYPE=UserPromptSubmit",
+		"FORGE_SESSION_ID=rust-fail-wait",
+		"FORGE_HOOK_RECALL_WAIT_MS=2000",
+		"FORGE_HOOK_RECALL_POLL_MS=50",
+	)
+	cmd.Stdin = strings.NewReader(`{"session_id":"rust-fail-wait","cwd":"/tmp/api-service","hook_event_name":"UserPromptSubmit","messages":[{"role":"user","content":[{"type":"text","text":"fix the cargo build failure"}]}]}`)
+	out, err := cmd.Output()
+	if err != nil {
+		t.Fatalf("forge hook recall output: %v", err)
+	}
+	elapsed := time.Since(start)
+	if !strings.Contains(string(out), "Official docs hint from context7 rust: Rust E0599 usually means the method is not in scope or the trait providing it is not imported.") {
+		t.Fatalf("expected official docs hint injection after brief wait, got %q", string(out))
+	}
+	if elapsed < 300*time.Millisecond {
+		t.Fatalf("expected hook to wait briefly for retrieval, elapsed %v", elapsed)
+	}
+	if elapsed > 2500*time.Millisecond {
+		t.Fatalf("expected hook wait to stay bounded, elapsed %v", elapsed)
+	}
 }
 
 func TestBinary_Hook_ConcurrentHooks(t *testing.T) {

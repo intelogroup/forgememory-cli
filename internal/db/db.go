@@ -93,6 +93,81 @@ func (d *DB) migrate() error {
 			summary    TEXT NOT NULL,
 			tokens     INTEGER DEFAULT 0
 		)`,
+		`CREATE TABLE IF NOT EXISTS failure_signatures (
+			id                 TEXT PRIMARY KEY,
+			project_id         TEXT NOT NULL,
+			session_id         TEXT NOT NULL,
+			source_tool        TEXT NOT NULL,
+			tool_name          TEXT NOT NULL,
+			command_family     TEXT NOT NULL DEFAULT '',
+			fingerprint        TEXT NOT NULL,
+			error_kind         TEXT NOT NULL,
+			normalized_message TEXT NOT NULL,
+			first_seen_ts      TEXT NOT NULL,
+			last_seen_ts       TEXT NOT NULL,
+			repeat_count       INTEGER NOT NULL DEFAULT 1,
+			resolved_ts        TEXT DEFAULT '',
+			UNIQUE(project_id, session_id, fingerprint, resolved_ts)
+		)`,
+		`CREATE INDEX IF NOT EXISTS idx_failure_signatures_active
+		 ON failure_signatures(project_id, session_id, fingerprint, resolved_ts)`,
+		`CREATE TABLE IF NOT EXISTS alerts (
+			id          TEXT PRIMARY KEY,
+			ts          TEXT NOT NULL,
+			project_id  TEXT NOT NULL,
+			session_id  TEXT NOT NULL,
+			alert_type  TEXT NOT NULL,
+			severity    TEXT NOT NULL,
+			title       TEXT NOT NULL,
+			narrative   TEXT NOT NULL,
+			fingerprint TEXT DEFAULT '',
+			score       REAL NOT NULL DEFAULT 0,
+			source_ref  TEXT DEFAULT '',
+			expires_at  TEXT DEFAULT '',
+			acknowledged INTEGER NOT NULL DEFAULT 0
+		)`,
+		`CREATE UNIQUE INDEX IF NOT EXISTS idx_alerts_active_unique
+		 ON alerts(project_id, session_id, alert_type, fingerprint, acknowledged)`,
+		`CREATE INDEX IF NOT EXISTS idx_alerts_active_lookup
+		 ON alerts(project_id, ts DESC, expires_at, acknowledged)`,
+		`CREATE TABLE IF NOT EXISTS retrieval_jobs (
+			id              TEXT PRIMARY KEY,
+			ts              TEXT NOT NULL,
+			project_id      TEXT NOT NULL,
+			trigger_type    TEXT NOT NULL,
+			source          TEXT NOT NULL,
+			query           TEXT NOT NULL,
+			library_name    TEXT DEFAULT '',
+			library_version TEXT DEFAULT '',
+			status          TEXT NOT NULL,
+			priority        INTEGER NOT NULL DEFAULT 0,
+			dedupe_key      TEXT NOT NULL UNIQUE,
+			last_error      TEXT DEFAULT ''
+		)`,
+		`CREATE INDEX IF NOT EXISTS idx_retrieval_jobs_lookup
+		 ON retrieval_jobs(project_id, status, ts DESC)`,
+		`CREATE TABLE IF NOT EXISTS external_context_summaries (
+			id              TEXT PRIMARY KEY,
+			ts              TEXT NOT NULL,
+			source          TEXT NOT NULL,
+			project_id      TEXT NOT NULL,
+			query           TEXT NOT NULL,
+			library_name    TEXT DEFAULT '',
+			library_version TEXT DEFAULT '',
+			title           TEXT NOT NULL,
+			narrative       TEXT NOT NULL,
+			summary_kind    TEXT DEFAULT '',
+			hint            TEXT DEFAULT '',
+			trust_score     REAL NOT NULL DEFAULT 0,
+			relevance_tags  TEXT DEFAULT '',
+			cache_ref       TEXT DEFAULT '',
+			last_used_at    TEXT DEFAULT '',
+			expires_at      TEXT DEFAULT ''
+		)`,
+		`CREATE UNIQUE INDEX IF NOT EXISTS idx_external_context_unique
+		 ON external_context_summaries(project_id, source, query, library_name)`,
+		`CREATE INDEX IF NOT EXISTS idx_external_context_lookup
+		 ON external_context_summaries(project_id, trust_score DESC, ts DESC)`,
 		`CREATE VIRTUAL TABLE IF NOT EXISTS events_fts USING fts5(
 			payload, content=events, content_rowid=rowid
 		)`,
@@ -114,6 +189,9 @@ func (d *DB) migrate() error {
 		{"session_summaries", "learnings", "TEXT DEFAULT ''"},
 		{"session_summaries", "next_steps", "TEXT DEFAULT ''"},
 		{"events", "git_root", "TEXT DEFAULT ''"},
+		{"failure_signatures", "command_family", "TEXT DEFAULT ''"},
+		{"external_context_summaries", "summary_kind", "TEXT DEFAULT ''"},
+		{"external_context_summaries", "hint", "TEXT DEFAULT ''"},
 	}
 	migrations = append(migrations,
 		`CREATE TABLE IF NOT EXISTS projects (
