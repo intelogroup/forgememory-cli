@@ -3,13 +3,28 @@
 # Tests: SessionStart → PostToolUse (x3) → Stop → SessionEnd → Distill → MCP query
 
 set -e
-FORGE="./forge"
+FORGE="${FORGE:-./forge}"
+BUILT_FORGE=0
+
+cleanup() {
+  if [ "$BUILT_FORGE" -eq 1 ]; then
+    rm -f "$FORGE"
+  fi
+}
+trap cleanup EXIT
+
+if [ ! -x "$FORGE" ]; then
+  echo "Building Forge test binary at $FORGE..."
+  go build -o "$FORGE" ./cmd
+  BUILT_FORGE=1
+fi
 
 echo "=== Forge Integration Test ==="
 echo ""
 
 # Clean slate
-rm -f ~/.forge/forge.db ~/.forge/forge.sock
+$FORGE stop > /dev/null 2>&1 || true
+rm -f ~/.forge/forge.db ~/.forge/forge.db-shm ~/.forge/forge.db-wal ~/.forge/forge.sock
 $FORGE init > /dev/null 2>&1
 
 # Start daemon

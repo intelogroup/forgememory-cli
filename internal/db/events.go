@@ -123,6 +123,39 @@ func (d *DB) SearchEvents(query string, limit int) ([]Event, error) {
 	return events, rows.Err()
 }
 
+// SearchEventsByProject does full-text search on event payloads scoped to a project.
+func (d *DB) SearchEventsByProject(projectID, query string, limit int) ([]Event, error) {
+	if projectID == "" {
+		return d.SearchEvents(query, limit)
+	}
+	ftsQuery := `"` + strings.ReplaceAll(query, `"`, `""`) + `"`
+	exact, unixLike, windowsLike := projectIDSelectors(projectID)
+	rows, err := d.conn.Query(
+		`SELECT e.id, e.ts, e.session_id, e.project_id, e.source_tool, e.event_type, e.tool_name, e.payload, e.distilled
+		 FROM events e
+		 JOIN events_fts f ON e.rowid = f.rowid
+		 WHERE events_fts MATCH ?
+		   AND (e.project_id = ? OR e.project_id LIKE ? OR e.project_id LIKE ?)
+		 ORDER BY rank
+		 LIMIT ?`, ftsQuery, exact, unixLike, windowsLike, limit,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var events []Event
+	for rows.Next() {
+		var e Event
+		var distilled int
+		if err := rows.Scan(&e.ID, &e.TS, &e.SessionID, &e.ProjectID, &e.SourceTool, &e.EventType, &e.ToolName, &e.Payload, &distilled); err != nil {
+			return nil, err
+		}
+		e.Distilled = distilled == 1
+		events = append(events, e)
+	}
+	return events, rows.Err()
+}
+
 // SessionEvents returns the most recent events for a specific session.
 func (d *DB) SessionEvents(sessionID string, limit int) ([]Event, error) {
 	rows, err := d.conn.Query(
@@ -172,6 +205,7 @@ func (d *DB) RecentEvents(limit int) ([]Event, error) {
 // ProjectTimeline returns a cross-agent timeline for a project.
 // Groups events by session and aggregates across all agents (claude/gemini/codex).
 func (d *DB) ProjectTimeline(projectID string, limit int) ([]ProjectTimelineEntry, error) {
+	exact, unixLike, windowsLike := projectIDSelectors(projectID)
 	rows, err := d.conn.Query(`
 		SELECT session_id,
 			CASE
@@ -181,10 +215,10 @@ func (d *DB) ProjectTimeline(projectID string, limit int) ([]ProjectTimelineEntr
 			MIN(ts) as start_ts, MAX(ts) as end_ts,
 			COUNT(*) as event_count
 		FROM events
-		WHERE project_id = ?
+		WHERE project_id = ? OR project_id LIKE ? OR project_id LIKE ?
 		GROUP BY session_id
 		ORDER BY start_ts DESC
-		LIMIT ?`, projectID, limit,
+		LIMIT ?`, exact, unixLike, windowsLike, limit,
 	)
 	if err != nil {
 		return nil, err
@@ -212,8 +246,11 @@ type ProjectTimelineEntry struct {
 
 // ProjectAgents returns all unique agents that have worked on a project.
 func (d *DB) ProjectAgents(projectID string) ([]string, error) {
+	exact, unixLike, windowsLike := projectIDSelectors(projectID)
 	rows, err := d.conn.Query(
-		`SELECT DISTINCT source_tool FROM events WHERE project_id = ? ORDER BY source_tool`, projectID,
+		`SELECT DISTINCT source_tool FROM events
+		 WHERE project_id = ? OR project_id LIKE ? OR project_id LIKE ?
+		 ORDER BY source_tool`, exact, unixLike, windowsLike,
 	)
 	if err != nil {
 		return nil, err

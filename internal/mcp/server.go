@@ -7,7 +7,12 @@ import (
 	"io"
 	"log"
 	"os"
+	"os/exec"
+	"path/filepath"
+	"sort"
 	"strings"
+	"time"
+	"unicode"
 
 	"github.com/forge/forge/internal/db"
 )
@@ -145,7 +150,7 @@ func (s *Server) handleToolsList(req Request) *Response {
 	tools := []Tool{
 		{
 			Name:        "get_recent_context",
-			Description: "Returns distilled memories and session summaries from past work sessions. Use when the user asks about past work, decisions, or patterns.",
+			Description: "Returns recent project-scoped memories, including session summaries, principles, active failures, and cached external context.",
 			InputSchema: map[string]any{
 				"type": "object",
 				"properties": map[string]any{
@@ -154,12 +159,16 @@ func (s *Server) handleToolsList(req Request) *Response {
 						"description": "Number of results to return (default 10)",
 						"default":     10,
 					},
+					"project_id": map[string]any{
+						"type":        "string",
+						"description": "Optional project identifier. Defaults to the current repo/project.",
+					},
 				},
 			},
 		},
 		{
 			Name:        "search_memories",
-			Description: "Full-text search on event payloads. Use when the user asks 'did I fix this before?' or about past errors.",
+			Description: "Project-scoped full-text search on captured event payloads. Use when the user asks 'did I fix this before?' or about past errors.",
 			InputSchema: map[string]any{
 				"type": "object",
 				"properties": map[string]any{
@@ -172,13 +181,17 @@ func (s *Server) handleToolsList(req Request) *Response {
 						"description": "Number of results to return (default 10)",
 						"default":     10,
 					},
+					"project_id": map[string]any{
+						"type":        "string",
+						"description": "Optional project identifier. Defaults to the current repo/project.",
+					},
 				},
 				"required": []string{"query"},
 			},
 		},
 		{
 			Name:        "get_principles",
-			Description: "Returns distilled high-level principles (architecture decisions, patterns, preferences). Use when the user asks about project conventions or past decisions.",
+			Description: "Returns project-scoped distilled high-level principles (architecture decisions, patterns, preferences).",
 			InputSchema: map[string]any{
 				"type": "object",
 				"properties": map[string]any{
@@ -187,12 +200,16 @@ func (s *Server) handleToolsList(req Request) *Response {
 						"description": "Number of principles to return (default 10)",
 						"default":     10,
 					},
+					"project_id": map[string]any{
+						"type":        "string",
+						"description": "Optional project identifier. Defaults to the current repo/project.",
+					},
 				},
 			},
 		},
 		{
 			Name:        "get_session_summaries",
-			Description: "Returns synthesized summaries of recent work sessions. Use when the user asks what they were working on before a break or yesterday.",
+			Description: "Returns project-scoped synthesized summaries of recent work sessions.",
 			InputSchema: map[string]any{
 				"type": "object",
 				"properties": map[string]any{
@@ -201,12 +218,16 @@ func (s *Server) handleToolsList(req Request) *Response {
 						"description": "Number of sessions to return (default 5)",
 						"default":     5,
 					},
+					"project_id": map[string]any{
+						"type":        "string",
+						"description": "Optional project identifier. Defaults to the current repo/project.",
+					},
 				},
 			},
 		},
 		{
 			Name:        "get_project_timeline",
-			Description: "Returns a cross-agent timeline for the current project showing all sessions from Claude, Gemini, and Codex. Use when the user asks what happened in this project across different agents.",
+			Description: "Returns a cross-agent timeline for the current project showing all sessions from Claude, Gemini, and Codex.",
 			InputSchema: map[string]any{
 				"type": "object",
 				"properties": map[string]any{
@@ -214,6 +235,58 @@ func (s *Server) handleToolsList(req Request) *Response {
 						"type":        "number",
 						"description": "Number of timeline entries to return (default 10)",
 						"default":     10,
+					},
+					"project_id": map[string]any{
+						"type":        "string",
+						"description": "Optional project identifier. Defaults to the current repo/project.",
+					},
+				},
+			},
+		},
+		{
+			Name:        "get_external_context",
+			Description: "Returns cached external context summaries for the current project. Uses stored retrieval results only; does not perform live fetches.",
+			InputSchema: map[string]any{
+				"type": "object",
+				"properties": map[string]any{
+					"project_id": map[string]any{
+						"type":        "string",
+						"description": "Optional project identifier. Defaults to the current repo/project.",
+					},
+					"source": map[string]any{
+						"type":        "string",
+						"description": "Optional source filter, e.g. context7.",
+					},
+					"library_name": map[string]any{
+						"type":        "string",
+						"description": "Optional library filter, e.g. rust or react.",
+					},
+					"query": map[string]any{
+						"type":        "string",
+						"description": "Optional text filter applied to cached query/title/narrative.",
+					},
+					"limit": map[string]any{
+						"type":        "number",
+						"description": "Number of summaries to return (default 5)",
+						"default":     5,
+					},
+				},
+			},
+		},
+		{
+			Name:        "get_active_failures",
+			Description: "Returns active project-scoped failure alerts detected from prior sessions.",
+			InputSchema: map[string]any{
+				"type": "object",
+				"properties": map[string]any{
+					"project_id": map[string]any{
+						"type":        "string",
+						"description": "Optional project identifier. Defaults to the current repo/project.",
+					},
+					"limit": map[string]any{
+						"type":        "number",
+						"description": "Number of active failures to return (default 5)",
+						"default":     5,
 					},
 				},
 			},
@@ -264,6 +337,10 @@ func (s *Server) handleToolsCall(req Request) *Response {
 		result = s.getSessionSummaries(params.Arguments)
 	case "get_project_timeline":
 		result = s.getProjectTimeline(params.Arguments)
+	case "get_external_context":
+		result = s.getExternalContext(params.Arguments)
+	case "get_active_failures":
+		result = s.getActiveFailures(params.Arguments)
 	case "get_distillation_health":
 		result = s.getDistillationHealth(params.Arguments)
 	case "get_alerts":
@@ -281,14 +358,18 @@ func (s *Server) handleToolsCall(req Request) *Response {
 
 func (s *Server) getRecentContext(args map[string]any) ToolResult {
 	limit := intFromArgs(args, "limit", 10)
+	projectID := projectIDFromArgs(args)
 
-	principles, err := s.db.RecentPrinciples(limit)
+	principles, err := s.db.RecentPrinciplesByProject(projectID, limit)
 	if err != nil {
 		return toolError("Failed to get principles: " + err.Error())
 	}
-	summaries, _ := s.db.GetRecentSessionSummaries(3)
+	summaries, _ := s.db.GetRecentSessionSummariesByProject(projectID, 3)
+	alerts, _ := s.db.ActiveAlertsByProject(projectID, 3)
+	externalSummaries, _ := s.db.FreshExternalContextSummariesByProject(projectID, 3)
+	markExternalSummariesUsed(s.db, externalSummaries)
 
-	text := "## Recent Memories\n\n"
+	text := fmt.Sprintf("## Recent Memories: %s\n\n", projectID)
 
 	if len(summaries) > 0 {
 		text += "### Recent Sessions\n"
@@ -302,6 +383,22 @@ func (s *Server) getRecentContext(args map[string]any) ToolResult {
 			} else if ss.Summary != "" {
 				text += fmt.Sprintf("- **[%s]** %s\n", ts, ss.Summary)
 			}
+		}
+		text += "\n"
+	}
+
+	if len(alerts) > 0 {
+		text += "### Active Failures\n"
+		for _, alert := range alerts {
+			text += fmt.Sprintf("- **%s** (%s) %s\n", alert.Title, alert.Severity, alert.Narrative)
+		}
+		text += "\n"
+	}
+
+	if len(externalSummaries) > 0 {
+		text += "### Cached External Context\n"
+		for _, summary := range externalSummaries {
+			text += fmt.Sprintf("- **%s** [%s] %s\n", summary.Title, summary.Source, summary.Narrative)
 		}
 		text += "\n"
 	}
@@ -334,13 +431,40 @@ func (s *Server) searchMemories(args map[string]any) ToolResult {
 		return toolError("Missing required parameter: query")
 	}
 	limit := intFromArgs(args, "limit", 10)
+	projectID := projectIDFromArgs(args)
 
-	events, err := s.db.SearchEvents(query, limit)
+	candidateLimit := limit * 6
+	if candidateLimit < 20 {
+		candidateLimit = 20
+	}
+	if candidateLimit > 120 {
+		candidateLimit = 120
+	}
+
+	candidates := make(map[string]db.Event)
+	events, err := s.db.SearchEventsByProject(projectID, query, candidateLimit)
 	if err != nil {
 		return toolError("Search failed: " + err.Error())
 	}
+	for _, event := range events {
+		candidates[event.ID] = event
+	}
+	for _, token := range topQueryTokens(query, 6) {
+		tokenEvents, err := s.db.SearchEventsByProject(projectID, token, candidateLimit)
+		if err != nil {
+			return toolError("Search failed: " + err.Error())
+		}
+		for _, event := range tokenEvents {
+			candidates[event.ID] = event
+		}
+	}
+	events = make([]db.Event, 0, len(candidates))
+	for _, event := range candidates {
+		events = append(events, event)
+	}
+	events = rerankEvents(query, events, limit)
 
-	text := fmt.Sprintf("## Search Results for \"%s\"\n\n", query)
+	text := fmt.Sprintf("## Search Results for \"%s\" (%s)\n\n", query, projectID)
 
 	if len(events) == 0 {
 		text += "No matching events found.\n"
@@ -362,13 +486,14 @@ func (s *Server) searchMemories(args map[string]any) ToolResult {
 
 func (s *Server) getPrinciples(args map[string]any) ToolResult {
 	limit := intFromArgs(args, "limit", 10)
+	projectID := projectIDFromArgs(args)
 
-	principles, err := s.db.RecentPrinciples(limit)
+	principles, err := s.db.RecentPrinciplesByProject(projectID, limit)
 	if err != nil {
 		return toolError("Failed to get principles: " + err.Error())
 	}
 
-	text := "## Distilled Principles\n\n"
+	text := fmt.Sprintf("## Distilled Principles: %s\n\n", projectID)
 
 	if len(principles) == 0 {
 		text += "No principles distilled yet.\n"
@@ -394,13 +519,14 @@ func (s *Server) getPrinciples(args map[string]any) ToolResult {
 
 func (s *Server) getSessionSummaries(args map[string]any) ToolResult {
 	limit := intFromArgs(args, "limit", 5)
+	projectID := projectIDFromArgs(args)
 
-	summaries, err := s.db.GetRecentSessionSummaries(limit)
+	summaries, err := s.db.GetRecentSessionSummariesByProject(projectID, limit)
 	if err != nil {
 		return toolError("Failed to get session summaries: " + err.Error())
 	}
 
-	text := "## Recent Work Sessions\n\n"
+	text := fmt.Sprintf("## Recent Work Sessions: %s\n\n", projectID)
 
 	if len(summaries) == 0 {
 		text += "No session summaries yet. Session summaries are generated automatically at the end of each coding session.\n"
@@ -461,7 +587,7 @@ func intFromArgs(args map[string]any, key string, defaultVal int) int {
 
 func (s *Server) getProjectTimeline(args map[string]any) ToolResult {
 	limit := intFromArgs(args, "limit", 10)
-	projectID := detectProject()
+	projectID := projectIDFromArgs(args)
 
 	entries, err := s.db.ProjectTimeline(projectID, limit)
 	if err != nil {
@@ -500,14 +626,213 @@ func (s *Server) getProjectTimeline(args map[string]any) ToolResult {
 	}
 }
 
-func detectProject() string {
-	// Use current working directory as project ID
-	cwd, _ := os.Getwd()
-	parts := strings.Split(cwd, "/")
-	if len(parts) > 0 {
-		return parts[len(parts)-1]
+func (s *Server) getExternalContext(args map[string]any) ToolResult {
+	limit := intFromArgs(args, "limit", 5)
+	projectID := projectIDFromArgs(args)
+	source := stringFromArgs(args, "source")
+	libraryName := stringFromArgs(args, "library_name")
+	query := stringFromArgs(args, "query")
+
+	summaries, err := s.db.SearchExternalContextSummariesByProject(projectID, source, libraryName, query, limit)
+	if err != nil {
+		return toolError("Failed to get external context: " + err.Error())
 	}
-	return cwd
+	markExternalSummariesUsed(s.db, summaries)
+
+	text := fmt.Sprintf("## Cached External Context: %s\n\n", projectID)
+	if len(summaries) == 0 {
+		text += "No cached external context found.\n"
+	} else {
+		for _, summary := range summaries {
+			text += fmt.Sprintf("### %s [%s]\n", summary.Title, summary.Source)
+			text += fmt.Sprintf("- **Library**: %s\n", fallback(summary.LibraryName, "n/a"))
+			if summary.Query != "" {
+				text += fmt.Sprintf("- **Query**: %s\n", summary.Query)
+			}
+			if summary.CacheRef != "" {
+				text += fmt.Sprintf("- **Cache Ref**: %s\n", summary.CacheRef)
+			}
+			text += fmt.Sprintf("- %s\n\n", summary.Narrative)
+		}
+	}
+
+	return ToolResult{
+		Content: []ToolContent{{Type: "text", Text: text}},
+	}
+}
+
+func markExternalSummariesUsed(database *db.DB, summaries []db.ExternalContextSummary) {
+	if database == nil || len(summaries) == 0 {
+		return
+	}
+	ids := make([]string, 0, len(summaries))
+	for _, summary := range summaries {
+		if strings.TrimSpace(summary.ID) != "" {
+			ids = append(ids, summary.ID)
+		}
+	}
+	_ = database.TouchExternalContextSummaries(ids, time.Now().UTC().Format(time.RFC3339))
+}
+
+type rankedEvent struct {
+	event db.Event
+	score float64
+}
+
+func rerankEvents(query string, events []db.Event, limit int) []db.Event {
+	if len(events) == 0 {
+		return events
+	}
+	queryTokens := tokenSet(query)
+	queryLower := strings.ToLower(strings.TrimSpace(query))
+
+	ranked := make([]rankedEvent, 0, len(events))
+	for _, event := range events {
+		score := 0.0
+		payload := strings.ToLower(event.Payload)
+		if queryLower != "" && strings.Contains(payload, queryLower) {
+			score += 1.0
+		}
+
+		payloadTokens := tokenSet(event.Payload)
+		matches := 0
+		for token := range queryTokens {
+			if payloadTokens[token] {
+				matches++
+			}
+		}
+		if len(queryTokens) > 0 {
+			score += (float64(matches) / float64(len(queryTokens))) * 2.2
+		}
+		if event.Distilled {
+			score += 0.15
+		}
+		score += eventRecencyScore(event.TS)
+		ranked = append(ranked, rankedEvent{event: event, score: score})
+	}
+
+	sort.SliceStable(ranked, func(i, j int) bool {
+		if ranked[i].score == ranked[j].score {
+			return ranked[i].event.TS > ranked[j].event.TS
+		}
+		return ranked[i].score > ranked[j].score
+	})
+
+	if limit <= 0 || limit > len(ranked) {
+		limit = len(ranked)
+	}
+	out := make([]db.Event, 0, limit)
+	for i := 0; i < limit; i++ {
+		out = append(out, ranked[i].event)
+	}
+	return out
+}
+
+func eventRecencyScore(ts string) float64 {
+	parsed, err := time.Parse(time.RFC3339, ts)
+	if err != nil {
+		return 0
+	}
+	age := time.Since(parsed)
+	switch {
+	case age <= 7*24*time.Hour:
+		return 0.45
+	case age <= 30*24*time.Hour:
+		return 0.25
+	case age <= 180*24*time.Hour:
+		return 0.1
+	default:
+		return 0
+	}
+}
+
+func tokenSet(text string) map[string]bool {
+	parts := strings.FieldsFunc(strings.ToLower(text), func(r rune) bool {
+		return !unicode.IsLetter(r) && !unicode.IsDigit(r)
+	})
+	set := make(map[string]bool)
+	for _, part := range parts {
+		if len(part) >= 3 {
+			set[part] = true
+		}
+	}
+	return set
+}
+
+func topQueryTokens(query string, limit int) []string {
+	set := tokenSet(query)
+	tokens := make([]string, 0, len(set))
+	for token := range set {
+		tokens = append(tokens, token)
+	}
+	sort.Strings(tokens)
+	if limit <= 0 || len(tokens) <= limit {
+		return tokens
+	}
+	return tokens[:limit]
+}
+
+func (s *Server) getActiveFailures(args map[string]any) ToolResult {
+	limit := intFromArgs(args, "limit", 5)
+	projectID := projectIDFromArgs(args)
+
+	alerts, err := s.db.ActiveAlertsByProject(projectID, limit)
+	if err != nil {
+		return toolError("Failed to get active failures: " + err.Error())
+	}
+
+	text := fmt.Sprintf("## Active Failures: %s\n\n", projectID)
+	if len(alerts) == 0 {
+		text += "No active failures.\n"
+	} else {
+		for _, alert := range alerts {
+			text += fmt.Sprintf("### %s [%s]\n", alert.Title, alert.Severity)
+			text += fmt.Sprintf("- %s\n", alert.Narrative)
+			if alert.SourceRef != "" {
+				text += fmt.Sprintf("- **Source Ref**: %s\n", alert.SourceRef)
+			}
+			text += fmt.Sprintf("- **Score**: %.1f\n\n", alert.Score)
+		}
+	}
+
+	return ToolResult{
+		Content: []ToolContent{{Type: "text", Text: text}},
+	}
+}
+
+func detectProject() string {
+	cwd, _ := os.Getwd()
+	if cwd == "" {
+		return ""
+	}
+	if out, err := exec.Command("git", "-C", cwd, "rev-parse", "--show-toplevel").Output(); err == nil {
+		root := strings.TrimSpace(string(out))
+		if root != "" {
+			return filepath.Base(root)
+		}
+	}
+	return filepath.Base(cwd)
+}
+
+func projectIDFromArgs(args map[string]any) string {
+	if projectID := stringFromArgs(args, "project_id"); projectID != "" {
+		return projectID
+	}
+	return detectProject()
+}
+
+func stringFromArgs(args map[string]any, key string) string {
+	if v, ok := args[key].(string); ok {
+		return strings.TrimSpace(v)
+	}
+	return ""
+}
+
+func fallback(value, defaultValue string) string {
+	if strings.TrimSpace(value) == "" {
+		return defaultValue
+	}
+	return value
 }
 
 func (s *Server) getDistillationHealth(args map[string]any) ToolResult {

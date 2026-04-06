@@ -2,6 +2,7 @@ package agent
 
 import (
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -100,6 +101,23 @@ func TestUpsertHookArray_CollapseDuplicates(t *testing.T) {
 	}
 }
 
+func TestUpsertCommandHookArray_CollapseDuplicates(t *testing.T) {
+	command := `"forge" hook --source gemini --event Stop`
+	forge1 := map[string]any{
+		"hooks": []any{map[string]any{"command": command}},
+	}
+	forge2 := map[string]any{
+		"hooks": []any{map[string]any{"command": command}},
+	}
+	newEntry := map[string]any{
+		"hooks": []any{map[string]any{"command": command}},
+	}
+	result := upsertCommandHookArray([]any{forge1, forge2}, newEntry, command)
+	if len(result) != 1 {
+		t.Fatalf("expected duplicates collapsed to 1, got %d", len(result))
+	}
+}
+
 // ---- setupClaude idempotency ----
 
 func TestSetupClaude_IdempotentInit(t *testing.T) {
@@ -178,7 +196,7 @@ func TestSetupClaude_NoDuplicateHooks(t *testing.T) {
 	}
 
 	hooks, _ := settings["hooks"].(map[string]any)
-	for _, event := range []string{"PostToolUse", "Stop", "SessionEnd"} {
+	for _, event := range []string{"PostToolUse", "UserPromptSubmit", "Stop", "SessionEnd"} {
 		arr, _ := hooks[event].([]any)
 		forgeCount := 0
 		for _, item := range arr {
@@ -188,6 +206,93 @@ func TestSetupClaude_NoDuplicateHooks(t *testing.T) {
 		}
 		if forgeCount != 1 {
 			t.Errorf("hooks[%s]: expected exactly 1 Forge entry, found %d", event, forgeCount)
+		}
+	}
+}
+
+func TestSetupClaude_RegistersUserPromptSubmit(t *testing.T) {
+	home := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(home, ".claude"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := setupClaude(home); err != nil {
+		t.Fatalf("setupClaude: %v", err)
+	}
+
+	data, _ := os.ReadFile(filepath.Join(home, ".claude", "settings.json"))
+	var settings map[string]any
+	if err := json.Unmarshal(data, &settings); err != nil {
+		t.Fatalf("unmarshal settings: %v", err)
+	}
+
+	hooks, _ := settings["hooks"].(map[string]any)
+	arr, _ := hooks["UserPromptSubmit"].([]any)
+	forgeCount := 0
+	for _, item := range arr {
+		if isForgeHookItem(item, "UserPromptSubmit") {
+			forgeCount++
+		}
+	}
+	if forgeCount != 1 {
+		t.Fatalf("UserPromptSubmit: expected exactly 1 Forge entry, found %d", forgeCount)
+	}
+}
+
+func TestSetupGemini_RegistersHooksAndPreservesSettings(t *testing.T) {
+	home := t.TempDir()
+	geminiDir := filepath.Join(home, ".gemini")
+	if err := os.MkdirAll(geminiDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+
+	initial := `{"theme":"dark","mcpServers":{"other-tool":{"command":"other"}}}`
+	if err := os.WriteFile(filepath.Join(geminiDir, "settings.json"), []byte(initial), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := setupGemini(home); err != nil {
+		t.Fatalf("setupGemini: %v", err)
+	}
+	if _, err := setupGemini(home); err != nil {
+		t.Fatalf("second setupGemini: %v", err)
+	}
+
+	data, _ := os.ReadFile(filepath.Join(geminiDir, "settings.json"))
+	var settings map[string]any
+	if err := json.Unmarshal(data, &settings); err != nil {
+		t.Fatalf("unmarshal settings: %v", err)
+	}
+
+	if _, ok := settings["theme"].(string); !ok {
+		t.Fatal("expected theme setting to be preserved")
+	}
+	mcpServers, _ := settings["mcpServers"].(map[string]any)
+	if _, ok := mcpServers["other-tool"]; !ok {
+		t.Fatal("expected other-tool MCP server to be preserved")
+	}
+	if _, ok := mcpServers["forge"]; !ok {
+		t.Fatal("expected forge MCP server to be present")
+	}
+
+	hooks, _ := settings["hooks"].(map[string]any)
+	forgePath := ForgePath()
+	commands := map[string]string{
+		"BeforeAgent": fmt.Sprintf(`"%s" hook --source gemini --event UserPromptSubmit`, forgePath),
+		"AfterTool":   fmt.Sprintf(`"%s" hook --source gemini --event PostToolUse`, forgePath),
+		"AfterAgent":  fmt.Sprintf(`"%s" hook --source gemini --event Stop`, forgePath),
+		"SessionEnd":  fmt.Sprintf(`"%s" hook --source gemini --event SessionEnd`, forgePath),
+	}
+	for event, command := range commands {
+		arr, _ := hooks[event].([]any)
+		forgeCount := 0
+		for _, item := range arr {
+			if isForgeCommandHookItem(item, command) {
+				forgeCount++
+			}
+		}
+		if forgeCount != 1 {
+			t.Fatalf("%s: expected exactly 1 Forge entry, found %d", event, forgeCount)
 		}
 	}
 }

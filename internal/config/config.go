@@ -12,6 +12,7 @@ type Config struct {
 	APIKey          string
 	Model           string
 	BaseURL         string
+	Context7APIKey  string
 	Timeout         string
 	Retries         int
 	DistillInterval string
@@ -56,6 +57,8 @@ func Load() (Config, error) {
 			cfg.Model = value
 		case "FORGE_BASE_URL", "FORGE_API_URL":
 			cfg.BaseURL = value
+		case "CONTEXT7_API_KEY":
+			cfg.Context7APIKey = value
 		case "FORGE_TIMEOUT":
 			cfg.Timeout = value
 		case "FORGE_RETRIES":
@@ -87,6 +90,9 @@ func Save(cfg Config) error {
 	if cfg.BaseURL != "" {
 		lines = append(lines, fmt.Sprintf("FORGE_BASE_URL=%s", cfg.BaseURL))
 	}
+	if cfg.Context7APIKey != "" {
+		lines = append(lines, fmt.Sprintf("CONTEXT7_API_KEY=%s", cfg.Context7APIKey))
+	}
 	if cfg.Timeout != "" {
 		lines = append(lines, fmt.Sprintf("FORGE_TIMEOUT=%s", cfg.Timeout))
 	}
@@ -117,6 +123,9 @@ func SetEnvFromFile() error {
 	if cfg.BaseURL != "" {
 		os.Setenv("FORGE_BASE_URL", cfg.BaseURL)
 		os.Setenv("FORGE_API_URL", cfg.BaseURL) // legacy compatibility for older paths
+	}
+	if cfg.Context7APIKey != "" {
+		os.Setenv("CONTEXT7_API_KEY", cfg.Context7APIKey)
 	}
 	if cfg.Timeout != "" {
 		os.Setenv("FORGE_TIMEOUT", cfg.Timeout)

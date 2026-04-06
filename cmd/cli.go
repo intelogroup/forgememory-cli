@@ -1036,6 +1036,7 @@ func runConfig(args []string) {
 	apiKeyFlag := fs.String("api-key", "", "API key for provider")
 	modelFlag := fs.String("model", "", "Model name (optional, defaults vary by provider)")
 	baseURLFlag := fs.String("base-url", "", "Base URL for API (optional)")
+	context7APIKeyFlag := fs.String("context7-api-key", "", "Context7 API key for official docs")
 	timeoutFlag := fs.String("timeout", "", "Inference timeout (e.g. 30s)")
 	retriesFlag := fs.Int("retries", -1, "Retry attempts for transient failures")
 	intervalFlag := fs.String("interval", "", "Distillation interval (e.g. 10m)")
@@ -1108,6 +1109,7 @@ func runConfig(args []string) {
 		fmt.Println("  --api-key        API key for the provider")
 		fmt.Println("  --model          Model name (optional)")
 		fmt.Println("  --base-url       Base URL for API (optional)")
+		fmt.Println("  --context7-api-key Context7 API key for official docs")
 		fmt.Println("  --timeout        Inference timeout (e.g. 30s)")
 		fmt.Println("  --retries        Retry attempts for transient failures")
 		fmt.Println("  --interval       Distillation interval (e.g. 10m)")
@@ -1128,6 +1130,7 @@ func runConfig(args []string) {
 		fmt.Println("  forge config --provider anthropic --api-key sk-ant-...")
 		fmt.Println("  forge config --provider ollama --model llama3:latest")
 		fmt.Println("  forge config --provider anthropic --api-key sk-ant-... --validate")
+		fmt.Println("  forge config --provider openai --context7-api-key ctx7sk-...")
 		os.Exit(0)
 	}
 
@@ -1171,6 +1174,9 @@ func runConfig(args []string) {
 	if *baseURLFlag != "" {
 		cfg.BaseURL = *baseURLFlag
 	}
+	if *context7APIKeyFlag != "" {
+		cfg.Context7APIKey = *context7APIKeyFlag
+	}
 	if *timeoutFlag != "" {
 		cfg.Timeout = *timeoutFlag
 	}
@@ -1203,6 +1209,9 @@ func runConfig(args []string) {
 	fmt.Printf("Model: %s\n", cfg.Model)
 	if cfg.APIKey != "" {
 		fmt.Println("API Key: " + maskKey(cfg.APIKey))
+	}
+	if cfg.Context7APIKey != "" {
+		fmt.Println("Context7 API Key: " + maskKey(cfg.Context7APIKey))
 	}
 	if cfg.Timeout != "" {
 		fmt.Printf("Timeout: %s\n", cfg.Timeout)
