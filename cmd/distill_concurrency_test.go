@@ -310,7 +310,20 @@ func TestDistillLock_NoDuplicateDistillation(t *testing.T) {
 	t.Setenv("HOME", home)
 	seedEvents(t, 5)
 
-	srv, llmCalls := distillServer(t, "Race condition principle")
+	// Use a slow server so goroutine 1 is still holding the lock when goroutine 2
+	// calls acquireDistillLock. Without the delay, goroutine 1 can finish entirely
+	// before goroutine 2 starts, causing a legitimate second LLM call.
+	var slowLLMCalls atomic.Int32
+	slowSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		slowLLMCalls.Add(1)
+		time.Sleep(300 * time.Millisecond)
+		json.NewEncoder(w).Encode(map[string]string{
+			"response": `[{"type":"pattern","title":"Race condition principle","narrative":"test","impact_score":0.7}]`,
+		})
+	}))
+	t.Cleanup(slowSrv.Close)
+	llmCalls := &slowLLMCalls
+	srv := slowSrv
 	t.Setenv("FORGE_PROVIDER", "ollama")
 	t.Setenv("FORGE_BASE_URL", srv.URL)
 	t.Setenv("FORGE_API_KEY", "")
