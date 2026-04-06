@@ -18,3 +18,20 @@ forge-*
 # Secrets
 .env
 .env.*
+
+# Local tool dirs
+.agents/
+.qwen/
+.windsurf/
+.zencoder/
+.claude/skills/
+skills/
+skills-lock.json
+forgememory-app/
+
+# Build artifacts
+cmd/cmd
+payment/payment-server
+payment/payment-server-linux
+payment/payment-server-test
+payment/supabase/.temp/
