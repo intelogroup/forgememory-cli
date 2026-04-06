@@ -61,6 +61,21 @@ func hashContent(content string) string {
 	return fmt.Sprintf("%x", md5.Sum([]byte(content)))
 }
 
+func truncateContent(content string, max int) string {
+	if len(content) <= max {
+		return content
+	}
+	return content[:max] + "...[truncated]"
+}
+
+func payloadJSON(v map[string]any) string {
+	b, err := json.Marshal(v)
+	if err != nil {
+		return "{}"
+	}
+	return string(b)
+}
+
 func (s *Scanner) scanAIMemories() error {
 	home, _ := os.UserHomeDir()
 
@@ -112,7 +127,12 @@ func (s *Scanner) scanGemini(home string, hashes hashStore) int {
 		ProjectID:  "global",
 		SourceTool: "gemini",
 		EventType:  "MemoryScan",
-		Payload:    fmt.Sprintf(`{"source":"gemini","file":"GEMINI.md","size":%d}`, len(content)),
+		Payload: payloadJSON(map[string]any{
+			"source":  "gemini",
+			"file":    "GEMINI.md",
+			"size":    len(content),
+			"content": truncateContent(string(content), 8000),
+		}),
 	}
 	if err := s.DB.InsertEvent(event); err != nil {
 		fmt.Printf("  Gemini: failed to insert event: %v\n", err)
@@ -187,18 +207,16 @@ func (s *Scanner) scanCodex(home string, hashes hashStore) int {
 
 	for _, t := range threads {
 		threadKey := fmt.Sprintf("codex:thread:%s", t.ID)
-		contentHash := hashContent(fmt.Sprintf("%s:%s:%s", t.ID, t.Title, t.FirstMsg))
-
-		if hashes.Hashes[threadKey] == contentHash {
-			continue
-		}
-
 		project := "unknown"
 		if t.CWD != "" {
 			project = filepath.Base(t.CWD)
 		}
 
 		rollout := s.readCodexRollup(codexDir, t.ID, t.CreatedAt)
+		contentHash := hashContent(fmt.Sprintf("%s:%s:%s:%s", t.ID, t.Title, t.FirstMsg, rollout))
+		if hashes.Hashes[threadKey] == contentHash {
+			continue
+		}
 		context := fmt.Sprintf("Codex session: %s\nProject: %s\nBranch: %s\nFirst message: %s",
 			t.Title, project, t.GitBranch, t.FirstMsg)
 		if rollout != "" {
@@ -212,7 +230,14 @@ func (s *Scanner) scanCodex(home string, hashes hashStore) int {
 			ProjectID:  project,
 			SourceTool: "codex",
 			EventType:  "ThreadScan",
-			Payload:    fmt.Sprintf(`{"thread_id":"%s","title":"%s","context_len":%d}`, t.ID, t.Title, len(context)),
+			Payload: payloadJSON(map[string]any{
+				"thread_id":   t.ID,
+				"title":       t.Title,
+				"project":     project,
+				"git_branch":  t.GitBranch,
+				"context_len": len(context),
+				"context":     truncateContent(context, 12000),
+			}),
 		}
 		if err := s.DB.InsertEvent(event); err != nil {
 			continue

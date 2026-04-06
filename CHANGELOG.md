@@ -1,5 +1,52 @@
 # Changelog
 
+## [0.4.14] - 2026-04-05
+
+### Added
+- Added persistent distillation health tracking in SQLite (`distillation_health`) with last run/success/failure timestamps, last error, next schedule, and failure counters.
+- Added `forge health` command for direct CLI visibility into distillation status, failure streaks, and backlog alerts.
+- Added MCP health tools: `get_distillation_health` and `get_alerts` for agent-readable failure/backlog monitoring.
+
+### Changed
+- Extended `forge status --json` to include a `distillation` object with run health metadata.
+- Added `forge status --detailed` to print status plus health summary in one command.
+
+### Fixed
+- Distillation failures are now observable without manual log tailing; daemon loop records success/failure state every cycle.
+
+## [0.4.13] - 2026-04-05
+
+### Added
+- Added configurable distillation controls: `forge config --timeout`, `--retries`, and `--interval`, plus interactive setup and provider/model selection prompts.
+- Added machine-readable output flags for automation: `forge status --json`, `forge search ... --json`, and `forge config --show --json`.
+- Added `forge help mcp` command to list MCP tools and intended usage.
+
+### Changed
+- Set Anthropic default model to `claude-haiku-4-5-20251001`.
+- Promoted `forgememo` as the default provider and added `forge` alias compatibility for existing config.
+- Expanded status output to include provider, model, database path, and relative last-distilled time.
+
+### Fixed
+- Added Ollama retry/backoff handling and clearer distillation diagnostics with actionable remediation steps.
+- Updated Windows CI integration checks to parse `status --json` for stable assertions.
+- Documented provider defaults and `~/.forge/config` format in README.
+
+## [0.4.12] - 2026-04-05
+
+### Fixed
+- Updated release installers to install `forgememo` directly without npm as the primary command and keep `forge` as a compatibility alias.
+- Updated Quick Install and usage docs to standardize on no-npm installation and `forgememo` command examples.
+
+## [0.4.11] - 2026-04-05
+
+### Added
+- Added comprehensive `internal/service` unit tests covering launchd/systemd/Windows routing, status checks, and Windows scheduled-task fallback behavior.
+- Added focused CLI service command tests for install/uninstall/start/stop success and exit-on-error paths.
+
+### Fixed
+- Added a CI coverage gate enforcing `internal/service` coverage at or above 65% to prevent regression to untested service lifecycle code.
+- Aligned repo and npm package versioning to `0.4.11` so release artifacts stay consistent.
+
 ## [0.4.10] - 2026-04-04
 
 ### Fixed

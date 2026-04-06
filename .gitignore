@@ -19,7 +19,7 @@ forge-*
 .env
 .env.*
 
-# Local tool dirs
+# AI tool dirs
 .agents/
 .qwen/
 .windsurf/
@@ -27,6 +27,8 @@ forge-*
 .claude/skills/
 skills/
 skills-lock.json
+
+# Embedded repos
 forgememory-app/
 
 # Build artifacts

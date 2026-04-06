@@ -86,7 +86,7 @@ func (s *Server) handleEvents(w http.ResponseWriter, r *http.Request) {
 			payload = payload[:200] + "..."
 		}
 		result = append(result, EventJSON{
-			ID:         e.ID[:8],
+			ID:         short(e.ID, 8),
 			TS:         e.TS,
 			SessionID:  e.SessionID,
 			ProjectID:  e.ProjectID,
@@ -130,7 +130,7 @@ func (s *Server) handlePrinciples(w http.ResponseWriter, r *http.Request) {
 	var result []PrincipleJSON
 	for _, p := range principles {
 		result = append(result, PrincipleJSON{
-			ID:          p.ID[:8],
+			ID:          short(p.ID, 8),
 			TS:          p.TS,
 			Type:        p.Type,
 			Title:       p.Title,
@@ -218,7 +218,7 @@ const indexHTML = `<!DOCTYPE html>
         <div class="tabs">
             <button class="tab active" data-panel="events">Recent Events</button>
             <button class="tab" data-panel="principles">Principles</button>
-            <button style="margin-left: auto;"><button class="refresh" onclick="loadAll()">Refresh</button></button>
+            <div style="margin-left: auto;"><button class="refresh" onclick="loadAll()">Refresh</button></div>
         </div>
         
         <div id="panel-events" class="panel active">
@@ -292,3 +292,10 @@ const indexHTML = `<!DOCTYPE html>
 </body>
 </html>
 `
+
+func short(s string, n int) string {
+	if len(s) <= n {
+		return s
+	}
+	return s[:n]
+}

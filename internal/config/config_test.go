@@ -25,7 +25,7 @@ func TestLoad_UsesHOMEWhenSet(t *testing.T) {
 	if err := os.MkdirAll(filepath.Dir(configPath), 0o700); err != nil {
 		t.Fatalf("MkdirAll: %v", err)
 	}
-	if err := os.WriteFile(configPath, []byte("FORGE_PROVIDER=openai\nFORGE_API_KEY=test-key\n"), 0o600); err != nil {
+	if err := os.WriteFile(configPath, []byte("FORGE_PROVIDER=openai\nFORGE_API_KEY=test-key\nFORGE_TIMEOUT=45s\nFORGE_RETRIES=4\nFORGE_DISTILL_INTERVAL=5m\n"), 0o600); err != nil {
 		t.Fatalf("WriteFile: %v", err)
 	}
 
@@ -38,5 +38,14 @@ func TestLoad_UsesHOMEWhenSet(t *testing.T) {
 	}
 	if cfg.APIKey != "test-key" {
 		t.Fatalf("APIKey = %q, want test-key", cfg.APIKey)
+	}
+	if cfg.Timeout != "45s" {
+		t.Fatalf("Timeout = %q, want 45s", cfg.Timeout)
+	}
+	if cfg.Retries != 4 {
+		t.Fatalf("Retries = %d, want 4", cfg.Retries)
+	}
+	if cfg.DistillInterval != "5m" {
+		t.Fatalf("DistillInterval = %q, want 5m", cfg.DistillInterval)
 	}
 }

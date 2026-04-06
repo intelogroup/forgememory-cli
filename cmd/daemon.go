@@ -37,13 +37,25 @@ func runDaemon(args []string) {
 		if cfg.APIKey != "" {
 			os.Setenv("FORGE_API_KEY", cfg.APIKey)
 		}
+		if cfg.Model != "" {
+			os.Setenv("FORGE_MODEL", cfg.Model)
+		}
 		if cfg.BaseURL != "" {
 			os.Setenv("FORGE_BASE_URL", cfg.BaseURL)
 			os.Setenv("FORGE_API_URL", cfg.BaseURL) // legacy compatibility
 		}
+		if cfg.Timeout != "" {
+			os.Setenv("FORGE_TIMEOUT", cfg.Timeout)
+		}
+		if cfg.Retries > 0 {
+			os.Setenv("FORGE_RETRIES", strconv.Itoa(cfg.Retries))
+		}
+		if cfg.DistillInterval != "" {
+			os.Setenv("FORGE_DISTILL_INTERVAL", cfg.DistillInterval)
+		}
 		log.Printf("Loaded config: provider=%s", cfg.Provider)
 	} else {
-		log.Printf("No config found, using defaults (provider: ollama)")
+		log.Printf("No config found, using defaults (provider: forgememo)")
 	}
 
 	// Acquire exclusive lock to prevent multiple daemons
@@ -164,8 +176,9 @@ func runDaemon(args []string) {
 	}()
 
 	// Distillation loop
-	distiller := distill.New(database, distill.LoadConfig())
-	go distillLoop(distiller)
+	distillCfg := distill.LoadConfig()
+	distiller := distill.New(database, distillCfg)
+	go distillLoop(distiller, database, distillCfg.DistillInterval)
 	retrievalWake := make(chan struct{}, 1)
 	retrieve.SetImmediateWakeChannel(retrievalWake)
 	defer retrieve.SetImmediateWakeChannel(nil)
@@ -248,15 +261,32 @@ func handleEventMsg(raw map[string]json.RawMessage, database *db.DB) {
 	}
 }
 
-func distillLoop(d *distill.Distiller) {
-	ticker := time.NewTicker(10 * time.Minute)
+func distillLoop(d *distill.Distiller, database *db.DB, interval time.Duration) {
+	if interval <= 0 {
+		interval = 10 * time.Minute
+	}
+	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
 	for range ticker.C {
+		runAt := time.Now().UTC()
+		start := time.Now()
+		_, undistilled, _ := database.EventCount()
 		count, err := d.DistillBatch(50)
+		next := runAt.Add(interval)
 		if err != nil {
 			log.Printf("Distillation error: %v", err)
+			if recErr := database.RecordDistillationFailure(runAt, time.Since(start), undistilled, err.Error(), next); recErr != nil {
+				log.Printf("Distillation health record error: %v", recErr)
+			}
 		} else if count > 0 {
 			log.Printf("Distilled %d principles from events", count)
+			if recErr := database.RecordDistillationSuccess(runAt, time.Since(start), undistilled, count, next); recErr != nil {
+				log.Printf("Distillation health record error: %v", recErr)
+			}
+		} else {
+			if recErr := database.RecordDistillationSuccess(runAt, time.Since(start), undistilled, 0, next); recErr != nil {
+				log.Printf("Distillation health record error: %v", recErr)
+			}
 		}
 	}
 }
@@ -434,11 +464,48 @@ func isStaleStartupLock() bool {
 }
 
 // Status output
-func statusOutput() {
+type statusReport struct {
+	SchemaVersion string `json:"schema_version"`
+	Provider      string `json:"provider"`
+	Model         string `json:"model"`
+	Database      string `json:"database"`
+	Events        struct {
+		Total       int `json:"total"`
+		Undistilled int `json:"undistilled"`
+	} `json:"events"`
+	Principles    int    `json:"principles"`
+	Sessions      int    `json:"sessions"`
+	Daemon        string `json:"daemon"`
+	DaemonAddress string `json:"daemon_address,omitempty"`
+	LastDistilled string `json:"last_distilled,omitempty"`
+	Distillation  struct {
+		LastRunAt            string `json:"last_run_at,omitempty"`
+		LastSuccessAt        string `json:"last_success_at,omitempty"`
+		LastErrorAt          string `json:"last_error_at,omitempty"`
+		LastErrorMessage     string `json:"last_error_message,omitempty"`
+		LastStatus           string `json:"last_status"`
+		ConsecutiveFailures  int    `json:"consecutive_failures"`
+		TotalSuccesses       int    `json:"total_successes"`
+		TotalFailures        int    `json:"total_failures"`
+		NextScheduledAt      string `json:"next_scheduled_at,omitempty"`
+		LastAttemptedEvents  int    `json:"last_attempted_events"`
+		LastDistilledResults int    `json:"last_distilled_results"`
+	} `json:"distillation"`
+}
+
+func loadLastDistilled(database *db.DB) string {
+	var ts string
+	if err := database.Conn().QueryRow("SELECT ts FROM principles ORDER BY ts DESC LIMIT 1").Scan(&ts); err != nil {
+		return ""
+	}
+	return ts
+}
+
+func collectStatusReport() (statusReport, error) {
+	report := statusReport{SchemaVersion: "1"}
 	database, err := db.Open("")
 	if err != nil {
-		fmt.Printf("Error: %v\n", err)
-		return
+		return report, err
 	}
 	defer database.Close()
 
@@ -446,18 +513,95 @@ func statusOutput() {
 	principles, _ := database.PrincipleCount()
 	sessions, _ := database.SessionSummaryCount()
 	addr := readAddr()
+	cfg := distill.LoadConfig()
 
-	fmt.Printf("Database:  %s\n", database.Path)
-	fmt.Printf("Events:    %d (%d undistilled)\n", total, undistilled)
-	fmt.Printf("Principles: %d\n", principles)
-	fmt.Printf("Sessions:  %d\n", sessions)
-	if addr != "" && isDaemonAlive(addr) {
-		fmt.Printf("Daemon:    running (%s)\n", addr)
-	} else if addr != "" {
-		fmt.Printf("Daemon:    stale (%s — not responding)\n", addr)
-	} else {
-		fmt.Printf("Daemon:    not running\n")
+	report.Provider = string(cfg.Provider)
+	report.Model = cfg.Model
+	report.Database = database.Path
+	report.Events.Total = total
+	report.Events.Undistilled = undistilled
+	report.Principles = principles
+	report.Sessions = sessions
+	report.LastDistilled = loadLastDistilled(database)
+	if h, hErr := database.GetDistillationHealth(); hErr == nil {
+		report.Distillation.LastRunAt = h.LastRunAt
+		report.Distillation.LastSuccessAt = h.LastSuccessAt
+		report.Distillation.LastErrorAt = h.LastErrorAt
+		report.Distillation.LastErrorMessage = h.LastErrorMessage
+		report.Distillation.LastStatus = h.LastStatus
+		report.Distillation.ConsecutiveFailures = h.ConsecutiveFailures
+		report.Distillation.TotalSuccesses = h.TotalSuccesses
+		report.Distillation.TotalFailures = h.TotalFailures
+		report.Distillation.NextScheduledAt = h.NextScheduledAt
+		report.Distillation.LastAttemptedEvents = h.LastAttemptedEvents
+		report.Distillation.LastDistilledResults = h.LastDistilledPrinciples
 	}
+	if addr != "" && isDaemonAlive(addr) {
+		report.Daemon = "running"
+		report.DaemonAddress = addr
+	} else if addr != "" {
+		report.Daemon = "stale"
+		report.DaemonAddress = addr
+	} else {
+		report.Daemon = "not running"
+	}
+	return report, nil
+}
+
+func formatRelativeTime(ts string) string {
+	if ts == "" {
+		return "never"
+	}
+	parsed, err := time.Parse(time.RFC3339, ts)
+	if err != nil {
+		return ts
+	}
+	delta := time.Since(parsed)
+	if delta < time.Minute {
+		return "just now"
+	}
+	if delta < time.Hour {
+		return fmt.Sprintf("%d mins ago", int(delta.Minutes()))
+	}
+	if delta < 24*time.Hour {
+		return fmt.Sprintf("%d hours ago", int(delta.Hours()))
+	}
+	return fmt.Sprintf("%d days ago", int(delta.Hours()/24))
+}
+
+func statusOutput() {
+	report, err := collectStatusReport()
+	if err != nil {
+		fmt.Printf("Error: %v\n", err)
+		return
+	}
+	fmt.Printf("Provider:   %s\n", report.Provider)
+	fmt.Printf("Model:      %s\n", report.Model)
+	fmt.Printf("Database:   %s\n", report.Database)
+	fmt.Printf("Events:     %d (%d undistilled)\n", report.Events.Total, report.Events.Undistilled)
+	fmt.Printf("Principles: %d\n", report.Principles)
+	fmt.Printf("Sessions:   %d\n", report.Sessions)
+	if report.DaemonAddress != "" {
+		fmt.Printf("Daemon:     %s (%s)\n", report.Daemon, report.DaemonAddress)
+	} else {
+		fmt.Printf("Daemon:     %s\n", report.Daemon)
+	}
+	fmt.Printf("Last distilled: %s\n", formatRelativeTime(report.LastDistilled))
+	fmt.Printf("Distillation: %s", report.Distillation.LastStatus)
+	if report.Distillation.ConsecutiveFailures > 0 {
+		fmt.Printf(" (%d consecutive failures)", report.Distillation.ConsecutiveFailures)
+	}
+	fmt.Println()
+}
+
+func statusOutputJSON() {
+	report, err := collectStatusReport()
+	if err != nil {
+		fmt.Printf("{\"error\":%q}\n", err.Error())
+		return
+	}
+	out, _ := json.MarshalIndent(report, "", "  ")
+	fmt.Println(string(out))
 }
 
 // acquireDaemonLock creates an exclusive lock file to ensure only one daemon runs.

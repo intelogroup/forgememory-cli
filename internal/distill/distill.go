@@ -8,9 +8,11 @@ import (
 	"fmt"
 	"io"
 	"io/fs"
+	"math"
 	"net/http"
 	"os"
 	"os/exec"
+	"strconv"
 	"strings"
 	"syscall"
 	"time"
@@ -28,6 +30,7 @@ const (
 	ProviderOpenAI    Provider = "openai"
 	ProviderAnthropic Provider = "anthropic"
 	ProviderCodex     Provider = "codex"
+	ProviderForgememo Provider = "forgememo"
 )
 
 // Error types for provider configuration issues.
@@ -41,11 +44,11 @@ var (
 func UserMessage(err error) string {
 	switch {
 	case errors.Is(err, ErrNoProvider):
-		return "No inference provider configured. Set FORGE_PROVIDER (anthropic/openai/ollama/codex) and run 'forge config -i' to configure."
+		return "No inference provider configured. Set FORGE_PROVIDER (forgememo/anthropic/openai/ollama/codex) and run 'forge config' to configure."
 	case errors.Is(err, ErrProviderInvalid):
 		return "Invalid provider or credentials. Check your FORGE_PROVIDER setting and any required login or API key."
 	case errors.Is(err, ErrProviderUnreachable):
-		return "Cannot reach inference provider. Ensure Ollama is running or your API key is valid."
+		return "Cannot reach inference provider. Model loading can take 30-60s on first Ollama run. Retry, or increase timeout: forge config --timeout 60s"
 	case strings.Contains(err.Error(), "connection refused"):
 		return "Connection refused. Is your inference provider running? For Ollama, run: ollama serve"
 	case strings.Contains(err.Error(), "401"):
@@ -57,24 +60,51 @@ func UserMessage(err error) string {
 	}
 }
 
+// DiagnosticHints returns actionable troubleshooting suggestions for a distillation error.
+func DiagnosticHints(cfg Config, err error) []string {
+	if cfg.Provider == ProviderOllama || strings.Contains(strings.ToLower(err.Error()), "ollama") {
+		return []string{
+			"Check Ollama is running: lsof -i :11434",
+			"Load a model: ollama pull llama3",
+			"Increase timeout: forge config --timeout 60s",
+			"Try Anthropic instead: forge config --provider anthropic --api-key sk-ant-...",
+		}
+	}
+	return []string{
+		"Run: forge config --show",
+		"Verify provider credentials and model access",
+		"Run: forge doctor",
+	}
+}
+
 // Config holds distillation configuration.
 type Config struct {
-	Provider   Provider
-	APIKey     string
-	Model      string
-	BaseURL    string
-	PaymentURL string
+	Provider        Provider
+	APIKey          string
+	Model           string
+	BaseURL         string
+	PaymentURL      string
+	Timeout         time.Duration
+	Retries         int
+	DistillInterval time.Duration
 }
 
 // LoadConfig loads distillation config from environment.
-// Priority: Forge credits > OpenAI/Anthropic > Ollama (fallback)
+// Priority: Forgememo > OpenAI/Anthropic > Ollama (fallback)
 func LoadConfig() Config {
+	timeout := parseDurationOrDefault(os.Getenv("FORGE_TIMEOUT"), 30*time.Second)
+	retries := parseIntOrDefault(os.Getenv("FORGE_RETRIES"), 3)
+	distillInterval := parseDurationOrDefault(os.Getenv("FORGE_DISTILL_INTERVAL"), 10*time.Minute)
+
 	cfg := Config{
-		Provider:   Provider(os.Getenv("FORGE_PROVIDER")),
-		APIKey:     os.Getenv("FORGE_API_KEY"),
-		Model:      os.Getenv("FORGE_MODEL"),
-		BaseURL:    os.Getenv("FORGE_BASE_URL"),
-		PaymentURL: os.Getenv("FORGE_PAYMENT_URL"),
+		Provider:        Provider(os.Getenv("FORGE_PROVIDER")),
+		APIKey:          os.Getenv("FORGE_API_KEY"),
+		Model:           os.Getenv("FORGE_MODEL"),
+		BaseURL:         os.Getenv("FORGE_BASE_URL"),
+		PaymentURL:      os.Getenv("FORGE_PAYMENT_URL"),
+		Timeout:         timeout,
+		Retries:         retries,
+		DistillInterval: distillInterval,
 	}
 	if cfg.BaseURL == "" {
 		cfg.BaseURL = os.Getenv("FORGE_API_URL") // legacy compatibility
@@ -95,34 +125,46 @@ func LoadConfig() Config {
 			if cfg.BaseURL == "" && fileCfg.BaseURL != "" {
 				cfg.BaseURL = fileCfg.BaseURL
 			}
+			if os.Getenv("FORGE_TIMEOUT") == "" && fileCfg.Timeout != "" {
+				cfg.Timeout = parseDurationOrDefault(fileCfg.Timeout, cfg.Timeout)
+			}
+			if os.Getenv("FORGE_RETRIES") == "" && fileCfg.Retries > 0 {
+				cfg.Retries = fileCfg.Retries
+			}
+			if os.Getenv("FORGE_DISTILL_INTERVAL") == "" && fileCfg.DistillInterval != "" {
+				cfg.DistillInterval = parseDurationOrDefault(fileCfg.DistillInterval, cfg.DistillInterval)
+			}
 		}
 	}
 
 	if cfg.PaymentURL == "" {
-		cfg.PaymentURL = "http://localhost:3000"
+		// Derive from BaseURL if login saved the server URL there
+		if cfg.BaseURL != "" && (cfg.Provider == ProviderForgememo || cfg.Provider == "") {
+			cfg.PaymentURL = strings.TrimSuffix(cfg.BaseURL, "/api/forge")
+		} else {
+			cfg.PaymentURL = "https://forgememo-server.onrender.com"
+		}
 	}
 
 	if cfg.Provider == "" {
-		// Check if Forge credits are configured
-		if cfg.APIKey != "" {
-			cfg.Provider = "forge"
-		} else {
-			cfg.Provider = ProviderOllama
-		}
+		cfg.Provider = ProviderForgememo
+	}
+	if cfg.Provider == "forge" {
+		cfg.Provider = ProviderForgememo
 	}
 
 	if cfg.Model == "" {
 		switch cfg.Provider {
 		case ProviderOllama:
-			cfg.Model = "llama3.2"
+			cfg.Model = "llama3:latest"
 		case ProviderOpenAI:
-			cfg.Model = "gpt-4o-mini"
+			cfg.Model = "gpt-4o"
 		case ProviderAnthropic:
 			cfg.Model = "claude-haiku-4-5-20251001"
 		case ProviderCodex:
 			cfg.Model = ""
-		case "forge":
-			cfg.Model = "claude-sonnet-4-20250514"
+		case ProviderForgememo:
+			cfg.Model = "claude-haiku-4-5-20251001"
 		}
 	}
 	if cfg.BaseURL == "" {
@@ -135,12 +177,43 @@ func LoadConfig() Config {
 			cfg.BaseURL = "https://api.anthropic.com"
 		case ProviderCodex:
 			cfg.BaseURL = ""
-		case "forge":
+		case ProviderForgememo:
 			cfg.BaseURL = cfg.PaymentURL + "/api/forge"
 		}
 	}
+	if cfg.Timeout <= 0 {
+		cfg.Timeout = 30 * time.Second
+	}
+	if cfg.Retries < 0 {
+		cfg.Retries = 0
+	}
+	if cfg.DistillInterval <= 0 {
+		cfg.DistillInterval = 10 * time.Minute
+	}
 
 	return cfg
+}
+
+func parseDurationOrDefault(raw string, fallback time.Duration) time.Duration {
+	if raw == "" {
+		return fallback
+	}
+	v, err := time.ParseDuration(raw)
+	if err != nil || v <= 0 {
+		return fallback
+	}
+	return v
+}
+
+func parseIntOrDefault(raw string, fallback int) int {
+	if raw == "" {
+		return fallback
+	}
+	v, err := strconv.Atoi(raw)
+	if err != nil {
+		return fallback
+	}
+	return v
 }
 
 // Distiller handles event distillation.
@@ -152,17 +225,21 @@ type Distiller struct {
 
 // New creates a new Distiller.
 func New(database *db.DB, config Config) *Distiller {
+	timeout := config.Timeout
+	if timeout <= 0 {
+		timeout = 30 * time.Second
+	}
 	return &Distiller{
 		db:     database,
 		config: config,
-		client: &http.Client{Timeout: 30 * time.Second},
+		client: &http.Client{Timeout: timeout},
 	}
 }
 
 func (d *Distiller) checkCredits() bool {
-	url := d.config.PaymentURL + "/api/credits"
+	url := d.config.PaymentURL + "/v1/balance"
 	req, _ := http.NewRequest("GET", url, nil)
-	req.Header.Set("Authorization", d.config.APIKey)
+	req.Header.Set("Authorization", "Bearer "+d.config.APIKey)
 	resp, err := d.client.Do(req)
 	if err != nil {
 		return true // Allow on error
@@ -170,19 +247,10 @@ func (d *Distiller) checkCredits() bool {
 	defer resp.Body.Close()
 
 	var result struct {
-		Data struct {
-			Credits int `json:"credits"`
-		} `json:"data"`
+		BalanceUSD float64 `json:"balance_usd"`
 	}
 	json.NewDecoder(resp.Body).Decode(&result)
-	return result.Data.Credits > 0
-}
-
-func (d *Distiller) deductCredit() {
-	url := d.config.PaymentURL + "/api/deduct"
-	req, _ := http.NewRequest("POST", url, nil)
-	req.Header.Set("Authorization", d.config.APIKey)
-	d.client.Do(req)
+	return result.BalanceUSD > 0
 }
 
 // DistillBatch processes undistilled events into principles.
@@ -195,12 +263,12 @@ func (d *Distiller) DistillBatch(limit int) (int, error) {
 		return 0, nil // Not enough events to distill
 	}
 
-	// Check credits if using Forge provider
-	if d.config.Provider == "forge" && d.config.APIKey != "" {
+	// Pre-flight credit check (avoids a Groq round-trip if credits are already zero).
+	// Server deducts atomically during inference; no client-side deduction needed.
+	if d.config.Provider == ProviderForgememo && d.config.APIKey != "" {
 		if !d.checkCredits() {
 			return 0, fmt.Errorf("no credits remaining. Run 'forge login --purchase' to buy more")
 		}
-		d.deductCredit()
 	}
 
 	// Build prompt from events
@@ -337,11 +405,10 @@ func (d *Distiller) callLLM(prompt string) (string, error) {
 		return d.callAnthropic(prompt)
 	case ProviderCodex:
 		return d.callCodex(prompt)
-	case "forge":
-		return d.callForge(prompt)
+	case ProviderForgememo:
+		return d.callForgememo(prompt)
 	default:
-		// Fallback to Ollama
-		return d.callOllama(prompt)
+		return "", fmt.Errorf("%w: unsupported provider %q", ErrNoProvider, d.config.Provider)
 	}
 }
 
@@ -355,25 +422,34 @@ func (d *Distiller) callOllama(prompt string) (string, error) {
 	}
 	jsonBody, _ := json.Marshal(body)
 
-	resp, err := d.client.Post(url, "application/json", bytes.NewReader(jsonBody))
-	if err != nil {
-		if isProviderUnreachableError(err) {
-			return "", fmt.Errorf("%w: %v", ErrProviderUnreachable, err)
+	maxAttempts := maxInt(1, d.config.Retries+1)
+	var lastErr error
+	for attempt := 1; attempt <= maxAttempts; attempt++ {
+		resp, err := d.client.Post(url, "application/json", bytes.NewReader(jsonBody))
+		if err != nil {
+			lastErr = err
+		} else {
+			data, _ := io.ReadAll(resp.Body)
+			resp.Body.Close()
+			if resp.StatusCode >= 400 {
+				lastErr = fmt.Errorf("%w: Ollama returned status %d", ErrProviderInvalid, resp.StatusCode)
+			} else {
+				var result struct {
+					Response string `json:"response"`
+				}
+				json.Unmarshal(data, &result)
+				return result.Response, nil
+			}
 		}
-		return "", err
+		if !shouldRetryOllama(lastErr) || attempt == maxAttempts {
+			break
+		}
+		time.Sleep(retryBackoff(attempt))
 	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode >= 400 {
-		return "", fmt.Errorf("%w: Ollama returned status %d", ErrProviderInvalid, resp.StatusCode)
+	if isProviderUnreachableError(lastErr) {
+		return "", fmt.Errorf("%w: %v", ErrProviderUnreachable, lastErr)
 	}
-
-	data, _ := io.ReadAll(resp.Body)
-	var result struct {
-		Response string `json:"response"`
-	}
-	json.Unmarshal(data, &result)
-	return result.Response, nil
+	return "", lastErr
 }
 
 func (d *Distiller) callOpenAI(prompt string) (string, error) {
@@ -538,17 +614,21 @@ func (d *Distiller) callCodex(prompt string) (string, error) {
 	return response, nil
 }
 
-func (d *Distiller) callForge(prompt string) (string, error) {
-	url := d.config.PaymentURL + "/api/distill"
+func (d *Distiller) callForgememo(prompt string) (string, error) {
+	url := d.config.PaymentURL + "/v1/inference"
 
 	body := map[string]any{
-		"model":   d.config.Model,
-		"prompt":  prompt,
-		"api_key": d.config.APIKey,
+		"model":      d.config.Model,
+		"prompt":     prompt,
+		"max_tokens": 300,
 	}
 	jsonBody, _ := json.Marshal(body)
 
-	resp, err := d.client.Post(url, "application/json", bytes.NewReader(jsonBody))
+	req, _ := http.NewRequest("POST", url, bytes.NewReader(jsonBody))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bearer "+d.config.APIKey)
+
+	resp, err := d.client.Do(req)
 	if err != nil {
 		if isProviderUnreachableError(err) {
 			return "", fmt.Errorf("%w: %v", ErrProviderUnreachable, err)
@@ -560,29 +640,76 @@ func (d *Distiller) callForge(prompt string) (string, error) {
 	if resp.StatusCode == 401 {
 		return "", fmt.Errorf("%w: No credits or invalid API key", ErrProviderInvalid)
 	}
+	if resp.StatusCode == 402 {
+		return "", fmt.Errorf("%w: no credits remaining", ErrProviderInvalid)
+	}
+	if resp.StatusCode == 429 {
+		return "", fmt.Errorf("%w: rate limit exceeded", ErrProviderUnreachable)
+	}
 	if resp.StatusCode >= 400 {
-		return "", fmt.Errorf("%w: Forge API returned status %d", ErrProviderInvalid, resp.StatusCode)
+		return "", fmt.Errorf("%w: Forgememo API returned status %d", ErrProviderInvalid, resp.StatusCode)
 	}
 
 	data, _ := io.ReadAll(resp.Body)
 	var result struct {
-		Response string `json:"response"`
+		Text string `json:"text"`
 	}
 	json.Unmarshal(data, &result)
-	if result.Response != "" {
-		return result.Response, nil
+	if result.Text != "" {
+		return result.Text, nil
 	}
-	return "", fmt.Errorf("no response from Forge")
+	return "", fmt.Errorf("no response from Forgememo")
 }
 
 func isProviderUnreachableError(err error) bool {
+	if err == nil {
+		return false
+	}
 	if errors.Is(err, syscall.ECONNREFUSED) {
 		return true
 	}
 	text := strings.ToLower(err.Error())
 	return strings.Contains(text, "connection refused") ||
 		strings.Contains(text, "actively refused") ||
-		strings.Contains(text, "no such host")
+		strings.Contains(text, "no such host") ||
+		strings.Contains(text, "deadline exceeded") ||
+		strings.Contains(text, "timeout")
+}
+
+func shouldRetryOllama(err error) bool {
+	if err == nil {
+		return false
+	}
+	msg := strings.ToLower(err.Error())
+	return isProviderUnreachableError(err) ||
+		strings.Contains(msg, "status 503") ||
+		strings.Contains(msg, "timed out") ||
+		strings.Contains(msg, "deadline exceeded")
+}
+
+func retryBackoff(attempt int) time.Duration {
+	if attempt < 1 {
+		attempt = 1
+	}
+	seconds := math.Pow(2, float64(attempt-1))
+	if seconds > 8 {
+		seconds = 8
+	}
+	return time.Duration(seconds * float64(time.Second))
+}
+
+func maxInt(a, b int) int {
+	if a > b {
+		return a
+	}
+	return b
+}
+
+// ValidateConfig checks provider/model/API key access by making a small inference call.
+func ValidateConfig(cfg Config) error {
+	d := New(nil, cfg)
+	_, err := d.callLLM(`Return only the word "ok".`)
+	return err
 }
 
 func codexCommand() (string, []string) {

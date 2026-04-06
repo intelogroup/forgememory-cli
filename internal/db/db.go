@@ -193,7 +193,7 @@ func (d *DB) migrate() error {
 		{"external_context_summaries", "summary_kind", "TEXT DEFAULT ''"},
 		{"external_context_summaries", "hint", "TEXT DEFAULT ''"},
 	}
-	migrations = append(migrations,
+	extraMigrations := []string{
 		`CREATE TABLE IF NOT EXISTS projects (
 			id           TEXT PRIMARY KEY,
 			git_root     TEXT NOT NULL,
@@ -202,11 +202,34 @@ func (d *DB) migrate() error {
 			agents       TEXT DEFAULT ''
 		)`,
 		`CREATE INDEX IF NOT EXISTS idx_projects_git_root ON projects(git_root)`,
-	)
+		`CREATE TABLE IF NOT EXISTS distillation_health (
+			id TEXT PRIMARY KEY,
+			last_run_at TEXT DEFAULT '',
+			last_success_at TEXT DEFAULT '',
+			last_error_at TEXT DEFAULT '',
+			last_error_message TEXT DEFAULT '',
+			last_status TEXT DEFAULT 'pending',
+			consecutive_failures INTEGER DEFAULT 0,
+			total_successes INTEGER DEFAULT 0,
+			total_failures INTEGER DEFAULT 0,
+			last_attempted_events INTEGER DEFAULT 0,
+			last_distilled_principles INTEGER DEFAULT 0,
+			last_duration_ms INTEGER DEFAULT 0,
+			next_scheduled_at TEXT DEFAULT ''
+		)`,
+	}
+	for _, m := range extraMigrations {
+		if _, err := d.conn.Exec(m); err != nil {
+			return fmt.Errorf("exec migration: %w", err)
+		}
+	}
 	for _, cm := range colMigrations {
 		if err := d.addColumnIfMissing(cm.table, cm.col, cm.def); err != nil {
 			return fmt.Errorf("add column %s.%s: %w", cm.table, cm.col, err)
 		}
+	}
+	if _, err := d.conn.Exec(`INSERT OR IGNORE INTO distillation_health(id) VALUES ('singleton')`); err != nil {
+		return fmt.Errorf("init distillation_health singleton: %w", err)
 	}
 	return nil
 }

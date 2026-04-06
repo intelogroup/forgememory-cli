@@ -95,10 +95,17 @@ func (s *Server) Run() error {
 
 		resp := s.handleRequest(req)
 		if resp != nil {
-			data, _ := json.Marshal(resp)
+			data, err := json.Marshal(resp)
+			if err != nil {
+				return fmt.Errorf("marshal response: %w", err)
+			}
 			data = append(data, '\n')
-			s.writer.Write(data)
-			s.writer.Flush()
+			if _, err := s.writer.Write(data); err != nil {
+				return fmt.Errorf("write response: %w", err)
+			}
+			if err := s.writer.Flush(); err != nil {
+				return fmt.Errorf("flush response: %w", err)
+			}
 		}
 	}
 }
@@ -284,6 +291,22 @@ func (s *Server) handleToolsList(req Request) *Response {
 				},
 			},
 		},
+		{
+			Name:        "get_distillation_health",
+			Description: "Returns latest distillation health state including last success/failure, error message, and undistilled backlog.",
+			InputSchema: map[string]any{
+				"type":       "object",
+				"properties": map[string]any{},
+			},
+		},
+		{
+			Name:        "get_alerts",
+			Description: "Returns active distillation alerts for agent-visible failures and backlog growth.",
+			InputSchema: map[string]any{
+				"type":       "object",
+				"properties": map[string]any{},
+			},
+		},
 	}
 
 	return &Response{
@@ -318,6 +341,10 @@ func (s *Server) handleToolsCall(req Request) *Response {
 		result = s.getExternalContext(params.Arguments)
 	case "get_active_failures":
 		result = s.getActiveFailures(params.Arguments)
+	case "get_distillation_health":
+		result = s.getDistillationHealth(params.Arguments)
+	case "get_alerts":
+		result = s.getAlerts(params.Arguments)
 	default:
 		return errorResponse(req.ID, "Unknown tool: "+params.Name)
 	}
@@ -382,7 +409,7 @@ func (s *Server) getRecentContext(args map[string]any) ToolResult {
 		text += "### Principles\n"
 		for _, p := range principles {
 			text += fmt.Sprintf("#### %s\n", p.Title)
-			text += fmt.Sprintf("- **Type**: %s | **Score**: %.1f | **Date**: %s\n", p.Type, p.ImpactScore, p.TS[:10])
+			text += fmt.Sprintf("- **Type**: %s | **Score**: %.1f | **Date**: %s\n", p.Type, p.ImpactScore, prefix(p.TS, 10))
 			if len(p.Concepts) > 0 {
 				text += fmt.Sprintf("- **Concepts**: %s\n", strings.Join(p.Concepts, ", "))
 			}
@@ -443,7 +470,7 @@ func (s *Server) searchMemories(args map[string]any) ToolResult {
 		text += "No matching events found.\n"
 	} else {
 		for _, e := range events {
-			text += fmt.Sprintf("### [%s] %s (%s)\n", e.TS[:10], e.EventType, e.SourceTool)
+			text += fmt.Sprintf("### [%s] %s (%s)\n", prefix(e.TS, 10), e.EventType, e.SourceTool)
 			payload := e.Payload
 			if len(payload) > 300 {
 				payload = payload[:300] + "..."
@@ -474,7 +501,7 @@ func (s *Server) getPrinciples(args map[string]any) ToolResult {
 		for _, p := range principles {
 			text += fmt.Sprintf("### %s [%s]\n", p.Title, p.Type)
 			text += fmt.Sprintf("- **Impact**: %.1f | **Date**: %s | **Project**: %s\n",
-				p.ImpactScore, p.TS[:10], p.ProjectID)
+				p.ImpactScore, prefix(p.TS, 10), p.ProjectID)
 			if len(p.Concepts) > 0 {
 				text += fmt.Sprintf("- **Concepts**: %s\n", strings.Join(p.Concepts, ", "))
 			}
@@ -590,7 +617,7 @@ func (s *Server) getProjectTimeline(args map[string]any) ToolResult {
 				end = end[:10]
 			}
 			text += fmt.Sprintf("| `%s` | %s | %d | %s | %s |\n",
-				e.SessionID[:8], e.PrimaryAgent, e.EventCount, start, end)
+				prefix(e.SessionID, 8), e.PrimaryAgent, e.EventCount, start, end)
 		}
 	}
 
@@ -806,4 +833,72 @@ func fallback(value, defaultValue string) string {
 		return defaultValue
 	}
 	return value
+}
+
+func (s *Server) getDistillationHealth(args map[string]any) ToolResult {
+	health, err := s.db.GetDistillationHealth()
+	if err != nil {
+		return toolError("Failed to get distillation health: " + err.Error())
+	}
+	_, undistilled, _ := s.db.EventCount()
+
+	payload := map[string]any{
+		"last_run_at":           health.LastRunAt,
+		"last_success_at":       health.LastSuccessAt,
+		"status":                health.LastStatus,
+		"error_message":         health.LastErrorMessage,
+		"undistilled_count":     undistilled,
+		"last_error_at":         health.LastErrorAt,
+		"consecutive_failures":  health.ConsecutiveFailures,
+		"next_scheduled_at":     health.NextScheduledAt,
+		"last_attempted_events": health.LastAttemptedEvents,
+	}
+	b, _ := json.MarshalIndent(payload, "", "  ")
+	return ToolResult{
+		Content: []ToolContent{{Type: "text", Text: string(b)}},
+	}
+}
+
+func (s *Server) getAlerts(args map[string]any) ToolResult {
+	health, err := s.db.GetDistillationHealth()
+	if err != nil {
+		return toolError("Failed to get alerts: " + err.Error())
+	}
+	_, undistilled, _ := s.db.EventCount()
+
+	type alert struct {
+		Type     string `json:"type"`
+		Severity string `json:"severity"`
+		Message  string `json:"message"`
+	}
+	var alerts []alert
+	if health.ConsecutiveFailures >= 1 {
+		severity := "warning"
+		if health.ConsecutiveFailures >= 3 {
+			severity = "error"
+		}
+		alerts = append(alerts, alert{
+			Type:     "distillation_failed",
+			Severity: severity,
+			Message:  fmt.Sprintf("%d consecutive failures", health.ConsecutiveFailures),
+		})
+	}
+	if undistilled >= 25 {
+		alerts = append(alerts, alert{
+			Type:     "undistilled_backlog",
+			Severity: "warning",
+			Message:  fmt.Sprintf("%d undistilled events", undistilled),
+		})
+	}
+	b, _ := json.MarshalIndent(alerts, "", "  ")
+	return ToolResult{
+		Content: []ToolContent{{Type: "text", Text: string(b)}},
+	}
+}
+
+func prefix(s string, n int) string {
+	if len(s) <= n {
+		return s
+	}
+	return s[:n]
 }

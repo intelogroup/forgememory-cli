@@ -240,3 +240,42 @@ func TestOpenCreatesDir(t *testing.T) {
 		t.Error("Database file should exist")
 	}
 }
+
+func TestProjectTimeline_PrimaryAgentMultiForMixedSession(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "test.db")
+	db, err := Open(path)
+	if err != nil {
+		t.Fatalf("Open failed: %v", err)
+	}
+	defer db.Close()
+
+	for _, e := range []*Event{
+		{SessionID: "s-mixed", ProjectID: "proj", SourceTool: "claude", EventType: "PostToolUse", Payload: "a"},
+		{SessionID: "s-mixed", ProjectID: "proj", SourceTool: "codex", EventType: "PostToolUse", Payload: "b"},
+		{SessionID: "s-single", ProjectID: "proj", SourceTool: "gemini", EventType: "PostToolUse", Payload: "c"},
+	} {
+		if err := db.InsertEvent(e); err != nil {
+			t.Fatalf("InsertEvent failed: %v", err)
+		}
+	}
+
+	entries, err := db.ProjectTimeline("proj", 10)
+	if err != nil {
+		t.Fatalf("ProjectTimeline failed: %v", err)
+	}
+	if len(entries) != 2 {
+		t.Fatalf("len(entries) = %d, want 2", len(entries))
+	}
+
+	agentsBySession := map[string]string{}
+	for _, e := range entries {
+		agentsBySession[e.SessionID] = e.PrimaryAgent
+	}
+	if agentsBySession["s-mixed"] != "multi" {
+		t.Fatalf("PrimaryAgent for mixed session = %q, want multi", agentsBySession["s-mixed"])
+	}
+	if agentsBySession["s-single"] != "gemini" {
+		t.Fatalf("PrimaryAgent for single session = %q, want gemini", agentsBySession["s-single"])
+	}
+}

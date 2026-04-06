@@ -1,18 +1,24 @@
 package main
 
 import (
-	"bytes"
+	"bufio"
+	"crypto/rand"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"flag"
 	"fmt"
 	"log"
+	"net"
 	"net/http"
+	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"strconv"
 	"strings"
+	"time"
 
 	"github.com/forge/forge/internal/agent"
 	"github.com/forge/forge/internal/config"
@@ -22,6 +28,16 @@ import (
 	"github.com/forge/forge/internal/mcp"
 	"github.com/forge/forge/internal/scanner"
 	"github.com/forge/forge/internal/service"
+)
+
+var (
+	serviceNew         = service.New
+	serviceIsInstalled = func(m *service.Manager) bool { return m.IsServiceInstalled() }
+	serviceInstall     = func(m *service.Manager) error { return m.Install() }
+	serviceUninstall   = func(m *service.Manager) error { return m.Uninstall() }
+	serviceStart       = func(m *service.Manager) error { return m.Start() }
+	serviceStop        = func(m *service.Manager) error { return m.Stop() }
+	exitWithCode       = os.Exit
 )
 
 func min(a, b int) int {
@@ -48,6 +64,12 @@ func contains(slice []string, item string) bool {
 }
 
 func runInit(args []string) {
+	fs := flag.NewFlagSet("init", flag.ContinueOnError)
+	interactive := fs.Bool("interactive", false, "Interactive provider setup wizard")
+	if err := fs.Parse(args); err != nil {
+		os.Exit(1)
+	}
+
 	fmt.Println("Initializing Forge...")
 
 	// Create database
@@ -70,9 +92,15 @@ func runInit(args []string) {
 
 	// Prompt for provider setup
 	fmt.Println("\n  Configure your AI provider:")
+	fmt.Println("    forge config --provider forgememo   # auto-cheapest, 1000 free runs")
 	fmt.Println("    forge config --provider anthropic --api-key YOUR_KEY")
 	fmt.Println("  Or run 'forge config' for interactive setup.")
-	fmt.Println("  Default provider is ollama (requires local Ollama running).")
+	fmt.Println("  Default provider is forgememo (falls back to ollama if configured).")
+
+	if *interactive {
+		fmt.Println("\n  Running interactive setup...")
+		runConfig([]string{"--interactive"})
+	}
 
 	// Show MCP restart notice for Claude Code
 	if contains(agents, "claude") {
@@ -205,6 +233,10 @@ func runDistill(args []string) {
 			return
 		}
 		fmt.Fprintf(os.Stderr, "Error: %s\n", distill.UserMessage(err))
+		fmt.Fprintln(os.Stderr, "Suggestions:")
+		for i, hint := range distill.DiagnosticHints(cfg, err) {
+			fmt.Fprintf(os.Stderr, "  %d. %s\n", i+1, hint)
+		}
 		os.Exit(1)
 	}
 	if count == 0 {
@@ -219,11 +251,14 @@ func shouldSkipDistillForMissingProvider(cfg distill.Config, err error) bool {
 		return false
 	}
 	if cfg.Provider != distill.ProviderOllama {
-		return false
+		if cfg.Provider != distill.ProviderForgememo {
+			return false
+		}
 	}
 	errText := strings.ToLower(err.Error())
 	return errors.Is(err, distill.ErrNoProvider) ||
 		errors.Is(err, distill.ErrProviderUnreachable) ||
+		(cfg.Provider == distill.ProviderForgememo && cfg.APIKey == "" && errors.Is(err, distill.ErrProviderInvalid)) ||
 		strings.Contains(errText, "connection refused") ||
 		strings.Contains(errText, "actively refused")
 }
@@ -240,7 +275,17 @@ func hasExplicitInferenceProviderConfig() bool {
 }
 
 func runSearch(args []string) {
-	if len(args) < 1 {
+	jsonOutput := false
+	filtered := make([]string, 0, len(args))
+	for _, a := range args {
+		if a == "--json" {
+			jsonOutput = true
+			continue
+		}
+		filtered = append(filtered, a)
+	}
+
+	if len(filtered) < 1 {
 		fmt.Println("Usage: forge search <query>")
 		os.Exit(1)
 	}
@@ -252,7 +297,7 @@ func runSearch(args []string) {
 	}
 	defer database.Close()
 
-	query := args[0]
+	query := filtered[0]
 	events, err := database.SearchEvents(query, 10)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
@@ -260,7 +305,28 @@ func runSearch(args []string) {
 	}
 
 	if len(events) == 0 {
+		if jsonOutput {
+			payload := map[string]any{
+				"schema_version": "1",
+				"query":          query,
+				"results":        []db.Event{},
+			}
+			b, _ := json.MarshalIndent(payload, "", "  ")
+			fmt.Println(string(b))
+			return
+		}
 		fmt.Println("No results.")
+		return
+	}
+
+	if jsonOutput {
+		payload := map[string]any{
+			"schema_version": "1",
+			"query":          query,
+			"results":        events,
+		}
+		b, _ := json.MarshalIndent(payload, "", "  ")
+		fmt.Println(string(b))
 		return
 	}
 
@@ -269,6 +335,93 @@ func runSearch(args []string) {
 		fmt.Printf("  %s\n", truncate(e.Payload, 200))
 		fmt.Println()
 	}
+}
+
+func runStatus(args []string) {
+	jsonOutput := false
+	detailed := false
+	for _, a := range args {
+		if a == "--json" {
+			jsonOutput = true
+			break
+		}
+		if a == "--detailed" {
+			detailed = true
+		}
+	}
+	if jsonOutput {
+		statusOutputJSON()
+		return
+	}
+	statusOutput()
+	if detailed {
+		runHealth([]string{})
+	}
+}
+
+func runHelp(args []string) {
+	if len(args) == 1 && args[0] == "mcp" {
+		fmt.Println("forge help mcp")
+		fmt.Println("  get_recent_context       Get distilled memories and recent summaries")
+		fmt.Println("  search_memories <query>  Search raw memory events with full-text matching")
+		fmt.Println("  get_principles           Get high-level patterns and decisions")
+		fmt.Println("  get_session_summaries    Get synthesized summaries of recent sessions")
+		fmt.Println("  get_project_timeline     Get cross-agent timeline for the current project")
+		fmt.Println("  get_distillation_health  Get last run status, failures, and backlog data")
+		fmt.Println("  get_alerts               Get active distillation/backlog alerts")
+		return
+	}
+	printUsage()
+}
+
+func runHealth(args []string) {
+	report, err := collectStatusReport()
+	if err != nil {
+		fmt.Printf("Error: %v\n", err)
+		return
+	}
+
+	status := report.Distillation.LastStatus
+	if status == "" {
+		status = "pending"
+	}
+	fmt.Println("Distillation Health:")
+	if report.Distillation.LastSuccessAt != "" {
+		fmt.Printf("  Last distilled: %s\n", formatRelativeTime(report.Distillation.LastSuccessAt))
+	} else {
+		fmt.Println("  Last distilled: never")
+	}
+	if report.Distillation.NextScheduledAt != "" {
+		fmt.Printf("  Next scheduled: %s\n", formatRelativeTime(report.Distillation.NextScheduledAt))
+	}
+	fmt.Printf("  Status: %s\n", strings.ToUpper(status))
+	fmt.Printf("  Failed attempts: %d\n", report.Distillation.ConsecutiveFailures)
+	fmt.Printf("  Events stuck: %d\n", report.Events.Undistilled)
+	if report.Distillation.LastErrorMessage != "" {
+		fmt.Printf("  Error: %s\n", report.Distillation.LastErrorMessage)
+	}
+
+	alerts := healthAlerts(report)
+	if len(alerts) > 0 {
+		fmt.Println("Alerts:")
+		for _, a := range alerts {
+			fmt.Printf("  - %s\n", a)
+		}
+	}
+}
+
+func healthAlerts(report statusReport) []string {
+	var alerts []string
+	if report.Distillation.ConsecutiveFailures >= 3 {
+		alerts = append(alerts, "distillation_failed: 3+ consecutive failures")
+	}
+	if report.Events.Undistilled >= 25 && report.Distillation.LastStatus == "failed" {
+		alerts = append(alerts, "event_backlog_high: undistilled backlog is growing")
+	}
+	if report.Distillation.LastErrorMessage != "" {
+		alerts = append(alerts, "last_error: "+truncate(report.Distillation.LastErrorMessage, 120))
+	}
+	return alerts
 }
 
 // runSave stores a memory directly, bypassing the daemon.
@@ -800,20 +953,20 @@ func truncate(s string, max int) string {
 func runServiceInstall(args []string) {
 	fmt.Println("Installing Forge as system service...")
 
-	mgr, err := service.New()
+	mgr, err := serviceNew()
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "  Error: %v\n", err)
-		os.Exit(1)
+		exitWithCode(1)
 	}
 
-	if mgr.IsServiceInstalled() {
+	if serviceIsInstalled(mgr) {
 		fmt.Println("  Service already installed.")
 		return
 	}
 
-	if err := mgr.Install(); err != nil {
+	if err := serviceInstall(mgr); err != nil {
 		fmt.Fprintf(os.Stderr, "  Error installing service: %v\n", err)
-		os.Exit(1)
+		exitWithCode(1)
 	}
 
 	fmt.Println("  Service installed successfully.")
@@ -823,20 +976,20 @@ func runServiceInstall(args []string) {
 func runServiceUninstall(args []string) {
 	fmt.Println("Uninstalling Forge service...")
 
-	mgr, err := service.New()
+	mgr, err := serviceNew()
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "  Error: %v\n", err)
-		os.Exit(1)
+		exitWithCode(1)
 	}
 
-	if !mgr.IsServiceInstalled() {
+	if !serviceIsInstalled(mgr) {
 		fmt.Println("  Service not installed.")
 		return
 	}
 
-	if err := mgr.Uninstall(); err != nil {
+	if err := serviceUninstall(mgr); err != nil {
 		fmt.Fprintf(os.Stderr, "  Error uninstalling service: %v\n", err)
-		os.Exit(1)
+		exitWithCode(1)
 	}
 
 	fmt.Println("  Service uninstalled successfully.")
@@ -845,15 +998,15 @@ func runServiceUninstall(args []string) {
 func runServiceStart(args []string) {
 	fmt.Println("Starting Forge service...")
 
-	mgr, err := service.New()
+	mgr, err := serviceNew()
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "  Error: %v\n", err)
-		os.Exit(1)
+		exitWithCode(1)
 	}
 
-	if err := mgr.Start(); err != nil {
+	if err := serviceStart(mgr); err != nil {
 		fmt.Fprintf(os.Stderr, "  Error starting service: %v\n", err)
-		os.Exit(1)
+		exitWithCode(1)
 	}
 
 	fmt.Println("  Service started.")
@@ -862,15 +1015,15 @@ func runServiceStart(args []string) {
 func runServiceStop(args []string) {
 	fmt.Println("Stopping Forge service...")
 
-	mgr, err := service.New()
+	mgr, err := serviceNew()
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "  Error: %v\n", err)
-		os.Exit(1)
+		exitWithCode(1)
 	}
 
-	if err := mgr.Stop(); err != nil {
+	if err := serviceStop(mgr); err != nil {
 		fmt.Fprintf(os.Stderr, "  Error stopping service: %v\n", err)
-		os.Exit(1)
+		exitWithCode(1)
 	}
 
 	fmt.Println("  Service stopped.")
@@ -879,11 +1032,17 @@ func runServiceStop(args []string) {
 func runConfig(args []string) {
 	fs := flag.NewFlagSet("config", flag.ContinueOnError)
 	showFlag := fs.Bool("show", false, "Show current config")
-	providerFlag := fs.String("provider", "", "Provider: anthropic/openai/ollama/codex")
+	providerFlag := fs.String("provider", "", "Provider: forgememo/anthropic/openai/ollama")
 	apiKeyFlag := fs.String("api-key", "", "API key for provider")
 	modelFlag := fs.String("model", "", "Model name (optional, defaults vary by provider)")
 	baseURLFlag := fs.String("base-url", "", "Base URL for API (optional)")
 	context7APIKeyFlag := fs.String("context7-api-key", "", "Context7 API key for official docs")
+	timeoutFlag := fs.String("timeout", "", "Inference timeout (e.g. 30s)")
+	retriesFlag := fs.Int("retries", -1, "Retry attempts for transient failures")
+	intervalFlag := fs.String("interval", "", "Distillation interval (e.g. 10m)")
+	jsonFlag := fs.Bool("json", false, "Machine-readable JSON output")
+	validateFlag := fs.Bool("validate", false, "Validate provider credentials/model access")
+	interactiveFlag := fs.Bool("interactive", false, "Interactive setup")
 	if err := fs.Parse(args); err != nil {
 		os.Exit(1)
 	}
@@ -895,7 +1054,23 @@ func runConfig(args []string) {
 			os.Exit(1)
 		}
 		if cfg.Provider == "" {
-			fmt.Println("No config set. Run 'forge config --provider openai --api-key YOUR_KEY' to configure.")
+			fmt.Println("No config set. Run 'forge config --provider forgememo' or configure another provider.")
+			return
+		}
+		if *jsonFlag {
+			out := map[string]any{
+				"schema_version": "1",
+				"provider":       cfg.Provider,
+				"api_key_set":    cfg.APIKey != "",
+				"api_key_masked": maskKey(cfg.APIKey),
+				"model":          cfg.Model,
+				"base_url":       cfg.BaseURL,
+				"timeout":        cfg.Timeout,
+				"retries":        cfg.Retries,
+				"interval":       cfg.DistillInterval,
+			}
+			b, _ := json.MarshalIndent(out, "", "  ")
+			fmt.Println(string(b))
 			return
 		}
 		fmt.Printf("Provider:  %s\n", cfg.Provider)
@@ -908,7 +1083,21 @@ func runConfig(args []string) {
 		if cfg.BaseURL != "" {
 			fmt.Printf("Base URL:   %s\n", cfg.BaseURL)
 		}
+		if cfg.Timeout != "" {
+			fmt.Printf("Timeout:    %s\n", cfg.Timeout)
+		}
+		if cfg.Retries > 0 {
+			fmt.Printf("Retries:    %d\n", cfg.Retries)
+		}
+		if cfg.DistillInterval != "" {
+			fmt.Printf("Interval:   %s\n", cfg.DistillInterval)
+		}
 		return
+	}
+
+	interactive := *interactiveFlag || *providerFlag == ""
+	if interactive {
+		runConfigInteractive(providerFlag, apiKeyFlag, modelFlag, timeoutFlag, retriesFlag, intervalFlag)
 	}
 
 	if *providerFlag == "" {
@@ -916,34 +1105,98 @@ func runConfig(args []string) {
 		fmt.Println("")
 		fmt.Println("Options:")
 		fmt.Println("  --show           Show current configuration")
-		fmt.Println("  --provider       Provider: anthropic, openai, ollama, or codex")
+		fmt.Println("  --provider       Provider: forgememo, anthropic, openai, or ollama")
 		fmt.Println("  --api-key        API key for the provider")
 		fmt.Println("  --model          Model name (optional)")
 		fmt.Println("  --base-url       Base URL for API (optional)")
 		fmt.Println("  --context7-api-key Context7 API key for official docs")
+		fmt.Println("  --timeout        Inference timeout (e.g. 30s)")
+		fmt.Println("  --retries        Retry attempts for transient failures")
+		fmt.Println("  --interval       Distillation interval (e.g. 10m)")
+		fmt.Println("  --validate       Validate provider credentials/model access")
+		fmt.Println("  --json           JSON output (with --show)")
+		fmt.Println("  --interactive    Interactive setup")
+		fmt.Println("")
+		fmt.Println("Defaults by provider:")
+		fmt.Println("  forgememo: claude-haiku-4-5-20251001")
+		fmt.Println("  anthropic: claude-haiku-4-5-20251001")
+		fmt.Println("  openai:    gpt-4o")
+		fmt.Println("  ollama:    llama3:latest")
 		fmt.Println("")
 		fmt.Println("Examples:")
 		fmt.Println("  forge config --show")
+		fmt.Println("  forge config --provider forgememo")
 		fmt.Println("  forge config --provider openai --api-key sk-...")
 		fmt.Println("  forge config --provider anthropic --api-key sk-ant-...")
-		fmt.Println("  forge config --provider ollama --model llama3.2")
-		fmt.Println("  forge config --provider codex")
+		fmt.Println("  forge config --provider ollama --model llama3:latest")
+		fmt.Println("  forge config --provider anthropic --api-key sk-ant-... --validate")
 		fmt.Println("  forge config --provider openai --context7-api-key ctx7sk-...")
 		os.Exit(0)
 	}
 
-	validProviders := map[string]bool{"anthropic": true, "openai": true, "ollama": true, "codex": true}
+	validProviders := map[string]bool{"forgememo": true, "forge": true, "anthropic": true, "openai": true, "ollama": true}
 	if !validProviders[*providerFlag] {
-		fmt.Fprintf(os.Stderr, "Error: provider must be one of: anthropic, openai, ollama, codex\n")
+		fmt.Fprintf(os.Stderr, "Error: provider must be one of: forgememo, anthropic, openai, ollama\n")
+		os.Exit(1)
+	}
+	if *providerFlag == "forge" {
+		*providerFlag = "forgememo"
+	}
+
+	if *timeoutFlag != "" {
+		if _, err := time.ParseDuration(*timeoutFlag); err != nil {
+			fmt.Fprintf(os.Stderr, "Error: invalid --timeout value %q\n", *timeoutFlag)
+			os.Exit(1)
+		}
+	}
+	if *intervalFlag != "" {
+		if _, err := time.ParseDuration(*intervalFlag); err != nil {
+			fmt.Fprintf(os.Stderr, "Error: invalid --interval value %q\n", *intervalFlag)
+			os.Exit(1)
+		}
+	}
+	if *retriesFlag < -1 {
+		fmt.Fprintln(os.Stderr, "Error: --retries must be >= 0")
 		os.Exit(1)
 	}
 
-	cfg := config.Config{
-		Provider:       *providerFlag,
-		APIKey:         *apiKeyFlag,
-		Model:          *modelFlag,
-		BaseURL:        *baseURLFlag,
-		Context7APIKey: *context7APIKeyFlag,
+	existing, _ := config.Load()
+	cfg := existing
+	cfg.Provider = *providerFlag
+	if *apiKeyFlag != "" {
+		cfg.APIKey = *apiKeyFlag
+	}
+	if *modelFlag != "" {
+		cfg.Model = *modelFlag
+	} else if cfg.Model == "" || cfg.Provider != existing.Provider {
+		cfg.Model = defaultModelForProvider(cfg.Provider)
+	}
+	if *baseURLFlag != "" {
+		cfg.BaseURL = *baseURLFlag
+	}
+	if *context7APIKeyFlag != "" {
+		cfg.Context7APIKey = *context7APIKeyFlag
+	}
+	if *timeoutFlag != "" {
+		cfg.Timeout = *timeoutFlag
+	}
+	if *retriesFlag >= 0 {
+		cfg.Retries = *retriesFlag
+	}
+	if *intervalFlag != "" {
+		cfg.DistillInterval = *intervalFlag
+	}
+	if cfg.Retries == 0 {
+		cfg.Retries = 3
+	}
+
+	if *validateFlag {
+		fmt.Println("Testing connection...")
+		if err := distill.ValidateConfig(distillConfigFromUserConfig(cfg)); err != nil {
+			fmt.Fprintf(os.Stderr, "Validation failed: %s\n", distill.UserMessage(err))
+			os.Exit(1)
+		}
+		fmt.Println("Validation successful.")
 	}
 
 	if err := config.Save(cfg); err != nil {
@@ -952,19 +1205,142 @@ func runConfig(args []string) {
 	}
 
 	fmt.Printf("Configuration saved.\n")
-	fmt.Printf("Provider: %s\n", *providerFlag)
-	if *apiKeyFlag != "" {
-		fmt.Println("API Key: " + maskKey(*apiKeyFlag))
+	fmt.Printf("Provider: %s\n", cfg.Provider)
+	fmt.Printf("Model: %s\n", cfg.Model)
+	if cfg.APIKey != "" {
+		fmt.Println("API Key: " + maskKey(cfg.APIKey))
 	}
-	if *context7APIKeyFlag != "" {
-		fmt.Println("Context7 API Key: " + maskKey(*context7APIKeyFlag))
+	if cfg.Context7APIKey != "" {
+		fmt.Println("Context7 API Key: " + maskKey(cfg.Context7APIKey))
 	}
+	if cfg.Timeout != "" {
+		fmt.Printf("Timeout: %s\n", cfg.Timeout)
+	}
+	fmt.Printf("Retries: %d\n", cfg.Retries)
 	fmt.Println("\nTo apply, either:")
 	fmt.Println("  1. Run: export $(cat ~/.forge/config | xargs)  # in your shell")
 	fmt.Println("  2. Or add to your shell profile (~/.zshrc, ~/.bashrc)")
 }
 
+func runConfigInteractive(providerFlag, apiKeyFlag, modelFlag, timeoutFlag *string, retriesFlag *int, intervalFlag *string) {
+	reader := bufio.NewReader(os.Stdin)
+	isTTY := false
+	if fi, err := os.Stdin.Stat(); err == nil {
+		isTTY = (fi.Mode() & os.ModeCharDevice) != 0
+	}
+	if !isTTY {
+		return
+	}
+
+	if *providerFlag == "" {
+		*providerFlag = promptChoice(reader, "Select provider", []string{"forgememo", "anthropic", "openai", "ollama"}, "forgememo")
+	}
+	if *apiKeyFlag == "" && (*providerFlag == "anthropic" || *providerFlag == "openai") {
+		*apiKeyFlag = promptInput(reader, "API Key", "")
+	}
+	if *modelFlag == "" {
+		*modelFlag = promptModel(reader, *providerFlag)
+	}
+	if *timeoutFlag == "" {
+		*timeoutFlag = promptInput(reader, "Timeout", "30s")
+	}
+	if *retriesFlag < 0 {
+		retryRaw := promptInput(reader, "Retries", "3")
+		if retryVal, err := strconv.Atoi(retryRaw); err == nil {
+			*retriesFlag = retryVal
+		}
+	}
+	if *intervalFlag == "" {
+		*intervalFlag = promptInput(reader, "Distillation interval", "10m")
+	}
+}
+
+func promptInput(reader *bufio.Reader, label, defaultValue string) string {
+	if defaultValue != "" {
+		fmt.Printf("? %s [%s]: ", label, defaultValue)
+	} else {
+		fmt.Printf("? %s: ", label)
+	}
+	text, _ := reader.ReadString('\n')
+	text = strings.TrimSpace(text)
+	if text == "" {
+		return defaultValue
+	}
+	return text
+}
+
+func promptChoice(reader *bufio.Reader, label string, options []string, defaultValue string) string {
+	fmt.Printf("? %s:\n", label)
+	for _, opt := range options {
+		fmt.Printf("  - %s\n", opt)
+	}
+	return promptInput(reader, label, defaultValue)
+}
+
+func promptModel(reader *bufio.Reader, provider string) string {
+	switch provider {
+	case "anthropic":
+		fmt.Println("? Select model:")
+		fmt.Println("  - claude-haiku-4-5-20251001 (recommended: fastest, budget-friendly)")
+		fmt.Println("  - claude-sonnet-4-6 (balanced)")
+		fmt.Println("  - claude-opus-4-6 (most capable, slowest)")
+		return promptInput(reader, "Model", "claude-haiku-4-5-20251001")
+	case "openai":
+		fmt.Println("? Select model:")
+		fmt.Println("  - gpt-4o (default)")
+		fmt.Println("  - gpt-4-turbo")
+		fmt.Println("  - gpt-3.5-turbo (budget)")
+		return promptInput(reader, "Model", "gpt-4o")
+	case "ollama":
+		return promptInput(reader, "Model", "llama3:latest")
+	case "forgememo", "forge":
+		return promptInput(reader, "Model", "claude-haiku-4-5-20251001")
+	default:
+		return defaultModelForProvider(provider)
+	}
+}
+
+func defaultModelForProvider(provider string) string {
+	switch provider {
+	case "forgememo", "forge":
+		return "claude-haiku-4-5-20251001"
+	case "anthropic":
+		return "claude-haiku-4-5-20251001"
+	case "openai":
+		return "gpt-4o"
+	case "ollama":
+		return "llama3:latest"
+	default:
+		return "claude-haiku-4-5-20251001"
+	}
+}
+
+func distillConfigFromUserConfig(cfg config.Config) distill.Config {
+	d := distill.LoadConfig()
+	d.Provider = distill.Provider(cfg.Provider)
+	if d.Provider == "forge" {
+		d.Provider = distill.ProviderForgememo
+	}
+	d.APIKey = cfg.APIKey
+	d.Model = cfg.Model
+	if cfg.BaseURL != "" {
+		d.BaseURL = cfg.BaseURL
+	}
+	if cfg.Timeout != "" {
+		if timeout, err := time.ParseDuration(cfg.Timeout); err == nil {
+			d.Timeout = timeout
+		}
+	}
+	if cfg.Retries > 0 {
+		d.Retries = cfg.Retries
+	}
+	return d
+}
+
 func maskKey(key string) string {
+	if key == "" {
+		return ""
+	}
 	if len(key) <= 8 {
 		return "***"
 	}
@@ -984,98 +1360,148 @@ func openBrowser(url string) {
 	exec.Command(args[0], args[1:]...).Start()
 }
 
+func randomHex(n int) string {
+	b := make([]byte, n)
+	rand.Read(b)
+	return hex.EncodeToString(b)
+}
+
 func runLogin(args []string) {
 	fs := flag.NewFlagSet("login", flag.ContinueOnError)
-	emailFlag := fs.String("email", "", "Email address")
-	passwordFlag := fs.String("password", "", "Password")
 	purchaseFlag := fs.Bool("purchase", false, "Purchase credits after login")
-	signupFlag := fs.Bool("signup", false, "Open signup page")
+	// kept for backward compat, unused
+	fs.String("email", "", "Email address (unused; login uses browser)")
+	fs.String("password", "", "Password (unused; login uses browser)")
+	fs.Bool("signup", false, "Open signup page (unused)")
 	if err := fs.Parse(args); err != nil {
 		os.Exit(1)
 	}
 
-	paymentURL := os.Getenv("FORGE_PAYMENT_URL")
-	if paymentURL == "" {
-		paymentURL = "http://localhost:3000"
+	serverURL := os.Getenv("FORGE_BASE_URL")
+	if serverURL == "" {
+		serverURL = "https://forgememo-server.onrender.com"
 	}
 
-	if *signupFlag {
-		fmt.Println("Opening Forge signup page...")
-		openBrowser("https://forge.sh/signup")
-		return
-	}
-
-	if *emailFlag == "" {
-		fmt.Println("Usage: forge login [--email USER --password PASS] [--purchase] [--signup]")
-		fmt.Println("")
-		fmt.Println("Login to Forge to access your credits and API.")
-		fmt.Println("")
-		fmt.Println("Options:")
-		fmt.Println("  --email     Email address")
-		fmt.Println("  --password  Password")
-		fmt.Println("  --purchase  Purchase credits after login")
-		fmt.Println("  --signup    Open signup page in browser")
-		fmt.Println("")
-		fmt.Println("Don't have an account? Run: forge login --signup")
-		os.Exit(0)
-	}
-
-	type loginReq struct {
-		Email    string `json:"email"`
-		Password string `json:"password"`
-	}
-	body, _ := json.Marshal(loginReq{Email: *emailFlag, Password: *passwordFlag})
-	resp, err := http.Post(paymentURL+"/api/login", "application/json", bytes.NewReader(body))
+	// Start local callback listener on a random port.
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+		fmt.Fprintf(os.Stderr, "Error: cannot start local listener: %v\n", err)
 		os.Exit(1)
 	}
-	defer resp.Body.Close()
+	port := listener.Addr().(*net.TCPAddr).Port
+	callbackURL := fmt.Sprintf("http://127.0.0.1:%d/callback", port)
+	state := randomHex(16)
 
-	var result struct {
-		Success bool   `json:"success"`
-		Message string `json:"message,omitempty"`
-		Data    struct {
-			Token   string `json:"token"`
-			APIKey  string `json:"api_key"`
-			Credits int    `json:"credits"`
-		} `json:"data,omitempty"`
-	}
-	json.NewDecoder(resp.Body).Decode(&result)
+	tokenCh := make(chan string, 1)
+	errCh := make(chan error, 1)
 
-	if !result.Success {
-		fmt.Fprintf(os.Stderr, "Error: %s\n", result.Message)
+	mux := http.NewServeMux()
+	srv := &http.Server{Handler: mux}
+	mux.HandleFunc("/callback", func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Query().Get("state") != state {
+			http.Error(w, "state mismatch", http.StatusBadRequest)
+			errCh <- fmt.Errorf("OAuth state mismatch — possible CSRF")
+			return
+		}
+		token := r.URL.Query().Get("token")
+		if token == "" {
+			http.Error(w, "missing token", http.StatusBadRequest)
+			errCh <- fmt.Errorf("no token in callback")
+			return
+		}
+		fmt.Fprint(w, "<html><body><h2>Logged in! You can close this tab.</h2></body></html>")
+		tokenCh <- token
+	})
+	go srv.Serve(listener)
+
+	authURL := fmt.Sprintf("%s/cli-auth?callback=%s&state=%s",
+		serverURL,
+		url.QueryEscape(callbackURL),
+		state,
+	)
+
+	fmt.Println("Opening browser for login...")
+	fmt.Printf("  %s\n\n", authURL)
+	openBrowser(authURL)
+	fmt.Println("Waiting for login (timeout: 5 min)...")
+
+	select {
+	case token := <-tokenCh:
+		srv.Close()
+		cfg := config.Config{
+			Provider: "forgememo",
+			APIKey:   token,
+			BaseURL:  serverURL,
+		}
+		if err := config.Save(cfg); err != nil {
+			fmt.Fprintf(os.Stderr, "Error saving config: %v\n", err)
+			os.Exit(1)
+		}
+		fmt.Println("Logged in successfully.")
+		if *purchaseFlag {
+			// Start a fresh callback server for the payment flow.
+			payListener, lerr := net.Listen("tcp", "127.0.0.1:0")
+			if lerr != nil {
+				fmt.Fprintf(os.Stderr, "Error: cannot start payment listener: %v\n", lerr)
+				os.Exit(1)
+			}
+			payPort := payListener.Addr().(*net.TCPAddr).Port
+			payCallbackURL := fmt.Sprintf("http://127.0.0.1:%d/callback", payPort)
+			payState := randomHex(16)
+			payMux := http.NewServeMux()
+			paySrv := &http.Server{Handler: payMux}
+			payDone := make(chan struct{})
+			payMux.HandleFunc("/callback", func(w http.ResponseWriter, r *http.Request) {
+				w.Header().Set("Access-Control-Allow-Origin", "*")
+				w.Header().Set("Access-Control-Allow-Methods", "GET, OPTIONS")
+				if r.Method == http.MethodOptions {
+					w.WriteHeader(http.StatusNoContent)
+					return
+				}
+				if r.URL.Query().Get("state") != payState {
+					http.Error(w, "state mismatch", http.StatusBadRequest)
+					return
+				}
+				fmt.Fprint(w, "<html><body><h2>Payment complete! You can close this tab.</h2></body></html>")
+				fmt.Println("Payment confirmed. forge is ready.")
+				// Keep server alive briefly to handle React strict-mode double-fetch in dev.
+				go func() {
+					time.Sleep(3 * time.Second)
+					paySrv.Close()
+				}()
+				// Only close payDone once.
+				select {
+				case <-payDone:
+				default:
+					close(payDone)
+				}
+			})
+			go paySrv.Serve(payListener)
+			billingURL := fmt.Sprintf("%s/billing/cli-setup?token=%s&cli_callback=%s&state=%s",
+				serverURL,
+				url.QueryEscape(token),
+				url.QueryEscape(payCallbackURL),
+				payState,
+			)
+			fmt.Println("Opening browser for payment...")
+			fmt.Printf("  %s\n\n", billingURL)
+			openBrowser(billingURL)
+			fmt.Println("Waiting for payment (timeout: 10 min)...")
+			select {
+			case <-payDone:
+			case <-time.After(10 * time.Minute):
+				paySrv.Close()
+				fmt.Fprintf(os.Stderr, "Payment timed out. Run 'forge billing' to purchase credits.\n")
+			}
+		}
+	case e := <-errCh:
+		srv.Close()
+		fmt.Fprintf(os.Stderr, "Error: %v\n", e)
 		os.Exit(1)
-	}
-
-	cfg := config.Config{
-		Provider: "forge",
-		APIKey:   result.Data.APIKey,
-	}
-	config.Save(cfg)
-
-	fmt.Printf("Logged in as %s\n", *emailFlag)
-	fmt.Printf("Credits: %d\n", result.Data.Credits)
-
-	if *purchaseFlag || result.Data.Credits < 5 {
-		checkoutResp, _ := http.NewRequest("POST", paymentURL+"/api/checkout", bytes.NewReader(nil))
-		checkoutResp.Header.Set("Authorization", result.Data.Token)
-		client := &http.Client{}
-		res, _ := client.Do(checkoutResp)
-		var checkout struct {
-			Data struct {
-				URL          string `json:"url"`
-				CreditAmount int    `json:"credit_amount"`
-				PriceCents   int    `json:"price_cents"`
-			} `json:"data"`
-		}
-		json.NewDecoder(res.Body).Decode(&checkout)
-		if checkout.Data.URL != "" {
-			price := float64(checkout.Data.PriceCents) / 100
-			fmt.Printf("\nOpening Stripe to purchase %d credits for $%.2f...\n", checkout.Data.CreditAmount, price)
-			openBrowser(checkout.Data.URL)
-			fmt.Println("After payment, credits will be added automatically.")
-		}
+	case <-time.After(5 * time.Minute):
+		srv.Close()
+		fmt.Fprintf(os.Stderr, "Error: login timed out\n")
+		os.Exit(1)
 	}
 }
 

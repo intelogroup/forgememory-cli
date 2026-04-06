@@ -88,9 +88,11 @@ if [ "$OS" = "windows" ]; then
   BINARY="forge-windows-${ARCH}.exe"
   
   if [ -w "$INSTALL_DIR" ]; then
-    mv "$TMP/$BINARY" "$INSTALL_DIR/forge.exe"
+    mv "$TMP/$BINARY" "$INSTALL_DIR/forgememo.exe"
+    cp "$INSTALL_DIR/forgememo.exe" "$INSTALL_DIR/forge.exe"
   else
-    sudo mv "$TMP/$BINARY" "$INSTALL_DIR/forge.exe"
+    sudo mv "$TMP/$BINARY" "$INSTALL_DIR/forgememo.exe"
+    sudo cp "$INSTALL_DIR/forgememo.exe" "$INSTALL_DIR/forge.exe"
   fi
 else
   ARCHIVE="forge-${OS}-${ARCH}.tar.gz"
@@ -104,12 +106,15 @@ else
   BINARY="forge-${OS}-${ARCH}"
   
   if [ -w "$INSTALL_DIR" ]; then
-    mv "$BINARY" "$INSTALL_DIR/forge"
+    mv "$BINARY" "$INSTALL_DIR/forgememo"
+    ln -sf "$INSTALL_DIR/forgememo" "$INSTALL_DIR/forge"
   else
-    sudo mv "$BINARY" "$INSTALL_DIR/forge"
+    sudo mv "$BINARY" "$INSTALL_DIR/forgememo"
+    sudo ln -sf "$INSTALL_DIR/forgememo" "$INSTALL_DIR/forge"
   fi
 fi
 
+chmod +x "$INSTALL_DIR/forgememo" 2>/dev/null || true
 chmod +x "$INSTALL_DIR/forge" 2>/dev/null || true
 rm -rf "$TMP"
 
@@ -117,9 +122,9 @@ echo ""
 echo "Done!"
 echo ""
 if [ "$OS" = "windows" ]; then
-  echo "Run: forge.exe --help"
+  echo "Run: forgememo.exe --help"
 else
-  echo "Run: forge --help"
+  echo "Run: forgememo --help"
 fi
 echo ""
 echo "To add to your PATH, add this to your shell config:"

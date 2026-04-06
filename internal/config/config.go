@@ -8,11 +8,14 @@ import (
 )
 
 type Config struct {
-	Provider       string
-	APIKey         string
-	Model          string
-	BaseURL        string
-	Context7APIKey string
+	Provider        string
+	APIKey          string
+	Model           string
+	BaseURL         string
+	Context7APIKey  string
+	Timeout         string
+	Retries         int
+	DistillInterval string
 }
 
 func Path() string {
@@ -56,6 +59,12 @@ func Load() (Config, error) {
 			cfg.BaseURL = value
 		case "CONTEXT7_API_KEY":
 			cfg.Context7APIKey = value
+		case "FORGE_TIMEOUT":
+			cfg.Timeout = value
+		case "FORGE_RETRIES":
+			fmt.Sscanf(value, "%d", &cfg.Retries)
+		case "FORGE_DISTILL_INTERVAL":
+			cfg.DistillInterval = value
 		}
 	}
 	return cfg, nil
@@ -84,6 +93,15 @@ func Save(cfg Config) error {
 	if cfg.Context7APIKey != "" {
 		lines = append(lines, fmt.Sprintf("CONTEXT7_API_KEY=%s", cfg.Context7APIKey))
 	}
+	if cfg.Timeout != "" {
+		lines = append(lines, fmt.Sprintf("FORGE_TIMEOUT=%s", cfg.Timeout))
+	}
+	if cfg.Retries > 0 {
+		lines = append(lines, fmt.Sprintf("FORGE_RETRIES=%d", cfg.Retries))
+	}
+	if cfg.DistillInterval != "" {
+		lines = append(lines, fmt.Sprintf("FORGE_DISTILL_INTERVAL=%s", cfg.DistillInterval))
+	}
 
 	return os.WriteFile(path, []byte(strings.Join(lines, "\n")+"\n"), 0o600)
 }
@@ -108,6 +126,15 @@ func SetEnvFromFile() error {
 	}
 	if cfg.Context7APIKey != "" {
 		os.Setenv("CONTEXT7_API_KEY", cfg.Context7APIKey)
+	}
+	if cfg.Timeout != "" {
+		os.Setenv("FORGE_TIMEOUT", cfg.Timeout)
+	}
+	if cfg.Retries > 0 {
+		os.Setenv("FORGE_RETRIES", fmt.Sprintf("%d", cfg.Retries))
+	}
+	if cfg.DistillInterval != "" {
+		os.Setenv("FORGE_DISTILL_INTERVAL", cfg.DistillInterval)
 	}
 	return nil
 }
