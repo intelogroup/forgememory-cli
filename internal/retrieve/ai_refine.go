@@ -28,11 +28,11 @@ func maybeRefineContext7Hint(job *db.RetrievalJob, hint string, parts []string) 
 
 	response, err := distill.CompletePrompt(cfg, buildAIHintPrompt(job, hint, parts))
 	if err != nil {
-		return hint, false, err
+		return hint, false, nil
 	}
 	decision, err := parseAIHintDecision(response)
 	if err != nil {
-		return hint, false, err
+		return hint, false, nil
 	}
 	refined := cleanContext7Sentence(decision.Hint)
 	if !decision.Relevant || decision.Confidence < 0.75 || refined == "" {

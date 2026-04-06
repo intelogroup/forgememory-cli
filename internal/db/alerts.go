@@ -41,7 +41,7 @@ type Alert struct {
 	Acknowledged bool    `json:"acknowledged"`
 }
 
-// UpsertFailureSignature increments an unresolved failure fingerprint or creates it.
+// UpsertFailureSignature atomically inserts or increments an unresolved failure fingerprint.
 func (d *DB) UpsertFailureSignature(sig *FailureSignature) (*FailureSignature, error) {
 	if sig.FirstSeenTS == "" {
 		sig.FirstSeenTS = time.Now().UTC().Format(time.RFC3339)
@@ -49,43 +49,29 @@ func (d *DB) UpsertFailureSignature(sig *FailureSignature) (*FailureSignature, e
 	if sig.LastSeenTS == "" {
 		sig.LastSeenTS = sig.FirstSeenTS
 	}
-
-	existing, err := d.getActiveFailureSignature(sig.ProjectID, sig.SessionID, sig.Fingerprint)
-	if err != nil {
-		return nil, err
-	}
-	if existing != nil {
-		existing.LastSeenTS = sig.LastSeenTS
-		existing.RepeatCount++
-		if _, err := d.conn.Exec(
-			`UPDATE failure_signatures
-			 SET last_seen_ts=?, repeat_count=?
-			 WHERE id=?`,
-			existing.LastSeenTS, existing.RepeatCount, existing.ID,
-		); err != nil {
-			return nil, err
-		}
-		return existing, nil
-	}
-
 	if sig.ID == "" {
 		sig.ID = uuid.New().String()
 	}
 	if sig.RepeatCount == 0 {
 		sig.RepeatCount = 1
 	}
-	_, err = d.conn.Exec(
+
+	// Single atomic statement: no read-before-write race.
+	_, err := d.conn.Exec(
 		`INSERT INTO failure_signatures
 		 (id, project_id, session_id, source_tool, tool_name, command_family, fingerprint, error_kind, normalized_message,
 		  first_seen_ts, last_seen_ts, repeat_count, resolved_ts)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		 ON CONFLICT(project_id, session_id, fingerprint, resolved_ts) DO UPDATE
+		 SET last_seen_ts = excluded.last_seen_ts,
+		     repeat_count = repeat_count + 1`,
 		sig.ID, sig.ProjectID, sig.SessionID, sig.SourceTool, sig.ToolName, sig.CommandFamily, sig.Fingerprint,
 		sig.ErrorKind, sig.NormalizedMessage, sig.FirstSeenTS, sig.LastSeenTS, sig.RepeatCount, sig.ResolvedTS,
 	)
 	if err != nil {
 		return nil, err
 	}
-	return sig, nil
+	return d.getActiveFailureSignature(sig.ProjectID, sig.SessionID, sig.Fingerprint)
 }
 
 func (d *DB) getActiveFailureSignature(projectID, sessionID, fingerprint string) (*FailureSignature, error) {

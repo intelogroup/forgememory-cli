@@ -53,6 +53,9 @@ func ProcessEvent(database *db.DB, event *db.Event) error {
 	if event == nil || database == nil {
 		return nil
 	}
+	if event.EventType != "PostToolUse" {
+		return nil
+	}
 	if strings.TrimSpace(event.Payload) == "" {
 		return nil
 	}
@@ -369,16 +372,18 @@ func pickCommandFamily(texts []string) string {
 		"pytest": true, "node": true, "vercel": true,
 	}
 
-	// Pass 1: strings that contain spaces, start with a known tool, no path separator.
+	// Pass 1: strings that contain spaces, start with a known tool.
+	// Path separators in arguments (e.g. "go test ./...") are allowed;
+	// only reject strings whose command head looks like a path.
 	for _, text := range texts {
 		text = strings.TrimSpace(text)
 		if !strings.Contains(text, " ") {
 			continue
 		}
-		if strings.ContainsAny(text, "/\\") {
+		head := strings.Fields(text)[0]
+		if strings.ContainsAny(head, "/\\") {
 			continue
 		}
-		head := strings.Fields(text)[0]
 		if knownTools[head] {
 			if fam := commandFamily(text); fam != "" {
 				return fam
@@ -386,10 +391,11 @@ func pickCommandFamily(texts []string) string {
 		}
 	}
 
-	// Pass 2: any string whose commandFamily resolves (no path separators).
+	// Pass 2: any string whose commandFamily resolves; reject only path-like heads.
 	for _, text := range texts {
 		text = strings.TrimSpace(text)
-		if strings.ContainsAny(text, "/\\") {
+		head := strings.Fields(text)[0]
+		if strings.ContainsAny(head, "/\\") {
 			continue
 		}
 		if fam := commandFamily(text); fam != "" {
@@ -397,11 +403,12 @@ func pickCommandFamily(texts []string) string {
 		}
 	}
 
-	// Pass 3: longest non-path string.
+	// Pass 3: longest string whose head is not a path.
 	longest := ""
 	for _, text := range texts {
 		text = strings.TrimSpace(text)
-		if strings.ContainsAny(text, "/\\") {
+		head := strings.Fields(text)[0]
+		if strings.ContainsAny(head, "/\\") {
 			continue
 		}
 		if len(text) > len(longest) {

@@ -783,32 +783,43 @@ func TestBinary_Hook_RepeatedFailureClearsAfterSuccess(t *testing.T) {
 		}
 	}
 
-	successCmd := exec.Command(forgeBin, "hook")
-	successCmd.Env = append(baseEnv(),
+	successEnv := append(baseEnv(),
 		"HOME="+home,
 		"FORGE_SOURCE_TOOL=codex",
 		"FORGE_EVENT_TYPE=PostToolUse",
 		"FORGE_SESSION_ID=rust-fail-2",
 	)
-	successCmd.Stdin = strings.NewReader(`{"session_id":"rust-fail-2","cwd":"/tmp/api-service","tool_name":"Bash","hook_event_name":"PostToolUse","tool_input":{"command":"cargo build"},"tool_response":{"stdout":"Compiling api-service v0.1.0\nFinished dev profile target(s) in 0.84s"}}`)
-	if err := successCmd.Run(); err != nil {
-		t.Fatalf("forge hook success event: %v", err)
-	}
+	successPayload := `{"session_id":"rust-fail-2","cwd":"/tmp/api-service","tool_name":"Bash","hook_event_name":"PostToolUse","tool_input":{"command":"cargo build"},"tool_response":{"stdout":"Compiling api-service v0.1.0\nFinished dev profile target(s) in 0.84s"}}`
 
-	cmd := exec.Command(forgeBin, "hook")
-	cmd.Env = append(baseEnv(),
-		"HOME="+home,
-		"FORGE_SOURCE_TOOL=codex",
-		"FORGE_EVENT_TYPE=UserPromptSubmit",
-		"FORGE_SESSION_ID=rust-fail-2",
-	)
-	cmd.Stdin = strings.NewReader(`{"session_id":"rust-fail-2","cwd":"/tmp/api-service","hook_event_name":"UserPromptSubmit","messages":[{"role":"user","content":[{"type":"text","text":"fix the cargo build failure"}]}]}`)
-	out, err := cmd.Output()
-	if err != nil {
-		t.Fatalf("forge hook recall output: %v", err)
-	}
-	if strings.Contains(string(out), "Active repeated failure") {
-		t.Fatalf("expected repeated-failure alert to be cleared after success, got %q", string(out))
+	// Poll until the daemon processes the success event and clears the alert.
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		successCmd := exec.Command(forgeBin, "hook")
+		successCmd.Env = successEnv
+		successCmd.Stdin = strings.NewReader(successPayload)
+		if err := successCmd.Run(); err != nil {
+			t.Fatalf("forge hook success event: %v", err)
+		}
+
+		recallCmd := exec.Command(forgeBin, "hook")
+		recallCmd.Env = append(baseEnv(),
+			"HOME="+home,
+			"FORGE_SOURCE_TOOL=codex",
+			"FORGE_EVENT_TYPE=UserPromptSubmit",
+			"FORGE_SESSION_ID=rust-fail-2",
+		)
+		recallCmd.Stdin = strings.NewReader(`{"session_id":"rust-fail-2","cwd":"/tmp/api-service","hook_event_name":"UserPromptSubmit","messages":[{"role":"user","content":[{"type":"text","text":"fix the cargo build failure"}]}]}`)
+		out, err := recallCmd.Output()
+		if err != nil {
+			t.Fatalf("forge hook recall output: %v", err)
+		}
+		if !strings.Contains(string(out), "Active repeated failure") {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("expected repeated-failure alert to be cleared after success, got %q", string(out))
+		}
+		time.Sleep(200 * time.Millisecond)
 	}
 }
 
