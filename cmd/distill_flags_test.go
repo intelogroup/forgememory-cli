@@ -3,6 +3,7 @@ package main
 import (
 	"fmt"
 	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
@@ -213,7 +214,7 @@ func TestRunDistill_WaitFlag_PollsUntilLockFree(t *testing.T) {
 
 	// Pre-acquire with current PID so --wait polling sees a live holder.
 	lockPath := distillLockPath()
-	if err := os.MkdirAll(lockPath[:strings.LastIndex(lockPath, "/")], 0o700); err != nil {
+	if err := os.MkdirAll(filepath.Dir(lockPath), 0o700); err != nil {
 		t.Fatalf("MkdirAll: %v", err)
 	}
 	if err := os.WriteFile(lockPath, []byte(fmt.Sprintf("%d", os.Getpid())), 0o600); err != nil {
@@ -289,7 +290,7 @@ func TestRunDistill_BlockedMessageSuggestsWait(t *testing.T) {
 	t.Setenv("HOME", home)
 
 	lockPath := distillLockPath()
-	if err := os.MkdirAll(lockPath[:strings.LastIndex(lockPath, "/")], 0o700); err != nil {
+	if err := os.MkdirAll(filepath.Dir(lockPath), 0o700); err != nil {
 		t.Fatalf("MkdirAll: %v", err)
 	}
 	if err := os.WriteFile(lockPath, []byte(fmt.Sprintf("%d", os.Getpid())), 0o600); err != nil {

@@ -277,8 +277,8 @@ func runDistill(args []string) {
 		}
 		return
 	}
-	defer lock.Close()
 	defer cleanDistillLock()
+	defer lock.Close()
 
 	database, err := db.Open("")
 	if err != nil {
