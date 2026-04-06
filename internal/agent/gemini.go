@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 )
 
 type geminiAdapter struct{}
@@ -41,18 +42,47 @@ func isForgeCommandHookItem(item any, forgeCommand string) bool {
 	return false
 }
 
+// isAnyForgeCommandHookItem reports whether item is any Forge hook entry for
+// the given event, regardless of the binary path. Used to remove stale entries
+// where the forge binary has moved.
+func isAnyForgeCommandHookItem(item any, eventName string) bool {
+	m, ok := item.(map[string]any)
+	if !ok {
+		return false
+	}
+	hooks, _ := m["hooks"].([]any)
+	for _, h := range hooks {
+		hm, ok := h.(map[string]any)
+		if !ok {
+			continue
+		}
+		if cmd, _ := hm["command"].(string); strings.Contains(cmd, "hook --source gemini --event "+eventName) {
+			return true
+		}
+	}
+	return false
+}
+
 // upsertCommandHookArray is like upsertHookArray but identifies Forge-owned
-// entries by their command string rather than env metadata.
+// entries by event pattern (not exact path) so stale entries with old binary
+// paths are replaced rather than kept alongside the new entry.
 func upsertCommandHookArray(existing []any, newEntry map[string]any, forgeCommand string) []any {
+	// Extract event name from command for stale-path matching.
+	eventName := ""
+	if idx := strings.LastIndex(forgeCommand, "--event "); idx >= 0 {
+		eventName = strings.TrimSpace(forgeCommand[idx+8:])
+	}
+
 	var result []any
 	inserted := false
 	for _, item := range existing {
-		if isForgeCommandHookItem(item, forgeCommand) {
+		// Treat any forge hook for this event as owned by us (handles stale paths).
+		if eventName != "" && isAnyForgeCommandHookItem(item, eventName) {
 			if !inserted {
 				result = append(result, newEntry)
 				inserted = true
 			}
-			continue
+			continue // drop stale entry
 		}
 		result = append(result, item)
 	}

@@ -330,7 +330,7 @@ func TestGetPrinciples_ShortTimestampDoesNotPanic(t *testing.T) {
 	}
 
 	s := New(database)
-	result := s.getPrinciples(map[string]any{"limit": 10.0})
+	result := s.getPrinciples(map[string]any{"limit": 10.0, "project_id": "proj"})
 	if result.IsError {
 		t.Fatalf("getPrinciples returned error: %+v", result)
 	}
