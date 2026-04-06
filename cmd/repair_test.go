@@ -3,6 +3,7 @@ package main
 import (
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 
@@ -66,6 +67,9 @@ func TestRepairServiceIfNeeded_PathsMatch(t *testing.T) {
 
 // TestRepairServiceIfNeeded_PathMismatch — reinstalls when paths differ, prints message.
 func TestRepairServiceIfNeeded_PathMismatch(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("plist-based repair not applicable on Windows")
+	}
 	withRepairSeamsReset(t)
 
 	home := t.TempDir()
@@ -141,6 +145,9 @@ func TestRepairServiceIfNeeded_NotInstalled(t *testing.T) {
 
 // TestRepairServiceIfNeeded_InstallError — returns error when reinstall fails.
 func TestRepairServiceIfNeeded_InstallError(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("plist-based repair not applicable on Windows")
+	}
 	withRepairSeamsReset(t)
 
 	home := t.TempDir()
