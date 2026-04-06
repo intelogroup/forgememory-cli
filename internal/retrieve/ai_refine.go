@@ -38,7 +38,7 @@ func maybeRefineContext7Hint(job *db.RetrievalJob, hint string, parts []string) 
 	if !decision.Relevant || decision.Confidence < 0.75 || refined == "" {
 		return hint, false, nil
 	}
-	return truncate(ensureSentence(refined), 220), true, nil
+	return truncate(ensureSentence(refined), 160), true, nil
 }
 
 func shouldUseAIHintRefinement(job *db.RetrievalJob, hint string, parts []string) bool {

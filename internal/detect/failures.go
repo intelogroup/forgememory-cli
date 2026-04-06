@@ -53,6 +53,9 @@ func ProcessEvent(database *db.DB, event *db.Event) error {
 	if event == nil || database == nil {
 		return nil
 	}
+	if strings.TrimSpace(event.Payload) == "" {
+		return nil
+	}
 
 	obs := observeFailure(event)
 	if obs != nil {
@@ -119,12 +122,7 @@ func observeFailure(event *db.Event) *failureObservation {
 		texts = []string{event.Payload}
 	}
 
-	var command string
-	for _, text := range texts {
-		if command == "" {
-			command = commandFamily(text)
-		}
-	}
+	command := pickCommandFamily(texts)
 
 	lines := candidateLines(texts)
 	if len(lines) == 0 {
@@ -190,11 +188,8 @@ func observeSuccess(event *db.Event) *successObservation {
 		texts = []string{event.Payload}
 	}
 
-	var command string
+	command := pickCommandFamily(texts)
 	for _, text := range texts {
-		if command == "" {
-			command = commandFamily(text)
-		}
 		for _, line := range strings.Split(text, "\n") {
 			line = strings.TrimSpace(line)
 			if line == "" {
@@ -361,6 +356,67 @@ func commandFamily(text string) string {
 	default:
 		return ""
 	}
+}
+
+// pickCommandFamily selects the best commandFamily from a set of strings extracted
+// from a JSON payload. It prefers strings that look like shell commands (contain
+// spaces, start with a known tool name, no path separators). Falls back to the
+// longest non-path string, then the first string.
+func pickCommandFamily(texts []string) string {
+	knownTools := map[string]bool{
+		"cargo": true, "go": true, "npm": true, "pnpm": true,
+		"yarn": true, "bun": true, "rustc": true, "python": true,
+		"pytest": true, "node": true, "vercel": true,
+	}
+
+	// Pass 1: strings that contain spaces, start with a known tool, no path separator.
+	for _, text := range texts {
+		text = strings.TrimSpace(text)
+		if !strings.Contains(text, " ") {
+			continue
+		}
+		if strings.ContainsAny(text, "/\\") {
+			continue
+		}
+		head := strings.Fields(text)[0]
+		if knownTools[head] {
+			if fam := commandFamily(text); fam != "" {
+				return fam
+			}
+		}
+	}
+
+	// Pass 2: any string whose commandFamily resolves (no path separators).
+	for _, text := range texts {
+		text = strings.TrimSpace(text)
+		if strings.ContainsAny(text, "/\\") {
+			continue
+		}
+		if fam := commandFamily(text); fam != "" {
+			return fam
+		}
+	}
+
+	// Pass 3: longest non-path string.
+	longest := ""
+	for _, text := range texts {
+		text = strings.TrimSpace(text)
+		if strings.ContainsAny(text, "/\\") {
+			continue
+		}
+		if len(text) > len(longest) {
+			longest = text
+		}
+	}
+	if fam := commandFamily(longest); fam != "" {
+		return fam
+	}
+
+	// Pass 4: first string, regardless.
+	if len(texts) > 0 {
+		return commandFamily(texts[0])
+	}
+	return ""
 }
 
 func looksLikePath(value string) bool {

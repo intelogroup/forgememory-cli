@@ -242,7 +242,9 @@ func loadSessionRecallContext(database *db.DB, projectID, promptText string) ([]
 
 func shouldWaitForOfficialHint(alerts []db.Alert, externalSummaries []db.ExternalContextSummary) bool {
 	for _, summary := range externalSummaries {
-		if summary.Source == "context7" && strings.TrimSpace(firstNonEmpty(summary.Hint, summary.Narrative, summary.Title)) != "" {
+		if summary.Source == "context7" &&
+			summary.SummaryKind != "docs_summary" &&
+			strings.TrimSpace(firstNonEmpty(summary.Hint, summary.Narrative, summary.Title)) != "" {
 			return false
 		}
 	}
@@ -283,7 +285,9 @@ func waitForOfficialHint(database *db.DB, projectID string) {
 		summaries, err := database.FreshExternalContextSummariesByProject(projectID, 2)
 		if err == nil {
 			for _, summary := range summaries {
-				if summary.Source == "context7" && strings.TrimSpace(firstNonEmpty(summary.Hint, summary.Narrative, summary.Title)) != "" {
+				if summary.Source == "context7" &&
+					summary.SummaryKind != "docs_summary" &&
+					strings.TrimSpace(firstNonEmpty(summary.Hint, summary.Narrative, summary.Title)) != "" {
 					return
 				}
 			}
@@ -407,7 +411,7 @@ func buildSessionRecallOutput(projectID string, summaries []db.SessionSummary, p
 			label = summary.Source + " " + summary.LibraryName
 		}
 		summaryText := trimSentence(firstNonEmpty(summary.Hint, summary.Narrative, summary.Title))
-		if summary.Source == "context7" {
+		if summary.Source == "context7" && summary.SummaryKind != "docs_summary" {
 			hasOfficialHint = true
 			sentences = append(sentences, fmt.Sprintf("Official docs hint from %s: %s.", label, summaryText))
 		} else {

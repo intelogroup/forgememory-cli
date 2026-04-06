@@ -169,7 +169,7 @@ func runDaemon(args []string) {
 	retrievalWake := make(chan struct{}, 1)
 	retrieve.SetImmediateWakeChannel(retrievalWake)
 	defer retrieve.SetImmediateWakeChannel(nil)
-	go retrievalLoop(retrieve.NewWorker(database), retrievalWake)
+	go retrievalLoop(retrieve.NewWorker(database), retrievalWake, stop)
 
 	<-stop
 	log.Println("Shutting down...")
@@ -261,7 +261,7 @@ func distillLoop(d *distill.Distiller) {
 	}
 }
 
-func retrievalLoop(worker *retrieve.Worker, wake <-chan struct{}) {
+func retrievalLoop(worker *retrieve.Worker, wake <-chan struct{}, stop <-chan struct{}) {
 	ticker := time.NewTicker(30 * time.Second)
 	defer ticker.Stop()
 	runBatch := func() {
@@ -280,6 +280,8 @@ func retrievalLoop(worker *retrieve.Worker, wake <-chan struct{}) {
 	runBatch()
 	for {
 		select {
+		case <-stop:
+			return
 		case <-ticker.C:
 			runBatch()
 		case <-wake:

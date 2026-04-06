@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"log"
 	"os"
 	"path/filepath"
 )
@@ -72,7 +73,9 @@ func setupClaude(home string) (string, error) {
 	var existingBytes []byte
 	if data, err := os.ReadFile(settingsPath); err == nil {
 		existingBytes = data
-		_ = json.Unmarshal(data, &settings)
+		if err := json.Unmarshal(data, &settings); err != nil {
+			log.Printf("Failed to parse Claude settings at %s: %v", settingsPath, err)
+		}
 	}
 
 	mcpServers, _ := settings["mcpServers"].(map[string]any)

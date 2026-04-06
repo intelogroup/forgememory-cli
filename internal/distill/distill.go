@@ -506,6 +506,9 @@ func (d *Distiller) callCodex(prompt string) (string, error) {
 	cmd.Stdout = io.Discard
 	cmd.Stderr = &stderr
 	if err := cmd.Run(); err != nil {
+		if errors.Is(ctx.Err(), context.DeadlineExceeded) {
+			return "", fmt.Errorf("%w: codex command timed out after 45s", ErrProviderUnreachable)
+		}
 		if isProviderUnreachableError(err) {
 			return "", fmt.Errorf("%w: %v", ErrProviderUnreachable, err)
 		}
