@@ -48,3 +48,17 @@ $$ language plpgsql security definer;
 -- Index for fast lookups
 create index if not exists idx_users_api_key on users(api_key);
 create index if not exists idx_users_email on users(email);
+
+-- Runs table for per-inference usage tracking
+create table if not exists runs (
+    id          uuid primary key default gen_random_uuid(),
+    user_id     uuid references users(id),
+    model       text not null,
+    tokens_in   integer default 0,
+    tokens_out  integer default 0,
+    cost_usd    numeric(12,8) default 0,
+    ts          timestamptz default now()
+);
+
+create index if not exists idx_runs_user_id on runs(user_id);
+create index if not exists idx_runs_ts on runs(ts desc);

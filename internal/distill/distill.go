@@ -553,7 +553,7 @@ func (d *Distiller) callAnthropic(prompt string) (string, error) {
 }
 
 func (d *Distiller) callForgememo(prompt string) (string, error) {
-	url := d.config.PaymentURL + "/api/distill"
+	url := d.config.PaymentURL + "/api/v1/inference"
 
 	body := map[string]any{
 		"model":   d.config.Model,
