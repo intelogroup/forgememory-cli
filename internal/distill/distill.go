@@ -134,7 +134,12 @@ func LoadConfig() Config {
 	}
 
 	if cfg.PaymentURL == "" {
-		cfg.PaymentURL = "https://forge.sh"
+		// Derive from BaseURL if login saved the server URL there
+		if cfg.BaseURL != "" && (cfg.Provider == ProviderForgememo || cfg.Provider == "") {
+			cfg.PaymentURL = strings.TrimSuffix(cfg.BaseURL, "/api/forge")
+		} else {
+			cfg.PaymentURL = "https://forgememo-server.onrender.com"
+		}
 	}
 
 	if cfg.Provider == "" {
@@ -224,9 +229,9 @@ func New(database *db.DB, config Config) *Distiller {
 }
 
 func (d *Distiller) checkCredits() bool {
-	url := d.config.PaymentURL + "/api/credits"
+	url := d.config.PaymentURL + "/v1/balance"
 	req, _ := http.NewRequest("GET", url, nil)
-	req.Header.Set("Authorization", d.config.APIKey)
+	req.Header.Set("Authorization", "Bearer "+d.config.APIKey)
 	resp, err := d.client.Do(req)
 	if err != nil {
 		return true // Allow on error
@@ -234,19 +239,10 @@ func (d *Distiller) checkCredits() bool {
 	defer resp.Body.Close()
 
 	var result struct {
-		Data struct {
-			Credits int `json:"credits"`
-		} `json:"data"`
+		BalanceUSD float64 `json:"balance_usd"`
 	}
 	json.NewDecoder(resp.Body).Decode(&result)
-	return result.Data.Credits > 0
-}
-
-func (d *Distiller) deductCredit() {
-	url := d.config.PaymentURL + "/api/deduct"
-	req, _ := http.NewRequest("POST", url, nil)
-	req.Header.Set("Authorization", d.config.APIKey)
-	d.client.Do(req)
+	return result.BalanceUSD > 0
 }
 
 // DistillBatch processes undistilled events into principles.
@@ -556,8 +552,9 @@ func (d *Distiller) callForgememo(prompt string) (string, error) {
 	url := d.config.PaymentURL + "/v1/inference"
 
 	body := map[string]any{
-		"model":  d.config.Model,
-		"prompt": prompt,
+		"model":      d.config.Model,
+		"prompt":     prompt,
+		"max_tokens": 300,
 	}
 	jsonBody, _ := json.Marshal(body)
 
@@ -589,13 +586,11 @@ func (d *Distiller) callForgememo(prompt string) (string, error) {
 
 	data, _ := io.ReadAll(resp.Body)
 	var result struct {
-		Data struct {
-			Response string `json:"response"`
-		} `json:"data"`
+		Text string `json:"text"`
 	}
 	json.Unmarshal(data, &result)
-	if result.Data.Response != "" {
-		return result.Data.Response, nil
+	if result.Text != "" {
+		return result.Text, nil
 	}
 	return "", fmt.Errorf("no response from Forgememo")
 }
