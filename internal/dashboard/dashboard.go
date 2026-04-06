@@ -30,6 +30,8 @@ func (s *Server) Start() error {
 	mux.HandleFunc("/api/events", s.handleEvents)
 	mux.HandleFunc("/api/principles", s.handlePrinciples)
 	mux.HandleFunc("/api/stats", s.handleStats)
+	mux.HandleFunc("/api/conflicts", s.handleConflicts)
+	mux.HandleFunc("/api/conflicts/resolve", s.handleResolveConflict)
 
 	s.server = &http.Server{
 		Addr:         fmt.Sprintf(":%d", s.port),
@@ -159,6 +161,111 @@ func (s *Server) handleStats(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+type conflictPairJSON struct {
+	A principleJSON `json:"a"`
+	B principleJSON `json:"b"`
+}
+
+type principleJSON struct {
+	ID          string   `json:"id"`
+	TS          string   `json:"ts"`
+	Type        string   `json:"type"`
+	Title       string   `json:"title"`
+	Narrative   string   `json:"narrative"`
+	ImpactScore float64  `json:"impact_score"`
+	ProjectID   string   `json:"project_id"`
+	Concepts    []string `json:"concepts"`
+	Status      string   `json:"status"`
+}
+
+func toPrincipleJSON(p db.Principle) principleJSON {
+	return principleJSON{
+		ID:          p.ID,
+		TS:          p.TS,
+		Type:        p.Type,
+		Title:       p.Title,
+		Narrative:   p.Narrative,
+		ImpactScore: p.ImpactScore,
+		ProjectID:   p.ProjectID,
+		Concepts:    p.Concepts,
+		Status:      p.Status,
+	}
+}
+
+func (s *Server) handleConflicts(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	conflicts, err := s.db.ConflictingPrinciples(50)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	seen := make(map[string]bool)
+	var pairs []conflictPairJSON
+	for _, p := range conflicts {
+		peerID := p.ConflictPeerID
+		if peerID == "" {
+			continue
+		}
+		// Deduplication key — canonical order by ID.
+		lo, hi := p.ID, peerID
+		if lo > hi {
+			lo, hi = hi, lo
+		}
+		key := lo + ":" + hi
+		if seen[key] {
+			continue
+		}
+
+		peer, err := s.db.GetPrincipleByID(peerID)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		if peer == nil {
+			// Peer deleted externally — repair orphan and skip.
+			_ = s.db.ClearConflictStatus(p.ID)
+			continue
+		}
+
+		seen[key] = true
+		pairs = append(pairs, conflictPairJSON{
+			A: toPrincipleJSON(p),
+			B: toPrincipleJSON(*peer),
+		})
+	}
+
+	if pairs == nil {
+		pairs = []conflictPairJSON{}
+	}
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(pairs)
+}
+
+func (s *Server) handleResolveConflict(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	var body struct {
+		KeepID   string `json:"keep_id"`
+		DeleteID string `json:"delete_id"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil || body.KeepID == "" || body.DeleteID == "" {
+		http.Error(w, "invalid request body: keep_id and delete_id required", http.StatusBadRequest)
+		return
+	}
+	if err := s.db.ResolvePrincipleConflict(body.KeepID, body.DeleteID); err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]string{"status": "ok"})
+}
+
 const indexHTML = `<!DOCTYPE html>
 <html lang="en">
 <head>
@@ -202,6 +309,13 @@ const indexHTML = `<!DOCTYPE html>
         .refresh:hover { background: #4f46e5; }
         .concepts { display: flex; gap: 4px; flex-wrap: wrap; margin-top: 8px; }
         .concept { background: #222; padding: 2px 6px; border-radius: 3px; font-size: 11px; color: #888; }
+        .conflict-pair { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; margin-bottom: 16px; }
+        .conflict-card { background: #16161f; border-radius: 12px; padding: 16px; border: 2px solid #f59e0b; }
+        .conflict-card .card-title { color: #fff; font-weight: 600; }
+        .badge-conflicting { background: #f59e0b; color: #000; }
+        .btn-keep { background: #22c55e; color: #fff; border: none; padding: 8px 16px; border-radius: 6px; cursor: pointer; margin-top: 10px; width: 100%; font-size: 13px; }
+        .btn-keep:hover { background: #16a34a; }
+        .stat-value.amber { color: #f59e0b; }
     </style>
 </head>
 <body>
@@ -212,21 +326,27 @@ const indexHTML = `<!DOCTYPE html>
                 <div class="stat"><div class="stat-value" id="stat-total">-</div><div class="stat-label">Events</div></div>
                 <div class="stat"><div class="stat-value" id="stat-principles">-</div><div class="stat-label">Principles</div></div>
                 <div class="stat"><div class="stat-value" id="stat-sessions">-</div><div class="stat-label">Sessions</div></div>
+                <div class="stat"><div class="stat-value amber" id="stat-conflicts">-</div><div class="stat-label">Conflicts</div></div>
             </div>
         </header>
         
         <div class="tabs">
             <button class="tab active" data-panel="events">Recent Events</button>
             <button class="tab" data-panel="principles">Principles</button>
+            <button class="tab" data-panel="conflicts">Conflicts <span id="conflict-badge" style="display:none;background:#f59e0b;color:#000;border-radius:10px;padding:1px 7px;font-size:11px;margin-left:4px"></span></button>
             <div style="margin-left: auto;"><button class="refresh" onclick="loadAll()">Refresh</button></div>
         </div>
-        
+
         <div id="panel-events" class="panel active">
             <div id="events-list"><div class="loading">Loading events...</div></div>
         </div>
-        
+
         <div id="panel-principles" class="panel">
             <div id="principles-list"><div class="loading">Loading principles...</div></div>
+        </div>
+
+        <div id="panel-conflicts" class="panel">
+            <div id="conflicts-list"><div class="loading">Loading conflicts...</div></div>
         </div>
     </div>
     
@@ -265,16 +385,63 @@ const indexHTML = `<!DOCTYPE html>
             container.innerHTML = principles.map(p => '<div class="card"><div class="card-header"><div class="card-title">' + escapeHtml(p.title) + '</div><div><span class="principle-type">' + p.type + '</span><span class="badge badge-distilled">' + (p.impact_score * 100).toFixed(0) + '%</span></div></div><div class="card-body">' + escapeHtml(p.narrative) + '<div class="impact-bar"><div class="impact-fill" style="width:' + (p.impact_score * 100) + '%"></div></div>' + (p.concepts && p.concepts.length ? '<div class="concepts">' + p.concepts.map(function(c){return '<span class="concept">' + c + '</span>';}).join('') + '</div>' : '') + '<small style="color:#666;margin-top:8px;display:block">' + p.ts.substring(0, 10) + ' | Project: ' + p.project_id + '</small></div></div>').join('');
         }
         
+        async function loadConflicts() {
+            const res = await fetch('/api/conflicts');
+            const pairs = await res.json();
+            const container = document.getElementById('conflicts-list');
+            const badge = document.getElementById('conflict-badge');
+            document.getElementById('stat-conflicts').textContent = pairs.length;
+            if (pairs.length > 0) {
+                badge.style.display = 'inline';
+                badge.textContent = pairs.length;
+            } else {
+                badge.style.display = 'none';
+            }
+            if (!pairs || pairs.length === 0) {
+                container.innerHTML = '<div class="empty">No conflicting principles detected.</div>';
+                return;
+            }
+            container.innerHTML = pairs.map(function(pair) {
+                return '<div class="conflict-pair">' + renderConflictCard(pair.a, pair.b.id) + renderConflictCard(pair.b, pair.a.id) + '</div>';
+            }).join('');
+        }
+
+        function renderConflictCard(p, deleteID) {
+            var concepts = p.concepts && p.concepts.length ? '<div class="concepts">' + p.concepts.map(function(c){return '<span class="concept">'+c+'</span>';}).join('') + '</div>' : '';
+            return '<div class="conflict-card">' +
+                '<div class="card-header"><div class="card-title">' + escapeHtml(p.title) + '</div>' +
+                '<div><span class="principle-type">' + p.type + '</span> <span class="badge badge-conflicting">conflicting</span></div></div>' +
+                '<div class="card-body">' + escapeHtml(p.narrative) +
+                '<div class="impact-bar"><div class="impact-fill" style="width:' + (p.impact_score * 100) + '%"></div></div>' +
+                concepts +
+                '<small style="color:#666;display:block;margin-top:6px">' + p.ts.substring(0,10) + ' | ' + p.project_id + '</small>' +
+                '<button class="btn-keep" onclick="resolveConflict(\'' + p.id + '\',\'' + deleteID + '\')">Keep This / Delete Other</button>' +
+                '</div></div>';
+        }
+
+        async function resolveConflict(keepID, deleteID) {
+            if (!confirm('Keep this principle and permanently delete the other?')) return;
+            const res = await fetch('/api/conflicts/resolve', {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({keep_id: keepID, delete_id: deleteID})
+            });
+            if (!res.ok) { alert('Resolution failed: ' + await res.text()); return; }
+            await loadConflicts();
+            await loadStats();
+        }
+
         function escapeHtml(text) {
             const div = document.createElement('div');
             div.textContent = text;
             return div.innerHTML;
         }
-        
+
         function loadAll() {
             loadStats();
             loadEvents();
             loadPrinciples();
+            loadConflicts();
         }
         
         // Tab switching

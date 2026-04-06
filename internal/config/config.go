@@ -13,6 +13,8 @@ type Config struct {
 	Model           string
 	BaseURL         string
 	Context7APIKey  string
+	ExaAPIKey       string
+	TavilyAPIKey    string
 	Timeout         string
 	Retries         int
 	DistillInterval string
@@ -59,6 +61,10 @@ func Load() (Config, error) {
 			cfg.BaseURL = value
 		case "CONTEXT7_API_KEY":
 			cfg.Context7APIKey = value
+		case "EXA_API_KEY", "FORGE_EXA_API_KEY":
+			cfg.ExaAPIKey = value
+		case "TAVILY_API_KEY", "FORGE_TAVILY_API_KEY":
+			cfg.TavilyAPIKey = value
 		case "FORGE_TIMEOUT":
 			cfg.Timeout = value
 		case "FORGE_RETRIES":
@@ -93,6 +99,12 @@ func Save(cfg Config) error {
 	if cfg.Context7APIKey != "" {
 		lines = append(lines, fmt.Sprintf("CONTEXT7_API_KEY=%s", cfg.Context7APIKey))
 	}
+	if cfg.ExaAPIKey != "" {
+		lines = append(lines, fmt.Sprintf("EXA_API_KEY=%s", cfg.ExaAPIKey))
+	}
+	if cfg.TavilyAPIKey != "" {
+		lines = append(lines, fmt.Sprintf("TAVILY_API_KEY=%s", cfg.TavilyAPIKey))
+	}
 	if cfg.Timeout != "" {
 		lines = append(lines, fmt.Sprintf("FORGE_TIMEOUT=%s", cfg.Timeout))
 	}
@@ -126,6 +138,12 @@ func SetEnvFromFile() error {
 	}
 	if cfg.Context7APIKey != "" {
 		os.Setenv("CONTEXT7_API_KEY", cfg.Context7APIKey)
+	}
+	if cfg.ExaAPIKey != "" {
+		os.Setenv("EXA_API_KEY", cfg.ExaAPIKey)
+	}
+	if cfg.TavilyAPIKey != "" {
+		os.Setenv("TAVILY_API_KEY", cfg.TavilyAPIKey)
 	}
 	if cfg.Timeout != "" {
 		os.Setenv("FORGE_TIMEOUT", cfg.Timeout)

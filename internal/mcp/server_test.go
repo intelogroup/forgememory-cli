@@ -318,7 +318,7 @@ func TestGetPrinciples_ShortTimestampDoesNotPanic(t *testing.T) {
 	}
 	defer database.Close()
 
-	if err := database.InsertPrinciple(&db.Principle{
+	if _, err := database.InsertPrinciple(&db.Principle{
 		ID:        "p1",
 		TS:        "x",
 		Type:      "pattern",
@@ -386,7 +386,7 @@ func mustMarshal(t *testing.T, v any) json.RawMessage {
 
 func mustInsertPrinciple(t *testing.T, database *db.DB, projectID, title string) {
 	t.Helper()
-	if err := database.InsertPrinciple(&db.Principle{
+	if _, err := database.InsertPrinciple(&db.Principle{
 		TS:          time.Now().UTC().Format(time.RFC3339),
 		Type:        "pattern",
 		Title:       title,

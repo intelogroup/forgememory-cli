@@ -31,7 +31,15 @@ const (
 	ProviderAnthropic Provider = "anthropic"
 	ProviderCodex     Provider = "codex"
 	ProviderForgememo Provider = "forgememo"
+	ProviderGroq      Provider = "groq"
 )
+
+// UsageStats accumulates token usage across distillation calls.
+type UsageStats struct {
+	PromptTokens     int
+	CompletionTokens int
+	TotalTokens      int
+}
 
 // Error types for provider configuration issues.
 var (
@@ -44,7 +52,7 @@ var (
 func UserMessage(err error) string {
 	switch {
 	case errors.Is(err, ErrNoProvider):
-		return "No inference provider configured. Set FORGE_PROVIDER (forgememo/anthropic/openai/ollama/codex) and run 'forge config' to configure."
+		return "No inference provider configured. Set FORGE_PROVIDER (forgememo/anthropic/openai/groq/ollama/codex) and run 'forge config' to configure."
 	case errors.Is(err, ErrProviderInvalid):
 		return "Invalid provider or credentials. Check your FORGE_PROVIDER setting and any required login or API key."
 	case errors.Is(err, ErrProviderUnreachable):
@@ -67,7 +75,14 @@ func DiagnosticHints(cfg Config, err error) []string {
 			"Check Ollama is running: lsof -i :11434",
 			"Load a model: ollama pull llama3",
 			"Increase timeout: forge config --timeout 60s",
-			"Try Anthropic instead: forge config --provider anthropic --api-key sk-ant-...",
+			"Try Groq instead: forge config --provider groq --api-key gsk-...",
+		}
+	}
+	if cfg.Provider == ProviderGroq {
+		return []string{
+			"Check GROQ_API_KEY is set or run: forge config --provider groq --api-key gsk-...",
+			"Groq free tier: 12K tokens/min, 100K tokens/day — if rate limited, wait or upgrade plan",
+			"Try a smaller model: forge config --provider groq --model llama3-8b-8192",
 		}
 	}
 	return []string{
@@ -165,6 +180,8 @@ func LoadConfig() Config {
 			cfg.Model = ""
 		case ProviderForgememo:
 			cfg.Model = "claude-haiku-4-5-20251001"
+		case ProviderGroq:
+			cfg.Model = "llama-3.3-70b-versatile"
 		}
 	}
 	if cfg.BaseURL == "" {
@@ -179,7 +196,12 @@ func LoadConfig() Config {
 			cfg.BaseURL = ""
 		case ProviderForgememo:
 			cfg.BaseURL = cfg.PaymentURL + "/api/forge"
+		case ProviderGroq:
+			cfg.BaseURL = "https://api.groq.com/openai"
 		}
+	}
+	if cfg.APIKey == "" && cfg.Provider == ProviderGroq {
+		cfg.APIKey = os.Getenv("GROQ_API_KEY")
 	}
 	if cfg.Timeout <= 0 {
 		cfg.Timeout = 30 * time.Second
@@ -221,6 +243,7 @@ type Distiller struct {
 	db     *db.DB
 	config Config
 	client *http.Client
+	Usage  UsageStats
 }
 
 // New creates a new Distiller.
@@ -286,11 +309,24 @@ func (d *Distiller) DistillBatch(limit int) (int, error) {
 		return 0, fmt.Errorf("parse principles: %w", err)
 	}
 
-	// Store principles
+	// Store principles; track only the ones actually inserted (not fingerprint-ignored duplicates).
 	var ids []string
+	var inserted []db.Principle
 	for _, p := range principles {
-		if err := d.db.InsertPrinciple(&p); err != nil {
+		ok, err := d.db.InsertPrinciple(&p)
+		if err != nil {
 			return 0, fmt.Errorf("insert principle: %w", err)
+		}
+		if ok {
+			inserted = append(inserted, p)
+		}
+	}
+
+	// Best-effort conflict detection — never fails the batch.
+	if len(inserted) > 0 {
+		if err := d.detectAndMarkConflicts(inserted); err != nil {
+			// Non-fatal: log but continue.
+			fmt.Fprintf(os.Stderr, "forge: conflict detection: %v\n", err)
 		}
 	}
 
@@ -407,6 +443,8 @@ func (d *Distiller) callLLM(prompt string) (string, error) {
 		return d.callCodex(prompt)
 	case ProviderForgememo:
 		return d.callForgememo(prompt)
+	case ProviderGroq:
+		return d.callGroq(prompt)
 	default:
 		return "", fmt.Errorf("%w: unsupported provider %q", ErrNoProvider, d.config.Provider)
 	}
@@ -497,12 +535,78 @@ func (d *Distiller) callOpenAI(prompt string) (string, error) {
 				Content string `json:"content"`
 			} `json:"message"`
 		} `json:"choices"`
+		Usage struct {
+			PromptTokens     int `json:"prompt_tokens"`
+			CompletionTokens int `json:"completion_tokens"`
+			TotalTokens      int `json:"total_tokens"`
+		} `json:"usage"`
 	}
 	json.Unmarshal(data, &result)
+	d.Usage.PromptTokens += result.Usage.PromptTokens
+	d.Usage.CompletionTokens += result.Usage.CompletionTokens
+	d.Usage.TotalTokens += result.Usage.TotalTokens
 	if len(result.Choices) > 0 {
 		return result.Choices[0].Message.Content, nil
 	}
 	return "", fmt.Errorf("no response from OpenAI")
+}
+
+func (d *Distiller) callGroq(prompt string) (string, error) {
+	url := d.config.BaseURL + "/v1/chat/completions"
+
+	body := map[string]any{
+		"model": d.config.Model,
+		"messages": []map[string]string{
+			{"role": "user", "content": prompt},
+		},
+	}
+	jsonBody, _ := json.Marshal(body)
+
+	req, _ := http.NewRequest("POST", url, bytes.NewReader(jsonBody))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bearer "+d.config.APIKey)
+
+	resp, err := d.client.Do(req)
+	if err != nil {
+		if isProviderUnreachableError(err) {
+			return "", fmt.Errorf("%w: %v", ErrProviderUnreachable, err)
+		}
+		return "", err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode == 401 {
+		return "", fmt.Errorf("%w: Invalid Groq API key", ErrProviderInvalid)
+	}
+	if resp.StatusCode == 429 {
+		return "", fmt.Errorf("%w: Groq rate limit exceeded", ErrProviderUnreachable)
+	}
+	if resp.StatusCode >= 400 {
+		body, _ := io.ReadAll(resp.Body)
+		return "", fmt.Errorf("%w: Groq returned status %d: %s", ErrProviderInvalid, resp.StatusCode, string(body))
+	}
+
+	data, _ := io.ReadAll(resp.Body)
+	var result struct {
+		Choices []struct {
+			Message struct {
+				Content string `json:"content"`
+			} `json:"message"`
+		} `json:"choices"`
+		Usage struct {
+			PromptTokens     int `json:"prompt_tokens"`
+			CompletionTokens int `json:"completion_tokens"`
+			TotalTokens      int `json:"total_tokens"`
+		} `json:"usage"`
+	}
+	json.Unmarshal(data, &result)
+	d.Usage.PromptTokens += result.Usage.PromptTokens
+	d.Usage.CompletionTokens += result.Usage.CompletionTokens
+	d.Usage.TotalTokens += result.Usage.TotalTokens
+	if len(result.Choices) > 0 {
+		return result.Choices[0].Message.Content, nil
+	}
+	return "", fmt.Errorf("no response from Groq")
 }
 
 func (d *Distiller) callAnthropic(prompt string) (string, error) {
@@ -782,4 +886,114 @@ func (d *Distiller) parsePrinciples(response string, projectID string) ([]db.Pri
 	}
 
 	return principles, nil
+}
+
+// detectAndMarkConflicts compares newly inserted principles against existing
+// active principles in the same project using the LLM. Any pair the model
+// judges as semantically contradictory is marked conflicting and quarantined
+// from agent context. Errors are logged by the caller; this function returns
+// the first error encountered.
+func (d *Distiller) detectAndMarkConflicts(newPrinciples []db.Principle) error {
+	if d.db == nil {
+		return nil
+	}
+
+	// Group new principles by project — each project gets one LLM call.
+	byProject := make(map[string][]db.Principle)
+	for _, p := range newPrinciples {
+		byProject[p.ProjectID] = append(byProject[p.ProjectID], p)
+	}
+
+	for projectID, newPs := range byProject {
+		existing, err := d.db.RecentPrinciplesByProjectAll(projectID, 50)
+		if err != nil {
+			return err
+		}
+		// Build the "old" set: existing active principles that are not in newPs.
+		// Capped at 25 to keep the conflict prompt size predictable regardless of
+		// how large the project's principle set grows.
+		newIDs := make(map[string]bool, len(newPs))
+		for _, p := range newPs {
+			newIDs[p.ID] = true
+		}
+		var oldPs []db.Principle
+		for _, e := range existing {
+			if !newIDs[e.ID] && (e.Status == "" || e.Status == "active") {
+				oldPs = append(oldPs, e)
+				if len(oldPs) == 25 {
+					break
+				}
+			}
+		}
+		if len(oldPs) == 0 {
+			continue // nothing to compare against
+		}
+
+		prompt := buildConflictPrompt(newPs, oldPs)
+		response, err := d.callLLM(prompt)
+		if err != nil {
+			return fmt.Errorf("conflict detection llm call: %w", err)
+		}
+
+		pairs, err := parseConflictPairs(response)
+		if err != nil {
+			// Malformed response — skip rather than crash distillation.
+			fmt.Fprintf(os.Stderr, "forge: conflict parse: %v\n", err)
+			continue
+		}
+
+		for _, pair := range pairs {
+			if err := d.db.MarkConflicting(pair[0], pair[1]); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
+}
+
+// buildConflictPrompt constructs the prompt sent to the LLM for conflict detection.
+func buildConflictPrompt(newPs, oldPs []db.Principle) string {
+	var sb strings.Builder
+	sb.WriteString("You are reviewing software engineering principles for semantic contradictions.\n\n")
+	sb.WriteString("EXISTING PRINCIPLES:\n")
+	for _, p := range oldPs {
+		sb.WriteString(fmt.Sprintf("- [id:%s] %s — %s\n", p.ID, p.Title, p.Narrative))
+	}
+	sb.WriteString("\nNEW PRINCIPLES:\n")
+	for _, p := range newPs {
+		sb.WriteString(fmt.Sprintf("- [id:%s] %s — %s\n", p.ID, p.Title, p.Narrative))
+	}
+	sb.WriteString(`
+Identify pairs where a NEW principle directly contradicts or is incompatible with an EXISTING principle.
+Only flag genuine contradictions — different advice on the same topic, not merely related topics.
+
+Return a JSON array of conflict pairs. Each element: {"a": "<existing_id>", "b": "<new_id>"}
+Return [] if there are no contradictions.
+Return ONLY the JSON array, no other text.`)
+	return sb.String()
+}
+
+// parseConflictPairs extracts conflict ID pairs from the LLM response.
+func parseConflictPairs(response string) ([][2]string, error) {
+	response = strings.TrimSpace(response)
+	// Strip any markdown fences.
+	if idx := strings.Index(response, "["); idx >= 0 {
+		if end := strings.LastIndex(response, "]"); end > idx {
+			response = response[idx : end+1]
+		}
+	}
+	var raw []struct {
+		A string `json:"a"`
+		B string `json:"b"`
+	}
+	if err := json.Unmarshal([]byte(response), &raw); err != nil {
+		return nil, fmt.Errorf("parse JSON: %w (response: %.120s)", err, response)
+	}
+	var pairs [][2]string
+	for _, r := range raw {
+		if r.A != "" && r.B != "" {
+			pairs = append(pairs, [2]string{r.A, r.B})
+		}
+	}
+	return pairs, nil
 }

@@ -137,7 +137,7 @@ func TestLoadSessionRecallContext_FallsBackToGlobalRecentContext(t *testing.T) {
 	}
 	defer database.Close()
 
-	if err := database.InsertPrinciple(&db.Principle{
+	if _, err := database.InsertPrinciple(&db.Principle{
 		ProjectID:   "forgememory-cli",
 		Title:       "Cross-project fallback",
 		Narrative:   "Use recent global context when project-specific recall is empty.",
@@ -298,7 +298,7 @@ func TestFindBestPromptRecall_PrefersCrossProjectPrinciple(t *testing.T) {
 	}
 	for _, principle := range seed {
 		p := principle
-		if err := database.InsertPrinciple(&p); err != nil {
+		if _, err := database.InsertPrinciple(&p); err != nil {
 			t.Fatalf("InsertPrinciple: %v", err)
 		}
 	}
@@ -360,7 +360,7 @@ func TestFindBestPromptRecall_SkipsSameProjectMatches(t *testing.T) {
 	}
 	defer database.Close()
 
-	if err := database.InsertPrinciple(&db.Principle{
+	if _, err := database.InsertPrinciple(&db.Principle{
 		ProjectID:     "forgememory-cli",
 		Title:         "Retry daemon startup",
 		Narrative:     "Treat refused connection during startup as a retryable recovery path.",
@@ -411,7 +411,7 @@ func TestFindBestPromptRecall_PrefersMoreRecentMatchOnScoreTie(t *testing.T) {
 		},
 	} {
 		p := principle
-		if err := database.InsertPrinciple(&p); err != nil {
+		if _, err := database.InsertPrinciple(&p); err != nil {
 			t.Fatalf("InsertPrinciple: %v", err)
 		}
 	}
@@ -435,7 +435,7 @@ func TestFindBestPromptRecall_AllowsSingleLongTokenMatch(t *testing.T) {
 	}
 	defer database.Close()
 
-	if err := database.InsertPrinciple(&db.Principle{
+	if _, err := database.InsertPrinciple(&db.Principle{
 		TS:            time.Now().Add(-24 * time.Hour).UTC().Format(time.RFC3339),
 		ProjectID:     "design-system",
 		Title:         "Dashboard shell loading",

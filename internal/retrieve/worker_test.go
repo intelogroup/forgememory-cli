@@ -374,6 +374,189 @@ func writeMCPTestMessage(writer *bufio.Writer, msg map[string]any) {
 	writer.Flush()
 }
 
+func TestWorkerRunOnce_StoresExaSummary(t *testing.T) {
+	database, err := db.Open(filepath.Join(t.TempDir(), "test.db"))
+	if err != nil {
+		t.Fatalf("db.Open: %v", err)
+	}
+	defer database.Close()
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/search" {
+			t.Fatalf("unexpected path %s", r.URL.Path)
+		}
+		if r.Header.Get("x-api-key") != "test-exa-key" {
+			t.Fatalf("unexpected api key %q", r.Header.Get("x-api-key"))
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"results": []any{
+				map[string]any{
+					"title": "Rust async trait objects in 2025",
+					"url":   "https://blog.example.com/rust-async-trait",
+					"text":  "Use the async-trait crate or the built-in async fn in trait syntax stabilized in Rust 1.75. For object-safe async traits, prefer returning Pin<Box<dyn Future>>.",
+					"score": 0.91,
+				},
+				map[string]any{
+					"title": "Rust trait object pitfalls",
+					"url":   "https://other.example.com/rust-traits",
+					"text":  "Dynamic dispatch with dyn Trait requires object safety. Async fn in traits was not object-safe before Rust 1.75.",
+					"score": 0.82,
+				},
+			},
+		})
+	}))
+	defer server.Close()
+
+	t.Setenv("FORGE_EXA_API_KEY", "test-exa-key")
+	t.Setenv("FORGE_EXA_BASE_URL", server.URL)
+
+	if err := database.InsertRetrievalJob(&db.RetrievalJob{
+		ProjectID:   "api-service",
+		TriggerType: "failure",
+		Source:      "exa",
+		Query:       "rust async trait object fix 2025",
+		LibraryName: "rust",
+		Status:      "queued",
+		Priority:    85,
+		DedupeKey:   "job-exa-1",
+	}); err != nil {
+		t.Fatalf("InsertRetrievalJob: %v", err)
+	}
+
+	count, err := NewWorker(database).RunOnce()
+	if err != nil {
+		t.Fatalf("RunOnce: %v", err)
+	}
+	if count != 1 {
+		t.Fatalf("count = %d, want 1", count)
+	}
+
+	summaries, err := database.FreshExternalContextSummariesByProject("api-service", 5)
+	if err != nil {
+		t.Fatalf("FreshExternalContextSummariesByProject: %v", err)
+	}
+	if len(summaries) != 1 {
+		t.Fatalf("len(summaries) = %d, want 1", len(summaries))
+	}
+	if summaries[0].Source != "exa" {
+		t.Fatalf("Source = %q, want exa", summaries[0].Source)
+	}
+	if summaries[0].SummaryKind != "web_hint" {
+		t.Fatalf("SummaryKind = %q, want web_hint", summaries[0].SummaryKind)
+	}
+	if !strings.Contains(summaries[0].Narrative, "async") {
+		t.Fatalf("unexpected narrative %q", summaries[0].Narrative)
+	}
+	if summaries[0].TrustScore != 0.68 {
+		t.Fatalf("TrustScore = %v, want 0.68", summaries[0].TrustScore)
+	}
+}
+
+func TestWorkerRunOnce_StoresTavilySummary(t *testing.T) {
+	database, err := db.Open(filepath.Join(t.TempDir(), "test.db"))
+	if err != nil {
+		t.Fatalf("db.Open: %v", err)
+	}
+	defer database.Close()
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/search" {
+			t.Fatalf("unexpected path %s", r.URL.Path)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"answer": "In Next.js 14+, use the App Router with server components for data fetching instead of getServerSideProps.",
+			"results": []any{
+				map[string]any{
+					"title":   "Next.js App Router migration guide",
+					"url":     "https://nextjs.org/docs/app/building-your-application/upgrading/app-router-migration",
+					"content": "The App Router uses React Server Components by default. Migrate data fetching from getServerSideProps to async server components.",
+					"score":   0.88,
+				},
+			},
+		})
+	}))
+	defer server.Close()
+
+	t.Setenv("FORGE_TAVILY_API_KEY", "test-tavily-key")
+	t.Setenv("FORGE_TAVILY_BASE_URL", server.URL)
+
+	if err := database.InsertRetrievalJob(&db.RetrievalJob{
+		ProjectID:   "web-app",
+		TriggerType: "prompt",
+		Source:      "tavily",
+		Query:       "next.js data fetching best practice 2025",
+		LibraryName: "next.js",
+		Status:      "queued",
+		Priority:    70,
+		DedupeKey:   "job-tavily-1",
+	}); err != nil {
+		t.Fatalf("InsertRetrievalJob: %v", err)
+	}
+
+	count, err := NewWorker(database).RunOnce()
+	if err != nil {
+		t.Fatalf("RunOnce: %v", err)
+	}
+	if count != 1 {
+		t.Fatalf("count = %d, want 1", count)
+	}
+
+	summaries, err := database.FreshExternalContextSummariesByProject("web-app", 5)
+	if err != nil {
+		t.Fatalf("FreshExternalContextSummariesByProject: %v", err)
+	}
+	if len(summaries) != 1 {
+		t.Fatalf("len(summaries) = %d, want 1", len(summaries))
+	}
+	if summaries[0].Source != "tavily" {
+		t.Fatalf("Source = %q, want tavily", summaries[0].Source)
+	}
+	if summaries[0].SummaryKind != "web_summary" {
+		t.Fatalf("SummaryKind = %q, want web_summary", summaries[0].SummaryKind)
+	}
+	if !strings.Contains(summaries[0].Narrative, "App Router") && !strings.Contains(summaries[0].Narrative, "server components") {
+		t.Fatalf("unexpected narrative %q", summaries[0].Narrative)
+	}
+}
+
+func TestWorkerRunOnce_ExaFailsWithoutAPIKey(t *testing.T) {
+	database, err := db.Open(filepath.Join(t.TempDir(), "test.db"))
+	if err != nil {
+		t.Fatalf("db.Open: %v", err)
+	}
+	defer database.Close()
+
+	t.Setenv("FORGE_EXA_API_KEY", "")
+	t.Setenv("EXA_API_KEY", "")
+	t.Setenv("HOME", t.TempDir()) // empty config dir
+
+	if err := database.InsertRetrievalJob(&db.RetrievalJob{
+		ProjectID:   "api-service",
+		TriggerType: "failure",
+		Source:      "exa",
+		Query:       "rust fix 2025",
+		LibraryName: "rust",
+		Status:      "queued",
+		Priority:    85,
+		DedupeKey:   "job-exa-nokey",
+	}); err != nil {
+		t.Fatalf("InsertRetrievalJob: %v", err)
+	}
+
+	count, err := NewWorker(database).RunOnce()
+	if err == nil {
+		t.Fatal("expected error when no Exa API key configured")
+	}
+	if count != 0 {
+		t.Fatalf("count = %d, want 0", count)
+	}
+	if !strings.Contains(err.Error(), "no API key") {
+		t.Fatalf("unexpected error %q", err.Error())
+	}
+}
+
 func context7SetupTestServer() *httptest.Server {
 	handler := http.NewServeMux()
 	handler.HandleFunc("/docs/installation", func(w http.ResponseWriter, r *http.Request) {

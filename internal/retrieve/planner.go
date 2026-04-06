@@ -75,8 +75,14 @@ func EnqueuePromptRetrieval(database *db.DB, projectID, promptText string) error
 	return nil
 }
 
-// EnqueueFailureRetrieval plans official-doc retrieval from a repeated failure
-// signature so the next prompt can receive a compact docs hint.
+// EnqueueFailureRetrieval plans external retrieval for a repeated failure.
+//
+// Order of preference:
+//  1. Distilled principles (cross-project) — if a relevant one exists, skip
+//     external fetches entirely; the agent receives it via get_recent_context.
+//  2. Context7 (priority 100) — precise official-docs hint for the library.
+//  3. Web search via Exa/Tavily (priority 85) — recent best-practice articles,
+//     only when a search key is configured and no fresh cached result exists.
 func EnqueueFailureRetrieval(database *db.DB, projectID, commandFamily, errorKind, normalizedMessage, payload string) error {
 	if database == nil {
 		return nil
@@ -85,6 +91,13 @@ func EnqueueFailureRetrieval(database *db.DB, projectID, commandFamily, errorKin
 	if library == "" {
 		return nil
 	}
+
+	// Step 1: check cross-project principles before making any external call.
+	if relevantPrincipleExists(database, library, errorKind, normalizedMessage) {
+		return nil
+	}
+
+	// Step 2: Context7 for official library docs.
 	query := buildFailureQuery(library, commandFamily, errorKind, normalizedMessage)
 	if err := database.InsertRetrievalJob(&db.RetrievalJob{
 		ProjectID:   projectID,
@@ -98,8 +111,114 @@ func EnqueueFailureRetrieval(database *db.DB, projectID, commandFamily, errorKin
 	}); err != nil {
 		return err
 	}
+
+	// Step 3: supplementary web search — skip if a fresh cached result exists.
+	if webSource := webSearchSource(); webSource != "" {
+		webQuery := buildWebFailureQuery(library, commandFamily, normalizedMessage)
+		if !hasFreshWebSummary(database, projectID, webSource, library) {
+			_ = database.InsertRetrievalJob(&db.RetrievalJob{
+				ProjectID:   projectID,
+				TriggerType: "failure",
+				Source:      webSource,
+				Query:       webQuery,
+				LibraryName: library,
+				Status:      "queued",
+				Priority:    85,
+				DedupeKey:   dedupeKey(projectID, webSource, library, webQuery),
+			})
+		}
+	}
+
 	RequestImmediateWake()
 	return nil
+}
+
+// relevantPrincipleExists returns true when the distilled principles DB already
+// contains a cross-project principle relevant to this failure. Relevance requires:
+//   - The library name appears in title, narrative, or concepts.
+//   - At least one additional error-specific term also matches.
+//   - impact_score >= 0.5 and the principle is within 90 days.
+func relevantPrincipleExists(database *db.DB, library, errorKind, normalizedMessage string) bool {
+	terms := buildPrincipleSearchTerms(library, errorKind, normalizedMessage)
+	if len(terms) == 0 {
+		return false
+	}
+	principles, err := database.SearchPrinciplesCrossProject(terms, 0.5, 90, 5)
+	if err != nil || len(principles) == 0 {
+		return false
+	}
+	libraryLower := strings.ToLower(library)
+	for _, p := range principles {
+		combined := strings.ToLower(p.Title + " " + p.Narrative)
+		if !strings.Contains(combined, libraryLower) {
+			continue
+		}
+		// Require at least one error-specific term beyond the library name.
+		for _, term := range terms {
+			if term == libraryLower {
+				continue
+			}
+			if strings.Contains(combined, term) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// buildPrincipleSearchTerms builds a deduplicated term list for principle search.
+// Library name is always first (required anchor). Error kind and normalized
+// message contribute additional tokens, capped to avoid over-broad queries.
+func buildPrincipleSearchTerms(library, errorKind, normalizedMessage string) []string {
+	seen := map[string]bool{}
+	var terms []string
+
+	add := func(s string) {
+		s = strings.ToLower(strings.TrimSpace(s))
+		if s == "" || seen[s] {
+			return
+		}
+		seen[s] = true
+		terms = append(terms, s)
+	}
+
+	add(library)
+
+	// Extract the most meaningful tokens from errorKind (e.g. "rustc", "e0599")
+	for _, token := range strings.Fields(errorKind) {
+		token = strings.Trim(strings.ToLower(token), "[]():,.")
+		if len(token) >= 3 {
+			add(token)
+		}
+	}
+
+	// Extract meaningful tokens from the normalized message (skip noise words)
+	for _, token := range tokenize(normalizedMessage) {
+		if len(token) < 4 || principleNoiseWord[token] {
+			continue
+		}
+		add(token)
+		if len(terms) >= 6 {
+			break
+		}
+	}
+
+	return terms
+}
+
+// principleNoiseWord filters common words that don't help locate relevant principles.
+var principleNoiseWord = map[string]bool{
+	"error": true, "failed": true, "failure": true, "cannot": true,
+	"could": true, "found": true, "undefined": true, "expected": true,
+	"missing": true, "invalid": true, "type": true, "value": true,
+	"path": true, "line": true, "file": true, "name": true,
+}
+
+// hasFreshWebSummary returns true when a non-expired external context summary
+// already exists for this project + source + library, preventing a redundant fetch.
+func hasFreshWebSummary(database *db.DB, projectID, source, libraryName string) bool {
+	summaries, err := database.SearchExternalContextSummariesByProject(projectID, source, libraryName, "", 1)
+	return err == nil && len(summaries) > 0
 }
 
 func planPrompt(promptText string) []candidate {
@@ -123,6 +242,7 @@ func planPrompt(promptText string) []candidate {
 			priority:    95,
 		})
 	}
+	webSource := webSearchSource()
 	for _, library := range libraries {
 		if library == "context7" {
 			continue
@@ -138,6 +258,14 @@ func planPrompt(promptText string) []candidate {
 				source:      "opensrc",
 				libraryName: library,
 				query:       buildQuery(library, promptText),
+				priority:    70,
+			})
+		}
+		if webSource != "" {
+			plans = append(plans, candidate{
+				source:      webSource,
+				libraryName: library,
+				query:       buildWebPromptQuery(library, promptText),
 				priority:    70,
 			})
 		}

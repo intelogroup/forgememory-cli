@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 
 	_ "modernc.org/sqlite"
 )
@@ -84,6 +85,26 @@ func (d *DB) migrate() error {
 			fingerprint  TEXT UNIQUE
 		)`,
 		`CREATE INDEX IF NOT EXISTS idx_principles_ts ON principles(ts)`,
+		`CREATE INDEX IF NOT EXISTS idx_principles_impact_ts ON principles(impact_score DESC, ts DESC)`,
+		`CREATE VIRTUAL TABLE IF NOT EXISTS principles_fts USING fts5(
+			title, narrative, concepts,
+			content=principles,
+			content_rowid=rowid
+		)`,
+		`CREATE TRIGGER IF NOT EXISTS principles_ai AFTER INSERT ON principles BEGIN
+			INSERT INTO principles_fts(rowid, title, narrative, concepts)
+			VALUES (new.rowid, new.title, new.narrative, COALESCE(new.concepts,''));
+		END`,
+		`CREATE TRIGGER IF NOT EXISTS principles_au AFTER UPDATE ON principles BEGIN
+			INSERT INTO principles_fts(principles_fts, rowid, title, narrative, concepts)
+			VALUES ('delete', old.rowid, old.title, old.narrative, COALESCE(old.concepts,''));
+			INSERT INTO principles_fts(rowid, title, narrative, concepts)
+			VALUES (new.rowid, new.title, new.narrative, COALESCE(new.concepts,''));
+		END`,
+		`CREATE TRIGGER IF NOT EXISTS principles_ad AFTER DELETE ON principles BEGIN
+			INSERT INTO principles_fts(principles_fts, rowid, title, narrative, concepts)
+			VALUES ('delete', old.rowid, old.title, old.narrative, COALESCE(old.concepts,''));
+		END`,
 		`CREATE INDEX IF NOT EXISTS idx_principles_project ON principles(project_id)`,
 		`CREATE TABLE IF NOT EXISTS session_summaries (
 			id         TEXT PRIMARY KEY,
@@ -192,6 +213,8 @@ func (d *DB) migrate() error {
 		{"failure_signatures", "command_family", "TEXT DEFAULT ''"},
 		{"external_context_summaries", "summary_kind", "TEXT DEFAULT ''"},
 		{"external_context_summaries", "hint", "TEXT DEFAULT ''"},
+		{"principles", "status", "TEXT DEFAULT ''"},
+		{"principles", "conflict_peer_id", "TEXT DEFAULT ''"},
 	}
 	extraMigrations := []string{
 		`CREATE TABLE IF NOT EXISTS projects (
@@ -202,6 +225,10 @@ func (d *DB) migrate() error {
 			agents       TEXT DEFAULT ''
 		)`,
 		`CREATE INDEX IF NOT EXISTS idx_projects_git_root ON projects(git_root)`,
+		`CREATE TABLE IF NOT EXISTS _fts_rebuild_log (
+			name TEXT PRIMARY KEY,
+			done_at TEXT NOT NULL
+		)`,
 		`CREATE TABLE IF NOT EXISTS distillation_health (
 			id TEXT PRIMARY KEY,
 			last_run_at TEXT DEFAULT '',
@@ -228,10 +255,38 @@ func (d *DB) migrate() error {
 			return fmt.Errorf("add column %s.%s: %w", cm.table, cm.col, err)
 		}
 	}
+	// Indexes that depend on columns added above must run after colMigrations.
+	if _, err := d.conn.Exec(
+		`CREATE INDEX IF NOT EXISTS idx_principles_status ON principles(project_id, status)`,
+	); err != nil {
+		return fmt.Errorf("exec migration: %w", err)
+	}
 	if _, err := d.conn.Exec(`INSERT OR IGNORE INTO distillation_health(id) VALUES ('singleton')`); err != nil {
 		return fmt.Errorf("init distillation_health singleton: %w", err)
 	}
+	if err := d.maybeRebuildPrinciplesFTS(); err != nil {
+		return fmt.Errorf("principles fts rebuild: %w", err)
+	}
 	return nil
+}
+
+// maybeRebuildPrinciplesFTS runs a one-time FTS rebuild to backfill principles
+// that existed before the FTS index was added. Runs exactly once per DB file,
+// tracked in _fts_rebuild_log so it never repeats on subsequent startups.
+func (d *DB) maybeRebuildPrinciplesFTS() error {
+	var doneat string
+	_ = d.conn.QueryRow(`SELECT done_at FROM _fts_rebuild_log WHERE name='principles_fts_v1'`).Scan(&doneat)
+	if doneat != "" {
+		return nil
+	}
+	if _, err := d.conn.Exec(`INSERT INTO principles_fts(principles_fts) VALUES('rebuild')`); err != nil {
+		return err
+	}
+	_, err := d.conn.Exec(
+		`INSERT OR REPLACE INTO _fts_rebuild_log(name, done_at) VALUES('principles_fts_v1', ?)`,
+		time.Now().UTC().Format(time.RFC3339),
+	)
+	return err
 }
 
 // addColumnIfMissing runs ALTER TABLE ADD COLUMN, ignoring duplicate-column errors.

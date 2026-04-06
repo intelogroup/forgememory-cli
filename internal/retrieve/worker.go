@@ -57,6 +57,10 @@ func (w *Worker) fetch(job *db.RetrievalJob) (*db.ExternalContextSummary, error)
 		return w.fetchContext7MCP(job)
 	case "context7_setup":
 		return w.fetchContext7Docs(job)
+	case "exa":
+		return w.fetchExaSearch(job)
+	case "tavily":
+		return w.fetchTavilySearch(job)
 	}
 
 	cmdName := sourceCommand(job.Source)
@@ -280,6 +284,8 @@ func trustScore(source string) float64 {
 	case "opensrc":
 		return 0.78
 	case "exa":
+		return 0.68
+	case "tavily":
 		return 0.65
 	default:
 		return 0.5
@@ -294,7 +300,7 @@ func summaryTTL(source string) time.Duration {
 		return 7 * 24 * time.Hour
 	case "opensrc":
 		return 14 * 24 * time.Hour
-	case "exa":
+	case "exa", "tavily":
 		return 3 * 24 * time.Hour
 	default:
 		return 24 * time.Hour
@@ -333,6 +339,8 @@ func summaryKind(job *db.RetrievalJob) string {
 		return "docs_summary"
 	case "context7_setup":
 		return "setup_summary"
+	case "exa", "tavily":
+		return webSummaryKind(job)
 	default:
 		return "summary"
 	}

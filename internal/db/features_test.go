@@ -270,7 +270,7 @@ func TestDistillationProducesPrinciples(t *testing.T) {
 		ImpactScore: 0.9,
 		ProjectID:   "forge",
 	}
-	if err := db.InsertPrinciple(principle); err != nil {
+	if _, err := db.InsertPrinciple(principle); err != nil {
 		t.Fatal(err)
 	}
 
@@ -293,6 +293,94 @@ func TestDistillationProducesPrinciples(t *testing.T) {
 	}
 	if principles != 1 {
 		t.Errorf("principles = %d, want 1", principles)
+	}
+}
+
+// TestInsertPrincipleDuplicateIgnored verifies that inserting a principle with
+// the same title+project produces only one row (fingerprint-based dedup).
+func TestInsertPrincipleDuplicateIgnored(t *testing.T) {
+	db, err := Open(filepath.Join(t.TempDir(), "test.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+
+	p := &Principle{
+		Type: "pattern", Title: "Always use connection pooling",
+		Narrative: "Reuse DB connections to reduce overhead.",
+		ImpactScore: 0.8, ProjectID: "proj",
+	}
+
+	inserted1, err := db.InsertPrinciple(p)
+	if err != nil {
+		t.Fatalf("first InsertPrinciple: %v", err)
+	}
+	if !inserted1 {
+		t.Error("first insert should return inserted=true")
+	}
+
+	// Same title + project but different narrative and ID — should be ignored.
+	dup := &Principle{
+		Type: "pattern", Title: "Always use connection pooling",
+		Narrative: "Different explanation but same title.",
+		ImpactScore: 0.5, ProjectID: "proj",
+	}
+	inserted2, err := db.InsertPrinciple(dup)
+	if err != nil {
+		t.Fatalf("second InsertPrinciple: %v", err)
+	}
+	if inserted2 {
+		t.Error("duplicate insert should return inserted=false")
+	}
+
+	count, err := db.PrincipleCount()
+	if err != nil {
+		t.Fatalf("PrincipleCount: %v", err)
+	}
+	if count != 1 {
+		t.Errorf("principle count = %d, want 1 (duplicate ignored)", count)
+	}
+}
+
+// TestUndistilledEventsExcludesDistilled verifies that UndistilledEvents never
+// returns events that have already been marked as distilled.
+func TestUndistilledEventsExcludesDistilled(t *testing.T) {
+	db, err := Open(filepath.Join(t.TempDir(), "test.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+
+	// Insert 6 events.
+	var ids []string
+	for i := 0; i < 6; i++ {
+		e := &Event{
+			SessionID: "s1", ProjectID: "proj", SourceTool: "claude",
+			EventType: "PostToolUse", Payload: "event payload",
+		}
+		db.InsertEvent(e)
+		ids = append(ids, e.ID)
+	}
+
+	// Mark first 3 as distilled.
+	if err := db.MarkDistilled(ids[:3]); err != nil {
+		t.Fatalf("MarkDistilled: %v", err)
+	}
+
+	undistilled, err := db.UndistilledEvents(50)
+	if err != nil {
+		t.Fatalf("UndistilledEvents: %v", err)
+	}
+	if len(undistilled) != 3 {
+		t.Errorf("undistilled count = %d, want 3", len(undistilled))
+	}
+
+	// Verify none of the returned events are the ones we marked.
+	marked := map[string]bool{ids[0]: true, ids[1]: true, ids[2]: true}
+	for _, e := range undistilled {
+		if marked[e.ID] {
+			t.Errorf("event %s was marked distilled but still returned by UndistilledEvents", e.ID)
+		}
 	}
 }
 

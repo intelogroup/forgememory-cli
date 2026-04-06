@@ -2,12 +2,15 @@ package distill
 
 import (
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/forge/forge/internal/db"
 )
 
 func TestLoadConfigDefaults(t *testing.T) {
@@ -89,6 +92,7 @@ func TestLoadConfigAnthropic(t *testing.T) {
 }
 
 func TestLoadConfigCodex(t *testing.T) {
+	t.Setenv("HOME", t.TempDir()) // isolate from real ~/.forge/config
 	t.Setenv("FORGE_PROVIDER", "codex")
 	t.Setenv("FORGE_API_KEY", "")
 	t.Setenv("FORGE_MODEL", "")
@@ -290,6 +294,266 @@ func TestCodexProviderHelperProcess(t *testing.T) {
 	t.Fatalf("missing -o output flag in args %q", strings.Join(os.Args, " "))
 }
 
+func TestLoadConfigGroq(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	t.Setenv("FORGE_PROVIDER", "groq")
+	t.Setenv("FORGE_API_KEY", "")
+	t.Setenv("FORGE_MODEL", "")
+	t.Setenv("FORGE_BASE_URL", "")
+	t.Setenv("GROQ_API_KEY", "gsk-test-key")
+
+	cfg := LoadConfig()
+	if cfg.Provider != ProviderGroq {
+		t.Errorf("provider = %s, want %s", cfg.Provider, ProviderGroq)
+	}
+	if cfg.Model != "llama-3.3-70b-versatile" {
+		t.Errorf("model = %s, want llama-3.3-70b-versatile", cfg.Model)
+	}
+	if cfg.BaseURL != "https://api.groq.com/openai" {
+		t.Errorf("base URL = %s, want https://api.groq.com/openai", cfg.BaseURL)
+	}
+	if cfg.APIKey != "gsk-test-key" {
+		t.Errorf("api key = %s, want gsk-test-key (from GROQ_API_KEY)", cfg.APIKey)
+	}
+}
+
+func TestCallGroq(t *testing.T) {
+	var capturedAuth string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		capturedAuth = r.Header.Get("Authorization")
+		w.WriteHeader(http.StatusOK)
+		json.NewEncoder(w).Encode(map[string]any{
+			"choices": []map[string]any{
+				{"message": map[string]string{"content": `[{"type":"pattern","title":"Use connection pooling","narrative":"Reuse connections","impact_score":0.7}]`}},
+			},
+			"usage": map[string]int{
+				"prompt_tokens":     120,
+				"completion_tokens": 80,
+				"total_tokens":      200,
+			},
+		})
+	}))
+	defer server.Close()
+
+	d := &Distiller{
+		config: Config{
+			Provider: ProviderGroq,
+			Model:    "llama-3.3-70b-versatile",
+			APIKey:   "gsk-test",
+			BaseURL:  server.URL,
+		},
+		client: server.Client(),
+	}
+
+	response, err := d.callGroq("test prompt")
+	if err != nil {
+		t.Fatalf("callGroq failed: %v", err)
+	}
+	if response == "" {
+		t.Error("expected non-empty response")
+	}
+	if capturedAuth != "Bearer gsk-test" {
+		t.Errorf("auth header = %q, want 'Bearer gsk-test'", capturedAuth)
+	}
+	if d.Usage.PromptTokens != 120 {
+		t.Errorf("prompt tokens = %d, want 120", d.Usage.PromptTokens)
+	}
+	if d.Usage.CompletionTokens != 80 {
+		t.Errorf("completion tokens = %d, want 80", d.Usage.CompletionTokens)
+	}
+	if d.Usage.TotalTokens != 200 {
+		t.Errorf("total tokens = %d, want 200", d.Usage.TotalTokens)
+	}
+}
+
+func TestCallGroqUsageAccumulates(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		json.NewEncoder(w).Encode(map[string]any{
+			"choices": []map[string]any{
+				{"message": map[string]string{"content": `[{"type":"pattern","title":"Test","narrative":"Test","impact_score":0.5}]`}},
+			},
+			"usage": map[string]int{
+				"prompt_tokens":     100,
+				"completion_tokens": 50,
+				"total_tokens":      150,
+			},
+		})
+	}))
+	defer server.Close()
+
+	d := &Distiller{
+		config: Config{Provider: ProviderGroq, Model: "llama-3.3-70b-versatile", APIKey: "gsk-test", BaseURL: server.URL},
+		client: server.Client(),
+	}
+
+	d.callGroq("prompt 1")
+	d.callGroq("prompt 2")
+
+	if d.Usage.TotalTokens != 300 {
+		t.Errorf("total tokens after 2 calls = %d, want 300", d.Usage.TotalTokens)
+	}
+}
+
+func TestCallGroqRateLimit(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusTooManyRequests)
+	}))
+	defer server.Close()
+
+	d := &Distiller{
+		config: Config{Provider: ProviderGroq, Model: "llama-3.3-70b-versatile", APIKey: "gsk-test", BaseURL: server.URL},
+		client: server.Client(),
+	}
+
+	_, err := d.callGroq("test")
+	if err == nil {
+		t.Error("expected error for 429 rate limit")
+	}
+	if !errors.Is(err, ErrProviderUnreachable) {
+		t.Errorf("expected ErrProviderUnreachable for 429, got %v", err)
+	}
+}
+
+// TestDistillBatchNoReDistill verifies that events marked distilled=1 are
+// never included in a subsequent DistillBatch call.
+func TestDistillBatchNoReDistill(t *testing.T) {
+	database, err := db.Open(t.TempDir() + "/test.db")
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	defer database.Close()
+
+	callCount := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		callCount++
+		json.NewEncoder(w).Encode(map[string]any{
+			"choices": []map[string]any{
+				{"message": map[string]string{"content": `[{"type":"pattern","title":"Batch principle","narrative":"From first batch","impact_score":0.6}]`}},
+			},
+			"usage": map[string]int{"prompt_tokens": 50, "completion_tokens": 30, "total_tokens": 80},
+		})
+	}))
+	defer server.Close()
+
+	d := &Distiller{
+		db: database,
+		config: Config{
+			Provider: ProviderGroq,
+			Model:    "llama-3.3-70b-versatile",
+			APIKey:   "gsk-test",
+			BaseURL:  server.URL,
+		},
+		client: server.Client(),
+	}
+
+	// Insert 5 events and distill them.
+	for i := 0; i < 5; i++ {
+		database.InsertEvent(&db.Event{
+			SessionID: "sess-1", ProjectID: "proj", SourceTool: "claude",
+			EventType: "PostToolUse", ToolName: "Edit",
+			Payload: `{"file":"main.go"}`,
+		})
+	}
+	if _, err := d.DistillBatch(50); err != nil {
+		t.Fatalf("first DistillBatch: %v", err)
+	}
+
+	// All 5 events must now be distilled.
+	_, undistilled, _ := database.EventCount()
+	if undistilled != 0 {
+		t.Errorf("undistilled after first batch = %d, want 0", undistilled)
+	}
+
+	// Insert 3 new events (below batch minimum of 3 — exactly 3 to trigger).
+	for i := 0; i < 3; i++ {
+		database.InsertEvent(&db.Event{
+			SessionID: "sess-2", ProjectID: "proj", SourceTool: "claude",
+			EventType: "PostToolUse", ToolName: "Bash",
+			Payload: `{"command":"go test"}`,
+		})
+	}
+
+	callsBefore := callCount
+	if _, err := d.DistillBatch(50); err != nil {
+		t.Fatalf("second DistillBatch: %v", err)
+	}
+
+	// The second batch should have only processed the 3 new events, not the 5 already-distilled ones.
+	if callCount == callsBefore {
+		t.Error("expected LLM to be called for second batch")
+	}
+	_, undistilled, _ = database.EventCount()
+	if undistilled != 0 {
+		t.Errorf("undistilled after second batch = %d, want 0", undistilled)
+	}
+	total, _, _ := database.EventCount()
+	if total != 8 {
+		t.Errorf("total events = %d, want 8", total)
+	}
+}
+
+// TestDistillBatchPrincipleDedup verifies that the same principle title
+// produced by two separate LLM calls is only stored once (fingerprint dedup).
+func TestDistillBatchPrincipleDedup(t *testing.T) {
+	database, err := db.Open(t.TempDir() + "/test.db")
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	defer database.Close()
+
+	// LLM always returns the same principle title regardless of input.
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		json.NewEncoder(w).Encode(map[string]any{
+			"choices": []map[string]any{
+				{"message": map[string]string{"content": `[{"type":"pattern","title":"Always use connection pooling","narrative":"Reuse DB connections","impact_score":0.8}]`}},
+			},
+			"usage": map[string]int{"prompt_tokens": 60, "completion_tokens": 40, "total_tokens": 100},
+		})
+	}))
+	defer server.Close()
+
+	d := &Distiller{
+		db: database,
+		config: Config{
+			Provider: ProviderGroq,
+			Model:    "llama-3.3-70b-versatile",
+			APIKey:   "gsk-test",
+			BaseURL:  server.URL,
+		},
+		client: server.Client(),
+	}
+
+	// First batch.
+	for i := 0; i < 5; i++ {
+		database.InsertEvent(&db.Event{
+			SessionID: "s1", ProjectID: "proj", SourceTool: "claude",
+			EventType: "PostToolUse", Payload: `{"action":"query db"}`,
+		})
+	}
+	if _, err := d.DistillBatch(50); err != nil {
+		t.Fatalf("first DistillBatch: %v", err)
+	}
+
+	// Second batch with fresh events — LLM returns same title again.
+	for i := 0; i < 5; i++ {
+		database.InsertEvent(&db.Event{
+			SessionID: "s2", ProjectID: "proj", SourceTool: "claude",
+			EventType: "PostToolUse", Payload: `{"action":"open db connection"}`,
+		})
+	}
+	if _, err := d.DistillBatch(50); err != nil {
+		t.Fatalf("second DistillBatch: %v", err)
+	}
+
+	count, err := database.PrincipleCount()
+	if err != nil {
+		t.Fatalf("PrincipleCount: %v", err)
+	}
+	if count != 1 {
+		t.Errorf("principles = %d, want 1 (duplicate title should be ignored by fingerprint)", count)
+	}
+}
+
 func containsStr(s, substr string) bool {
 	return len(s) >= len(substr) && (s == substr || len(s) > 0 && containsStrHelper(s, substr))
 }
@@ -437,5 +701,146 @@ func TestCallAnthropicForbidden(t *testing.T) {
 	_, err := d.callAnthropic("test")
 	if err == nil {
 		t.Error("expected error for forbidden Anthropic")
+	}
+}
+
+func TestParseConflictPairs_Valid(t *testing.T) {
+	response := `[{"a":"id-aaa","b":"id-bbb"},{"a":"id-ccc","b":"id-ddd"}]`
+	pairs, err := parseConflictPairs(response)
+	if err != nil {
+		t.Fatalf("parseConflictPairs: %v", err)
+	}
+	if len(pairs) != 2 {
+		t.Fatalf("len = %d, want 2", len(pairs))
+	}
+	if pairs[0][0] != "id-aaa" || pairs[0][1] != "id-bbb" {
+		t.Errorf("pair[0] = %v, want [id-aaa id-bbb]", pairs[0])
+	}
+}
+
+func TestParseConflictPairs_Empty(t *testing.T) {
+	pairs, err := parseConflictPairs(`[]`)
+	if err != nil {
+		t.Fatalf("parseConflictPairs: %v", err)
+	}
+	if len(pairs) != 0 {
+		t.Errorf("expected 0 pairs, got %d", len(pairs))
+	}
+}
+
+func TestParseConflictPairs_StripsMarkdownFence(t *testing.T) {
+	response := "```json\n[{\"a\":\"x\",\"b\":\"y\"}]\n```"
+	pairs, err := parseConflictPairs(response)
+	if err != nil {
+		t.Fatalf("parseConflictPairs with fence: %v", err)
+	}
+	if len(pairs) != 1 {
+		t.Fatalf("len = %d, want 1", len(pairs))
+	}
+}
+
+func TestBuildConflictPrompt_ContainsPrincipleIDs(t *testing.T) {
+	newPs := []db.Principle{
+		{ID: "new-1", Title: "Avoid Redis for sessions", Narrative: "Redis causes issues."},
+	}
+	oldPs := []db.Principle{
+		{ID: "old-1", Title: "Use Redis for session caching", Narrative: "Always use Redis."},
+	}
+	prompt := buildConflictPrompt(newPs, oldPs)
+	for _, want := range []string{"new-1", "old-1", "EXISTING", "NEW", "JSON"} {
+		if !strings.Contains(prompt, want) {
+			t.Errorf("prompt missing %q", want)
+		}
+	}
+}
+
+func TestDetectAndMarkConflicts_NilDB(t *testing.T) {
+	d := &Distiller{db: nil, config: Config{}}
+	// Should return nil immediately without panicking.
+	if err := d.detectAndMarkConflicts([]db.Principle{{ID: "x"}}); err != nil {
+		t.Errorf("expected nil error with nil db, got %v", err)
+	}
+}
+
+func TestDetectAndMarkConflicts_NoExistingPrinciples(t *testing.T) {
+	database, err := db.Open(t.TempDir() + "/test.db")
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	defer database.Close()
+
+	// LLM would be called but there are no old principles — should skip without error.
+	// Use a Distiller with no real LLM (will error if called).
+	d := &Distiller{db: database, config: Config{Provider: ProviderOllama, BaseURL: "http://127.0.0.1:1"}}
+
+	newP := db.Principle{ID: "only-one", Type: "pattern", Title: "Use Redis", Narrative: "Redis is good.", ProjectID: "proj"}
+	if _, err := database.InsertPrinciple(&newP); err != nil {
+		t.Fatalf("InsertPrinciple: %v", err)
+	}
+
+	// No old principles exist — detection should skip the LLM call entirely.
+	if err := d.detectAndMarkConflicts([]db.Principle{newP}); err != nil {
+		t.Errorf("unexpected error: %v", err)
+	}
+}
+
+func TestDetectAndMarkConflicts_MarksFromLLMResponse(t *testing.T) {
+	database, err := db.Open(t.TempDir() + "/test.db")
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	defer database.Close()
+
+	oldP := &db.Principle{
+		ID: "old-1", Type: "pattern",
+		Title:     "Use optimistic locking for concurrent writes",
+		Narrative: "Optimistic locking reduces contention.",
+		ProjectID: "proj", ImpactScore: 0.8,
+	}
+	newP := &db.Principle{
+		ID: "new-1", Type: "pattern",
+		Title:     "Prefer row-level pessimistic locks under contention",
+		Narrative: "Pessimistic locking is safer under high concurrency.",
+		ProjectID: "proj", ImpactScore: 0.7,
+	}
+	for _, p := range []*db.Principle{oldP, newP} {
+		if _, err := database.InsertPrinciple(p); err != nil {
+			t.Fatalf("InsertPrinciple: %v", err)
+		}
+	}
+
+	// Stub LLM: returns a conflict pair pointing at old-1 and new-1.
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		// Ollama response shape.
+		json.NewEncoder(w).Encode(map[string]string{
+			"response": `[{"a":"old-1","b":"new-1"}]`,
+		})
+	}))
+	defer srv.Close()
+
+	d := &Distiller{
+		db: database,
+		config: Config{
+			Provider: ProviderOllama,
+			Model:    "llama3",
+			BaseURL:  srv.URL,
+			Timeout:  5 * time.Second,
+		},
+		client: srv.Client(),
+	}
+
+	if err := d.detectAndMarkConflicts([]db.Principle{*newP}); err != nil {
+		t.Fatalf("detectAndMarkConflicts: %v", err)
+	}
+
+	for _, id := range []string{"old-1", "new-1"} {
+		p, err := database.GetPrincipleByID(id)
+		if err != nil || p == nil {
+			t.Fatalf("GetPrincipleByID(%s): %v", id, err)
+		}
+		if p.Status != "conflicting" {
+			t.Errorf("principle %s Status = %q, want conflicting", id, p.Status)
+		}
 	}
 }

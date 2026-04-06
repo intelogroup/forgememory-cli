@@ -45,7 +45,10 @@ func shouldUseAIHintRefinement(job *db.RetrievalJob, hint string, parts []string
 	if job == nil || strings.TrimSpace(hint) == "" || len(parts) == 0 {
 		return false
 	}
-	return job.Source == "context7" && job.TriggerType == "failure"
+	if job.TriggerType != "failure" {
+		return false
+	}
+	return job.Source == "context7" || job.Source == "exa" || job.Source == "tavily"
 }
 
 func loadAIHintConfig() (distill.Config, bool) {
