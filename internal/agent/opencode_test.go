@@ -9,6 +9,7 @@ import (
 )
 
 func TestOpencodeAdapter_DetectByDir(t *testing.T) {
+	t.Setenv("XDG_CONFIG_HOME", "") // isolate from CI runner env
 	home := t.TempDir()
 	if err := os.MkdirAll(filepath.Join(home, ".config", "opencode"), 0o700); err != nil {
 		t.Fatal(err)
@@ -46,6 +47,7 @@ func TestOpencodeAdapter_DetectMissing(t *testing.T) {
 }
 
 func TestSetupOpencode_WritesMCPConfig(t *testing.T) {
+	t.Setenv("XDG_CONFIG_HOME", "") // isolate from CI runner env
 	home := t.TempDir()
 	if err := os.MkdirAll(filepath.Join(home, ".config", "opencode"), 0o700); err != nil {
 		t.Fatal(err)
@@ -87,6 +89,7 @@ func TestSetupOpencode_WritesMCPConfig(t *testing.T) {
 }
 
 func TestSetupOpencode_WritesPlugin(t *testing.T) {
+	t.Setenv("XDG_CONFIG_HOME", "") // isolate from CI runner env
 	home := t.TempDir()
 	if err := os.MkdirAll(filepath.Join(home, ".config", "opencode"), 0o700); err != nil {
 		t.Fatal(err)
@@ -130,6 +133,7 @@ func TestSetupOpencode_WritesPlugin(t *testing.T) {
 }
 
 func TestSetupOpencode_IdempotentConfig(t *testing.T) {
+	t.Setenv("XDG_CONFIG_HOME", "") // isolate from CI runner env
 	home := t.TempDir()
 	if err := os.MkdirAll(filepath.Join(home, ".config", "opencode"), 0o700); err != nil {
 		t.Fatal(err)
@@ -139,12 +143,18 @@ func TestSetupOpencode_IdempotentConfig(t *testing.T) {
 	if _, err := setupOpencode(home); err != nil {
 		t.Fatalf("first setup: %v", err)
 	}
-	info1, _ := os.Stat(configPath)
+	info1, err := os.Stat(configPath)
+	if err != nil {
+		t.Fatalf("stat after first setup: %v", err)
+	}
 
 	if _, err := setupOpencode(home); err != nil {
 		t.Fatalf("second setup: %v", err)
 	}
-	info2, _ := os.Stat(configPath)
+	info2, err := os.Stat(configPath)
+	if err != nil {
+		t.Fatalf("stat after second setup: %v", err)
+	}
 
 	if !info2.ModTime().Equal(info1.ModTime()) {
 		t.Error("opencode.json was rewritten on second init — should skip when unchanged")
@@ -152,6 +162,7 @@ func TestSetupOpencode_IdempotentConfig(t *testing.T) {
 }
 
 func TestSetupOpencode_PreservesExistingConfig(t *testing.T) {
+	t.Setenv("XDG_CONFIG_HOME", "") // isolate from CI runner env
 	home := t.TempDir()
 	configDir := filepath.Join(home, ".config", "opencode")
 	if err := os.MkdirAll(configDir, 0o700); err != nil {
@@ -182,6 +193,7 @@ func TestSetupOpencode_PreservesExistingConfig(t *testing.T) {
 }
 
 func TestSetupOpencode_CreatesConfigDirIfMissing(t *testing.T) {
+	t.Setenv("XDG_CONFIG_HOME", "") // isolate from CI runner env
 	home := t.TempDir()
 	// No .config/opencode dir — setup must create it.
 
