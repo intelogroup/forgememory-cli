@@ -213,6 +213,9 @@ func TestWriteAddr_SetsEnvVar(t *testing.T) {
 
 // TestWriteAddr_FilePermissions verifies the addr file is created with mode 0600.
 func TestWriteAddr_FilePermissions(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("Windows does not enforce Unix file permission bits")
+	}
 	home := t.TempDir()
 	t.Setenv("HOME", home)
 
