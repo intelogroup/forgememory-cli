@@ -259,12 +259,12 @@ func (d *Distiller) DistillBatch(limit int) (int, error) {
 		return 0, nil // Not enough events to distill
 	}
 
-	// Check credits if using Forge provider
+	// Pre-flight credit check (avoids a Groq round-trip if credits are already zero).
+	// Server deducts atomically during inference; no client-side deduction needed.
 	if d.config.Provider == ProviderForgememo && d.config.APIKey != "" {
 		if !d.checkCredits() {
 			return 0, fmt.Errorf("no credits remaining. Run 'forge login --purchase' to buy more")
 		}
-		d.deductCredit()
 	}
 
 	// Build prompt from events
@@ -553,16 +553,19 @@ func (d *Distiller) callAnthropic(prompt string) (string, error) {
 }
 
 func (d *Distiller) callForgememo(prompt string) (string, error) {
-	url := d.config.PaymentURL + "/api/v1/inference"
+	url := d.config.PaymentURL + "/v1/inference"
 
 	body := map[string]any{
-		"model":   d.config.Model,
-		"prompt":  prompt,
-		"api_key": d.config.APIKey,
+		"model":  d.config.Model,
+		"prompt": prompt,
 	}
 	jsonBody, _ := json.Marshal(body)
 
-	resp, err := d.client.Post(url, "application/json", bytes.NewReader(jsonBody))
+	req, _ := http.NewRequest("POST", url, bytes.NewReader(jsonBody))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bearer "+d.config.APIKey)
+
+	resp, err := d.client.Do(req)
 	if err != nil {
 		if isProviderUnreachableError(err) {
 			return "", fmt.Errorf("%w: %v", ErrProviderUnreachable, err)
@@ -574,17 +577,25 @@ func (d *Distiller) callForgememo(prompt string) (string, error) {
 	if resp.StatusCode == 401 {
 		return "", fmt.Errorf("%w: No credits or invalid API key", ErrProviderInvalid)
 	}
+	if resp.StatusCode == 402 {
+		return "", fmt.Errorf("%w: no credits remaining", ErrProviderInvalid)
+	}
+	if resp.StatusCode == 429 {
+		return "", fmt.Errorf("%w: rate limit exceeded", ErrProviderUnreachable)
+	}
 	if resp.StatusCode >= 400 {
 		return "", fmt.Errorf("%w: Forgememo API returned status %d", ErrProviderInvalid, resp.StatusCode)
 	}
 
 	data, _ := io.ReadAll(resp.Body)
 	var result struct {
-		Response string `json:"response"`
+		Data struct {
+			Response string `json:"response"`
+		} `json:"data"`
 	}
 	json.Unmarshal(data, &result)
-	if result.Response != "" {
-		return result.Response, nil
+	if result.Data.Response != "" {
+		return result.Data.Response, nil
 	}
 	return "", fmt.Errorf("no response from Forgememo")
 }

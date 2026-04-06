@@ -181,6 +181,37 @@ type Response struct {
 	Data    any    `json:"data,omitempty"`
 }
 
+// --- Per-user rate limiter (token bucket, 10 inferences/minute) ---
+
+type rateBucket struct {
+	mu       sync.Mutex
+	tokens   int
+	lastFill time.Time
+}
+
+func (b *rateBucket) allow() bool {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	const cap = 10
+	refill := int(time.Since(b.lastFill).Minutes() * cap)
+	if refill > 0 {
+		b.tokens = min(b.tokens+refill, cap)
+		b.lastFill = time.Now()
+	}
+	if b.tokens <= 0 {
+		return false
+	}
+	b.tokens--
+	return true
+}
+
+var inferenceRateLimiter sync.Map // api_key → *rateBucket
+
+func inferenceAllowed(apiKey string) bool {
+	val, _ := inferenceRateLimiter.LoadOrStore(apiKey, &rateBucket{tokens: 10, lastFill: time.Now()})
+	return val.(*rateBucket).allow()
+}
+
 func main() {
 	if supabaseURL == "" || supabaseKey == "" {
 		log.Fatal("SUPABASE_URL and SUPABASE_ANON_KEY required")
@@ -195,6 +226,7 @@ func main() {
 	http.HandleFunc("/v1/sync/pull", handleSyncPull)
 	http.HandleFunc("/v1/checkout", handleCheckout)
 	http.HandleFunc("/v1/inference", handleDistill)
+	http.HandleFunc("/api/v1/inference", handleDistill) // alias for old CLI compat
 
 	// Health check
 	http.HandleFunc("/health", handleHealth)
@@ -540,9 +572,11 @@ func handleDistill(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if user.Credits <= 0 {
+	if !inferenceAllowed(user.APIKey) {
+		w.Header().Set("Retry-After", "60")
 		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(Response{Success: false, Message: "no credits remaining"})
+		w.WriteHeader(http.StatusTooManyRequests)
+		json.NewEncoder(w).Encode(Response{Success: false, Message: "rate limit exceeded: max 10 inferences per minute"})
 		return
 	}
 
@@ -555,11 +589,29 @@ func handleDistill(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Deduct one credit before calling LLM.
-	user.Credits--
-	if err := supabaseUpdate("users", user.ID, user); err != nil {
+	// Atomically deduct one credit via stored procedure (single UPDATE, no TOCTOU).
+	var deducted bool
+	if supabaseURL != "" && supabaseAdmin != "" {
+		if err := supabaseRPC("deduct_credit", map[string]any{"user_api_key": user.APIKey}, &deducted); err != nil {
+			log.Printf("deduct_credit rpc error: %v", err)
+			http.Error(w, "internal error", http.StatusInternalServerError)
+			return
+		}
+	} else {
+		// Dev fallback (in-memory)
+		memMu.Lock()
+		u, ok2 := memByAPIKey[user.APIKey]
+		if ok2 && u.Credits > 0 {
+			u.Credits--
+			memByAPIKey[user.APIKey] = u
+			deducted = true
+		}
+		memMu.Unlock()
+	}
+	if !deducted {
 		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(Response{Success: false, Message: err.Error()})
+		w.WriteHeader(http.StatusPaymentRequired)
+		json.NewEncoder(w).Encode(Response{Success: false, Message: "no credits remaining"})
 		return
 	}
 
@@ -655,6 +707,7 @@ func handleWebhook(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var event struct {
+		ID   string `json:"id"`
 		Type string `json:"type"`
 		Data struct {
 			Object struct {
@@ -675,26 +728,33 @@ func handleWebhook(w http.ResponseWriter, r *http.Request) {
 		meta := event.Data.Object.Metadata
 		credits, validPack := packCredits[meta.PackID]
 		if !validPack {
-			log.Printf("webhook: unknown pack_id %q, defaulting to 0 credits", meta.PackID)
-			credits = 0
-		}
-
-		var users []User
-		if meta.UserID != "" {
-			users = supabaseQuery("users", "id", meta.UserID)
-		} else if event.Data.Object.Email != "" {
-			users = supabaseQuery("users", "email", event.Data.Object.Email)
-		}
-
-		if len(users) > 0 {
-			user := users[0]
-			user.Credits += credits
-			if err := supabaseUpdate("users", user.ID, user); err != nil {
-				log.Printf("webhook: failed to apply credits: %v", err)
-				http.Error(w, "failed to apply credits", http.StatusInternalServerError)
-				return
+			log.Printf("webhook: unknown pack_id %q, skipping credits", meta.PackID)
+			// ACK to Stripe — don't retry forever for bad metadata
+		} else {
+			var users []User
+			if meta.UserID != "" {
+				users = supabaseQuery("users", "id", meta.UserID)
+			} else if event.Data.Object.Email != "" {
+				users = supabaseQuery("users", "email", event.Data.Object.Email)
 			}
-			log.Printf("webhook: added %d credits to user %s (pack: %s)", credits, user.ID, meta.PackID)
+
+			if len(users) > 0 {
+				var applied bool
+				if err := supabaseRPC("add_credits_idempotent", map[string]any{
+					"p_event_id": event.ID,
+					"p_user_id":  users[0].ID,
+					"p_amount":   credits,
+				}, &applied); err != nil {
+					log.Printf("webhook: rpc error: %v", err)
+					http.Error(w, "failed to apply credits", http.StatusInternalServerError)
+					return
+				}
+				if applied {
+					log.Printf("webhook: added %d credits to user %s (event: %s)", credits, users[0].ID, event.ID)
+				} else {
+					log.Printf("webhook: duplicate event %s, skipping", event.ID)
+				}
+			}
 		}
 	}
 
@@ -950,6 +1010,29 @@ func supabaseUpdate(table, id string, user User) error {
 	}
 	// Fallback: update in memory
 	memUpdateCredits(id, user.Credits)
+	return nil
+}
+
+// supabaseRPC calls a Supabase stored function via the PostgREST RPC endpoint.
+func supabaseRPC(funcName string, args map[string]any, dest any) error {
+	reqURL := fmt.Sprintf("%s/rest/v1/rpc/%s", supabaseURL, funcName)
+	body, _ := json.Marshal(args)
+	req, _ := http.NewRequest("POST", reqURL, bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("apikey", supabaseKey)
+	req.Header.Set("Authorization", "Bearer "+supabaseAdmin)
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	respBody, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return fmt.Errorf("rpc %s status %d: %s", funcName, resp.StatusCode, string(respBody))
+	}
+	if dest != nil {
+		return json.Unmarshal(respBody, dest)
+	}
 	return nil
 }
 

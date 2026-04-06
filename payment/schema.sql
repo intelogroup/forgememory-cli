@@ -30,18 +30,16 @@ begin
 end;
 $$ language plpgsql security definer;
 
--- Function to deduct credits
+-- Function to deduct credits (atomic single-UPDATE — no TOCTOU race)
 create or replace function deduct_credit(user_api_key text)
 returns boolean as $$
 declare
-    current_credits int;
+    rows_updated int;
 begin
-    select credits into current_credits from users where api_key = user_api_key;
-    if current_credits is null or current_credits < 1 then
-        return false;
-    end if;
-    update users set credits = credits - 1 where api_key = user_api_key;
-    return true;
+    update users set credits = credits - 1
+    where api_key = user_api_key and credits >= 1;
+    get diagnostics rows_updated = row_count;
+    return rows_updated > 0;
 end;
 $$ language plpgsql security definer;
 
@@ -62,3 +60,22 @@ create table if not exists runs (
 
 create index if not exists idx_runs_user_id on runs(user_id);
 create index if not exists idx_runs_ts on runs(ts desc);
+
+-- Stripe event idempotency table (prevents double-credit on webhook retries)
+create table if not exists stripe_events (
+    event_id     text primary key,
+    processed_at timestamptz default now()
+);
+
+-- Idempotent credit-add function: inserts event_id first; skips if already seen
+create or replace function add_credits_idempotent(
+    p_event_id text, p_user_id uuid, p_amount int
+) returns boolean as $$
+begin
+    insert into stripe_events(event_id) values (p_event_id);
+    update users set credits = credits + p_amount where id = p_user_id;
+    return true;
+exception when unique_violation then
+    return false;
+end;
+$$ language plpgsql security definer;
