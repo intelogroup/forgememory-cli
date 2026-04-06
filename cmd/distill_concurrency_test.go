@@ -1,0 +1,520 @@
+package main
+
+import (
+	"encoding/json"
+	"fmt"
+	"net/http"
+	"net/http/httptest"
+	"os"
+	"path/filepath"
+	"strings"
+	"sync"
+	"sync/atomic"
+	"testing"
+	"time"
+
+	"github.com/forge/forge/internal/db"
+	"github.com/forge/forge/internal/distill"
+)
+
+// ---------------------------------------------------------------------------
+// Helpers
+// ---------------------------------------------------------------------------
+
+// distillServer returns a test HTTP server that returns a valid Ollama distill
+// response and counts how many times the LLM was actually called.
+func distillServer(t *testing.T, title string) (*httptest.Server, *atomic.Int32) {
+	t.Helper()
+	var calls atomic.Int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls.Add(1)
+		json.NewEncoder(w).Encode(map[string]string{
+			"response": fmt.Sprintf(`[{"type":"pattern","title":%q,"narrative":"test","impact_score":0.7}]`, title),
+		})
+	}))
+	t.Cleanup(srv.Close)
+	return srv, &calls
+}
+
+// captureStdoutString captures os.Stdout output from f (single-goroutine only).
+func captureStdoutString(f func()) string {
+	return captureStdout(f)
+}
+
+// ---------------------------------------------------------------------------
+// Lock file basics
+// ---------------------------------------------------------------------------
+
+func TestDistillLock_AcquireAndRelease(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+
+	lock, err := acquireDistillLock()
+	if err != nil {
+		t.Fatalf("acquireDistillLock: %v", err)
+	}
+	if lock == nil {
+		t.Fatal("expected lock to be acquired (no competing holder)")
+	}
+	lock.Close()
+	cleanDistillLock()
+
+	// Lock file must be gone after release.
+	if _, err := os.Stat(distillLockPath()); !os.IsNotExist(err) {
+		t.Error("distill lock file should not exist after cleanDistillLock")
+	}
+}
+
+func TestDistillLock_SecondAcquireReturnNil(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+
+	lock1, err := acquireDistillLock()
+	if err != nil || lock1 == nil {
+		t.Fatalf("first acquireDistillLock failed: err=%v lock=%v", err, lock1)
+	}
+	defer lock1.Close()
+	defer cleanDistillLock()
+
+	// A second acquire while the first is held must return (nil, nil).
+	lock2, err := acquireDistillLock()
+	if err != nil {
+		t.Errorf("second acquire should not return error, got: %v", err)
+	}
+	if lock2 != nil {
+		lock2.Close()
+		t.Error("second acquire should return nil lock when already held")
+	}
+}
+
+func TestDistillLock_StaleLockDeadPID(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+
+	lockPath := distillLockPath()
+	if err := os.MkdirAll(filepath.Dir(lockPath), 0o700); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+	// PID 99999999 is virtually certain to be dead.
+	if err := os.WriteFile(lockPath, []byte("99999999"), 0o600); err != nil {
+		t.Fatalf("WriteFile stale lock: %v", err)
+	}
+
+	// Stale lock must be auto-cleaned and acquisition must succeed.
+	lock, err := acquireDistillLock()
+	if err != nil {
+		t.Fatalf("acquireDistillLock with stale lock: %v", err)
+	}
+	if lock == nil {
+		t.Fatal("expected lock acquired after stale cleanup, got nil")
+	}
+	lock.Close()
+	cleanDistillLock()
+}
+
+func TestDistillLock_GarbagePIDInLockFile(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+
+	lockPath := distillLockPath()
+	if err := os.MkdirAll(filepath.Dir(lockPath), 0o700); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+	// Non-numeric content → treated as stale (pid=0 → dead).
+	if err := os.WriteFile(lockPath, []byte("not-a-pid"), 0o600); err != nil {
+		t.Fatalf("WriteFile garbage lock: %v", err)
+	}
+
+	lock, err := acquireDistillLock()
+	if err != nil {
+		t.Fatalf("acquireDistillLock with garbage lock: %v", err)
+	}
+	if lock == nil {
+		t.Fatal("expected garbage lock to be treated as stale and cleaned")
+	}
+	lock.Close()
+	cleanDistillLock()
+}
+
+func TestDistillLock_PIDInLockFileMatchesCurrent(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+
+	lockPath := distillLockPath()
+	if err := os.MkdirAll(filepath.Dir(lockPath), 0o700); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+	// Simulate another forge process (use current PID — it IS alive).
+	if err := os.WriteFile(lockPath, []byte(fmt.Sprintf("%d", os.Getpid())), 0o600); err != nil {
+		t.Fatalf("WriteFile live pid lock: %v", err)
+	}
+
+	// Must NOT acquire — the "holder" is alive.
+	lock, err := acquireDistillLock()
+	if err != nil {
+		t.Errorf("should return nil,nil not error when live lock held, got: %v", err)
+	}
+	if lock != nil {
+		lock.Close()
+		cleanDistillLock()
+		t.Error("should not acquire lock when live pid holds it")
+	}
+
+	// Clean up manually.
+	os.Remove(lockPath)
+}
+
+// ---------------------------------------------------------------------------
+// runDistill integration: lock is acquired + released around the whole call
+// ---------------------------------------------------------------------------
+
+func TestRunDistill_LockReleasedAfterNoEvents(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	captureStdoutString(func() { runDistill([]string{}) })
+
+	// Lock must be released even when there's nothing to distill.
+	if _, err := os.Stat(distillLockPath()); !os.IsNotExist(err) {
+		t.Error("distill lock file should not exist after runDistill completes with no events")
+	}
+}
+
+func TestRunDistill_LockReleasedAfterSuccess(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	seedEvents(t, 3)
+
+	srv, _ := distillServer(t, "Lock release test principle")
+	t.Setenv("FORGE_PROVIDER", "ollama")
+	t.Setenv("FORGE_BASE_URL", srv.URL)
+	t.Setenv("FORGE_API_KEY", "")
+	t.Setenv("FORGE_MODEL", "")
+
+	captureStdoutString(func() { runDistill([]string{}) })
+
+	if _, err := os.Stat(distillLockPath()); !os.IsNotExist(err) {
+		t.Error("distill lock file should not exist after successful runDistill")
+	}
+}
+
+func TestRunDistill_BlockedByLiveHolder(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	seedEvents(t, 3)
+
+	// Pre-acquire the lock using current PID (simulates another terminal running distill).
+	lockPath := distillLockPath()
+	if err := os.MkdirAll(filepath.Dir(lockPath), 0o700); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+	if err := os.WriteFile(lockPath, []byte(fmt.Sprintf("%d", os.Getpid())), 0o600); err != nil {
+		t.Fatalf("WriteFile lock: %v", err)
+	}
+	defer os.Remove(lockPath)
+
+	srv, calls := distillServer(t, "Should not appear")
+	t.Setenv("FORGE_PROVIDER", "ollama")
+	t.Setenv("FORGE_BASE_URL", srv.URL)
+	_ = srv
+
+	out := captureStdoutString(func() { runDistill([]string{}) })
+
+	if calls.Load() != 0 {
+		t.Errorf("LLM called %d times despite lock being held; want 0", calls.Load())
+	}
+	if !strings.Contains(out, "already in progress") {
+		t.Errorf("expected 'already in progress' message, got: %q", out)
+	}
+}
+
+func TestRunDistill_BlockedMessageIncludesPID(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+
+	lockPath := distillLockPath()
+	if err := os.MkdirAll(filepath.Dir(lockPath), 0o700); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+	holderPID := os.Getpid()
+	if err := os.WriteFile(lockPath, []byte(fmt.Sprintf("%d", holderPID)), 0o600); err != nil {
+		t.Fatalf("WriteFile lock: %v", err)
+	}
+	defer os.Remove(lockPath)
+
+	out := captureStdoutString(func() { runDistill([]string{}) })
+
+	if !strings.Contains(out, fmt.Sprintf("%d", holderPID)) {
+		t.Errorf("expected holder PID %d in blocked message, got: %q", holderPID, out)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Race condition: concurrent runDistill calls
+// ---------------------------------------------------------------------------
+
+// TestDistillLock_ConcurrentAcquire fires N goroutines all trying to acquire
+// the distill lock simultaneously. Exactly one must succeed; the rest must get
+// nil (blocked). This is the core race-condition test — run with -race.
+func TestDistillLock_ConcurrentAcquire(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+
+	const goroutines = 8
+	var (
+		wg       sync.WaitGroup
+		mu       sync.Mutex
+		acquired []*os.File
+		blocked  int
+	)
+
+	// All goroutines start together.
+	start := make(chan struct{})
+
+	for i := 0; i < goroutines; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			<-start // wait for all to be ready
+			lock, err := acquireDistillLock()
+			if err != nil {
+				return // unexpected — count as nothing
+			}
+			mu.Lock()
+			defer mu.Unlock()
+			if lock != nil {
+				acquired = append(acquired, lock)
+			} else {
+				blocked++
+			}
+		}()
+	}
+
+	close(start) // release all goroutines simultaneously
+	wg.Wait()
+
+	// Release all acquired locks.
+	for _, l := range acquired {
+		l.Close()
+	}
+	cleanDistillLock()
+
+	if len(acquired) != 1 {
+		t.Errorf("exactly 1 goroutine should acquire the lock, got %d", len(acquired))
+	}
+	if blocked != goroutines-1 {
+		t.Errorf("%d goroutines should be blocked, got %d", goroutines-1, blocked)
+	}
+}
+
+// TestDistillLock_NoDuplicateDistillation is the end-to-end race test:
+// two goroutines call runDistill at the same time; the LLM must be called
+// exactly once (not twice), and events must end up distilled exactly once.
+func TestDistillLock_NoDuplicateDistillation(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	seedEvents(t, 5)
+
+	srv, llmCalls := distillServer(t, "Race condition principle")
+	t.Setenv("FORGE_PROVIDER", "ollama")
+	t.Setenv("FORGE_BASE_URL", srv.URL)
+	t.Setenv("FORGE_API_KEY", "")
+	t.Setenv("FORGE_MODEL", "")
+
+	// Redirect stdout to /dev/null for the duration — we only care about DB state.
+	devNull, err := os.OpenFile(os.DevNull, os.O_WRONLY, 0)
+	if err != nil {
+		t.Fatalf("open /dev/null: %v", err)
+	}
+	old := os.Stdout
+	os.Stdout = devNull
+	defer func() {
+		os.Stdout = old
+		devNull.Close()
+	}()
+
+	var wg sync.WaitGroup
+	start := make(chan struct{})
+
+	for i := 0; i < 2; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			<-start
+			runDistill([]string{})
+		}()
+	}
+
+	close(start)
+	wg.Wait()
+
+	// Give any async DB writes a moment.
+	time.Sleep(50 * time.Millisecond)
+
+	if got := llmCalls.Load(); got != 1 {
+		t.Errorf("LLM called %d times; want exactly 1 (race guard failed)", got)
+	}
+
+	database, err := db.Open("")
+	if err != nil {
+		t.Fatalf("db.Open: %v", err)
+	}
+	defer database.Close()
+	_, undistilled, _ := database.EventCount()
+	if undistilled != 0 {
+		t.Errorf("undistilled = %d after concurrent distill; want 0", undistilled)
+	}
+	count, _ := database.PrincipleCount()
+	if count != 1 {
+		t.Errorf("principles = %d; want 1 (no duplicates from race)", count)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// distillLoop: skips tick when manual forge distill holds the lock
+// ---------------------------------------------------------------------------
+
+// TestDistillLoop_SkipsWhenLockHeld verifies the guard inside distillLoop:
+// when the distill lock is already held, acquireDistillLock returns nil
+// and the daemon skips the LLM call for that tick.
+func TestDistillLoop_SkipsWhenLockHeld(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+
+	// First goroutine acquires the lock (simulates `forge distill` in another terminal).
+	manualLock, err := acquireDistillLock()
+	if err != nil || manualLock == nil {
+		t.Fatalf("pre-acquire distill lock: err=%v lock=%v", err, manualLock)
+	}
+	defer manualLock.Close()
+	defer cleanDistillLock()
+
+	// Now simulate a daemon tick trying to acquire the same lock.
+	daemonLock, err := acquireDistillLock()
+	if err != nil {
+		t.Errorf("daemon tick should get nil,nil not error: %v", err)
+	}
+	if daemonLock != nil {
+		daemonLock.Close()
+		t.Error("daemon tick should be blocked (nil lock) when manual distill holds lock")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Provider config: per-user, not per-terminal
+// ---------------------------------------------------------------------------
+
+func TestProviderConfig_IsPerUser(t *testing.T) {
+	// Two "terminals" (goroutines) reading config simultaneously — both must see
+	// the same provider since config is per-user file, not per-process/terminal.
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("FORGE_PROVIDER", "groq")
+	t.Setenv("FORGE_API_KEY", "gsk-test")
+	t.Setenv("FORGE_MODEL", "")
+	t.Setenv("FORGE_BASE_URL", "")
+	t.Setenv("GROQ_API_KEY", "")
+
+	const terminals = 4
+	providers := make([]string, terminals)
+	var wg sync.WaitGroup
+
+	for i := 0; i < terminals; i++ {
+		i := i
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			// Simulates each terminal's forge invocation loading config.
+			cfg := distill.LoadConfig()
+			providers[i] = string(cfg.Provider)
+		}()
+	}
+	wg.Wait()
+
+	for i, p := range providers {
+		if p != "groq" {
+			t.Errorf("terminal %d sees provider %q; want groq (config must be per-user, not per-terminal)", i, p)
+		}
+	}
+}
+
+// ---------------------------------------------------------------------------
+// npm install -g: lock file left by interrupted install
+// ---------------------------------------------------------------------------
+
+func TestNpmGlobalInstall_ConcurrentLockNotOurProblem(t *testing.T) {
+	// npm manages its own lockfile. Forge must not interfere with it.
+	// This test simply verifies that forge's lock files are isolated to ~/.forge/,
+	// and a file at npm's typical lock path does not affect forge's distill lock.
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+
+	// Simulate a leftover npm lock file.
+	npmLock := filepath.Join(home, ".npm", "_locks", "staging-fake.lock")
+	if err := os.MkdirAll(filepath.Dir(npmLock), 0o700); err != nil {
+		t.Fatalf("MkdirAll npm lock dir: %v", err)
+	}
+	if err := os.WriteFile(npmLock, []byte("npm-lock"), 0o600); err != nil {
+		t.Fatalf("WriteFile npm lock: %v", err)
+	}
+
+	// Forge's distill lock must be in ~/.forge/, completely separate.
+	forgeLock := distillLockPath()
+	if strings.Contains(forgeLock, ".npm") {
+		t.Errorf("distill lock path %q must not be inside .npm/", forgeLock)
+	}
+
+	// Acquiring forge's distill lock must work regardless of npm lock presence.
+	lock, err := acquireDistillLock()
+	if err != nil || lock == nil {
+		t.Fatalf("acquireDistillLock failed with npm lock present: err=%v lock=%v", err, lock)
+	}
+	lock.Close()
+	cleanDistillLock()
+}
+
+// ---------------------------------------------------------------------------
+// Edge: lock dir doesn't exist yet (first run)
+// ---------------------------------------------------------------------------
+
+func TestDistillLock_CreatesForgeDir(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+
+	// Remove .forge entirely — simulates a brand-new install.
+	os.RemoveAll(filepath.Join(home, ".forge"))
+
+	lock, err := acquireDistillLock()
+	if err != nil {
+		t.Fatalf("acquireDistillLock on fresh install: %v", err)
+	}
+	if lock == nil {
+		t.Fatal("expected lock acquired on fresh install")
+	}
+	lock.Close()
+	cleanDistillLock()
+}
+
+// ---------------------------------------------------------------------------
+// Edge: multiple forge start calls (already covered by existing code, verify
+// our lock doesn't interfere with daemon startup lock)
+// ---------------------------------------------------------------------------
+
+func TestDistillLock_DoesNotInterfereWithDaemonStartupLock(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+
+	// Hold distill lock.
+	distillLock, err := acquireDistillLock()
+	if err != nil || distillLock == nil {
+		t.Fatalf("acquire distill lock: err=%v lock=%v", err, distillLock)
+	}
+	defer distillLock.Close()
+	defer cleanDistillLock()
+
+	// Daemon startup lock must be acquirable independently.
+	startupLock, err := acquireStartupLock()
+	if err != nil {
+		t.Fatalf("daemon startup lock blocked by distill lock (must be independent): %v", err)
+	}
+	if startupLock == nil {
+		t.Fatal("startup lock should succeed while distill lock is held")
+	}
+	startupLock.Close()
+	cleanStartupLock()
+}

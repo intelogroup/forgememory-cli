@@ -108,6 +108,16 @@ func runInit(args []string) {
 		fmt.Println("  Run 'forge start' to start the daemon, then restart Claude Code.")
 	}
 
+	// Warn if multiple forge binaries are found in PATH.
+	if installs := findForgeInstalls(); len(installs) > 1 {
+		fmt.Println("\nWarning: multiple forge installations found in PATH:")
+		for _, fi := range installs {
+			fmt.Printf("  %s  (v%s)\n", fi.Path, fi.Version)
+		}
+		fmt.Println("  Unexpected behavior may occur if different versions are active.")
+		fmt.Println("  Run 'forge doctor' for details, or 'forge doctor --repair' to clean up.")
+	}
+
 	fmt.Println("\nForge initialized. Run `forge start` to start the daemon.")
 }
 
@@ -122,8 +132,37 @@ func runSyncIntegrations(args []string) {
 	fmt.Printf("  Refreshed agents: %v\n", agents)
 }
 
+func repairServiceIfNeeded() error {
+	if runtime.GOOS == "windows" {
+		return nil
+	}
+	mgr, err := serviceNew()
+	if err != nil {
+		return err
+	}
+	storedPath, err := mgr.ReadInstalledBinaryPath()
+	if err != nil {
+		return fmt.Errorf("read installed binary path: %w", err)
+	}
+	if storedPath == "" || storedPath == mgr.BinaryPath {
+		return nil
+	}
+	_ = serviceUninstall(mgr)
+	if err := serviceInstall(mgr); err != nil {
+		return fmt.Errorf("reinstall service: %w", err)
+	}
+	_ = mgr.Stop()
+	_ = mgr.Start()
+	fmt.Printf("  Repaired service: updated binary path to %s\n", mgr.BinaryPath)
+	return nil
+}
+
 func runStart(args []string) {
 	fmt.Println("Starting Forge daemon...")
+
+	if err := repairServiceIfNeeded(); err != nil {
+		fmt.Fprintf(os.Stderr, "  Warning: could not check service registration: %v\n", err)
+	}
 
 	result, err := ensureDaemonRunning(true)
 	if err != nil {
@@ -204,12 +243,57 @@ func runStop(args []string) {
 }
 
 func runDistill(args []string) {
+	fs := flag.NewFlagSet("distill", flag.ContinueOnError)
+	allFlag := fs.Bool("all", false, "Drain entire undistilled backlog in 50-event batches")
+	waitFlag := fs.Bool("wait", false, "Wait for lock if another distill is running, then run")
+	if err := fs.Parse(args); err != nil {
+		os.Exit(1)
+	}
+
+	if *waitFlag {
+		for {
+			pid := readLockPID(distillLockPath())
+			if pid <= 0 || !isProcessAlive(pid) {
+				break
+			}
+			fmt.Printf("\rWaiting for distillation lock (held by pid %d)...", pid)
+			time.Sleep(1 * time.Second)
+		}
+		fmt.Println()
+	}
+
+	// Prevent concurrent distillation across terminals or daemon + CLI.
+	lock, err := acquireDistillLock()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Error acquiring distill lock: %v\n", err)
+		os.Exit(1)
+	}
+	if lock == nil {
+		pid := readLockPID(distillLockPath())
+		if pid > 0 {
+			fmt.Printf("Distillation already in progress (pid %d). Use --wait to queue.\n", pid)
+		} else {
+			fmt.Println("Distillation already in progress. Use --wait to queue.")
+		}
+		return
+	}
+	defer lock.Close()
+	defer cleanDistillLock()
+
 	database, err := db.Open("")
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 		os.Exit(1)
 	}
 	defer database.Close()
+
+	cfg := distill.LoadConfig()
+	d := distill.New(database, cfg)
+
+	if *allFlag {
+		runDistillDrain(d, database, cfg)
+		return
+	}
 
 	events, err := database.UndistilledEvents(50)
 	if err != nil {
@@ -223,8 +307,6 @@ func runDistill(args []string) {
 	}
 
 	fmt.Printf("Distilling %d events...\n", len(events))
-	cfg := distill.LoadConfig()
-	d := distill.New(database, cfg)
 	count, err := d.DistillBatch(50)
 	if err != nil {
 		if shouldSkipDistillForMissingProvider(cfg, err) {
@@ -244,6 +326,36 @@ func runDistill(args []string) {
 		return
 	}
 	fmt.Printf("Distilled %d principle(s).\n", count)
+}
+
+func runDistillDrain(d *distill.Distiller, database *db.DB, cfg distill.Config) {
+	totalPrinciples := 0
+	for {
+		_, remaining, _ := database.EventCount()
+		if remaining == 0 {
+			break
+		}
+		count, err := d.DistillBatch(50)
+		if err != nil {
+			if shouldSkipDistillForMissingProvider(cfg, err) {
+				fmt.Printf("Skipping distillation: %s\n", distill.UserMessage(err))
+				fmt.Println("Events remain queued until you configure a provider or start Ollama.")
+				return
+			}
+			fmt.Fprintf(os.Stderr, "Drain error: %s\n", distill.UserMessage(err))
+			os.Exit(1)
+		}
+		if count == 0 {
+			// Fewer than 3 events remain — cannot form a distillable batch.
+			break
+		}
+		totalPrinciples += count
+		_, newRemaining, _ := database.EventCount()
+		fmt.Printf("Distilled %d principle(s). %d events remaining...\n", count, newRemaining)
+	}
+	_, finalRemaining, _ := database.EventCount()
+	fmt.Printf("Drain complete. %d total principle(s) distilled. %d events remaining.\n",
+		totalPrinciples, finalRemaining)
 }
 
 func shouldSkipDistillForMissingProvider(cfg distill.Config, err error) bool {
@@ -466,7 +578,7 @@ func runSave(args []string) {
 			ImpactScore: 0.7,
 			ProjectID:   projectID,
 		}
-		if err := database.InsertPrinciple(p); err != nil {
+		if _, err := database.InsertPrinciple(p); err != nil {
 			fmt.Fprintf(os.Stderr, "Error saving principle: %v\n", err)
 			os.Exit(1)
 		}
@@ -680,6 +792,38 @@ func runDoctor(args []string) {
 			cleanSocket()
 			hasIssues = true
 		}
+
+		// Remove stale forge binaries at managed paths.
+		activeInstallPath := agent.ForgePath()
+		activeReal, _ := filepath.EvalSymlinks(activeInstallPath)
+		if activeReal == "" {
+			activeReal = activeInstallPath
+		}
+		activeVersion := queryForgeVersion(activeInstallPath)
+		for _, fi := range findForgeInstalls() {
+			fiReal, _ := filepath.EvalSymlinks(fi.Path)
+			if fiReal == "" {
+				fiReal = fi.Path
+			}
+			if fiReal == activeReal {
+				continue // never remove the active binary
+			}
+			if !isManagedForgePath(fi.Path) {
+				fmt.Printf("  [SKIP] %s — not a managed path, remove manually if needed\n", fi.Path)
+				continue
+			}
+			if fi.Version == activeVersion {
+				fmt.Printf("  [SKIP] %s — same version as active (v%s)\n", fi.Path, fi.Version)
+				continue
+			}
+			if err := os.Remove(fi.Path); err != nil {
+				fmt.Printf("  [FAIL] Could not remove %s: %v\n", fi.Path, err)
+			} else {
+				fmt.Printf("  - Removed stale binary: %s (v%s)\n", fi.Path, fi.Version)
+				hasIssues = true
+			}
+		}
+
 		if !hasIssues {
 			fmt.Println("  No stale state found.")
 		}
@@ -742,8 +886,22 @@ func runDoctor(args []string) {
 		fmt.Printf("    - %s\n", a)
 	}
 
-	// Check binary
-	fmt.Printf("  [OK] Binary: %s\n", agent.ForgePath())
+	// Check binary installations
+	installs := findForgeInstalls()
+	activePath := agent.ForgePath()
+	if len(installs) <= 1 {
+		fmt.Printf("  [OK] Binary: %s (v%s)\n", activePath, queryForgeVersion(activePath))
+	} else {
+		fmt.Printf("  [WARN] Multiple forge installations found (%d):\n", len(installs))
+		for _, fi := range installs {
+			marker := ""
+			if fi.Path == activePath {
+				marker = " <- active"
+			}
+			fmt.Printf("    %s  (v%s)%s\n", fi.Path, fi.Version, marker)
+		}
+		fmt.Println("  Run 'forge doctor --repair' to remove stale installations.")
+	}
 }
 
 // runDoctorInline prints a compact diagnostic output for failed daemon starts.
@@ -1105,7 +1263,7 @@ func runConfig(args []string) {
 		fmt.Println("")
 		fmt.Println("Options:")
 		fmt.Println("  --show           Show current configuration")
-		fmt.Println("  --provider       Provider: forgememo, anthropic, openai, or ollama")
+		fmt.Println("  --provider       Provider: forgememo, anthropic, openai, groq, ollama, or codex")
 		fmt.Println("  --api-key        API key for the provider")
 		fmt.Println("  --model          Model name (optional)")
 		fmt.Println("  --base-url       Base URL for API (optional)")
@@ -1121,6 +1279,7 @@ func runConfig(args []string) {
 		fmt.Println("  forgememo: claude-haiku-4-5-20251001")
 		fmt.Println("  anthropic: claude-haiku-4-5-20251001")
 		fmt.Println("  openai:    gpt-4o")
+		fmt.Println("  groq:      llama-3.3-70b-versatile (uses GROQ_API_KEY env or --api-key)")
 		fmt.Println("  ollama:    llama3:latest")
 		fmt.Println("")
 		fmt.Println("Examples:")
@@ -1128,15 +1287,16 @@ func runConfig(args []string) {
 		fmt.Println("  forge config --provider forgememo")
 		fmt.Println("  forge config --provider openai --api-key sk-...")
 		fmt.Println("  forge config --provider anthropic --api-key sk-ant-...")
+		fmt.Println("  forge config --provider groq --api-key gsk-...")
 		fmt.Println("  forge config --provider ollama --model llama3:latest")
 		fmt.Println("  forge config --provider anthropic --api-key sk-ant-... --validate")
 		fmt.Println("  forge config --provider openai --context7-api-key ctx7sk-...")
 		os.Exit(0)
 	}
 
-	validProviders := map[string]bool{"forgememo": true, "forge": true, "anthropic": true, "openai": true, "ollama": true}
+	validProviders := map[string]bool{"forgememo": true, "forge": true, "anthropic": true, "openai": true, "ollama": true, "groq": true, "codex": true}
 	if !validProviders[*providerFlag] {
-		fmt.Fprintf(os.Stderr, "Error: provider must be one of: forgememo, anthropic, openai, ollama\n")
+		fmt.Fprintf(os.Stderr, "Error: provider must be one of: forgememo, anthropic, openai, groq, ollama, codex\n")
 		os.Exit(1)
 	}
 	if *providerFlag == "forge" {
@@ -1233,9 +1393,9 @@ func runConfigInteractive(providerFlag, apiKeyFlag, modelFlag, timeoutFlag *stri
 	}
 
 	if *providerFlag == "" {
-		*providerFlag = promptChoice(reader, "Select provider", []string{"forgememo", "anthropic", "openai", "ollama"}, "forgememo")
+		*providerFlag = promptChoice(reader, "Select provider", []string{"forgememo", "anthropic", "openai", "groq", "ollama"}, "forgememo")
 	}
-	if *apiKeyFlag == "" && (*providerFlag == "anthropic" || *providerFlag == "openai") {
+	if *apiKeyFlag == "" && (*providerFlag == "anthropic" || *providerFlag == "openai" || *providerFlag == "groq") {
 		*apiKeyFlag = promptInput(reader, "API Key", "")
 	}
 	if *modelFlag == "" {
@@ -1293,6 +1453,12 @@ func promptModel(reader *bufio.Reader, provider string) string {
 		return promptInput(reader, "Model", "gpt-4o")
 	case "ollama":
 		return promptInput(reader, "Model", "llama3:latest")
+	case "groq":
+		fmt.Println("? Select model:")
+		fmt.Println("  - llama-3.3-70b-versatile (default: fast, large context)")
+		fmt.Println("  - llama3-8b-8192 (budget: faster, lower TPM cost)")
+		fmt.Println("  - gemma2-9b-it")
+		return promptInput(reader, "Model", "llama-3.3-70b-versatile")
 	case "forgememo", "forge":
 		return promptInput(reader, "Model", "claude-haiku-4-5-20251001")
 	default:
@@ -1308,6 +1474,8 @@ func defaultModelForProvider(provider string) string {
 		return "claude-haiku-4-5-20251001"
 	case "openai":
 		return "gpt-4o"
+	case "groq":
+		return "llama-3.3-70b-versatile"
 	case "ollama":
 		return "llama3:latest"
 	default:
@@ -1321,8 +1489,14 @@ func distillConfigFromUserConfig(cfg config.Config) distill.Config {
 	if d.Provider == "forge" {
 		d.Provider = distill.ProviderForgememo
 	}
-	d.APIKey = cfg.APIKey
-	d.Model = cfg.Model
+	// For groq, prefer FORGE_API_KEY from config, but fall back to GROQ_API_KEY env
+	// (already populated by distill.LoadConfig via the GROQ_API_KEY fallback).
+	if cfg.APIKey != "" {
+		d.APIKey = cfg.APIKey
+	}
+	if cfg.Model != "" {
+		d.Model = cfg.Model
+	}
 	if cfg.BaseURL != "" {
 		d.BaseURL = cfg.BaseURL
 	}

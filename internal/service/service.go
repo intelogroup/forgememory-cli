@@ -235,6 +235,63 @@ func (m *Manager) installWindowsScheduledTask() error {
 	return nil
 }
 
+// ReadInstalledBinaryPath returns the binary path stored in the installed
+// service file. Returns ("", nil) if the service is not installed.
+func (m *Manager) ReadInstalledBinaryPath() (string, error) {
+	switch currentGOOS() {
+	case "darwin":
+		return m.readLaunchdBinaryPath()
+	case "linux":
+		return m.readSystemdBinaryPath()
+	default:
+		return "", nil
+	}
+}
+
+func (m *Manager) readLaunchdBinaryPath() (string, error) {
+	data, err := os.ReadFile(m.launchdPlistPath())
+	if os.IsNotExist(err) {
+		return "", nil
+	}
+	if err != nil {
+		return "", err
+	}
+	content := string(data)
+	marker := "<key>ProgramArguments</key>"
+	idx := strings.Index(content, marker)
+	if idx < 0 {
+		return "", fmt.Errorf("ProgramArguments not found in plist")
+	}
+	rest := content[idx:]
+	open := strings.Index(rest, "<string>")
+	end := strings.Index(rest, "</string>")
+	if open < 0 || end <= open {
+		return "", fmt.Errorf("could not parse binary path from plist")
+	}
+	return rest[open+len("<string>") : end], nil
+}
+
+func (m *Manager) readSystemdBinaryPath() (string, error) {
+	unitPath := filepath.Join(m.HomeDir, ".config", "systemd", "user", "forge.service")
+	data, err := os.ReadFile(unitPath)
+	if os.IsNotExist(err) {
+		return "", nil
+	}
+	if err != nil {
+		return "", err
+	}
+	for _, line := range strings.Split(string(data), "\n") {
+		line = strings.TrimSpace(line)
+		if strings.HasPrefix(line, "ExecStart=") {
+			parts := strings.Fields(strings.TrimPrefix(line, "ExecStart="))
+			if len(parts) > 0 {
+				return parts[0], nil
+			}
+		}
+	}
+	return "", fmt.Errorf("ExecStart not found in systemd unit")
+}
+
 // --- Helpers ---
 
 // IsServiceInstalled checks if the service is installed.

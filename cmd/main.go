@@ -91,7 +91,7 @@ func printUsage() {
    health        Show distillation health and alerts
    save          Save a memory directly (--type --content [--principle])
    scan          Mine recent git history for learnings (--dry-run)
-   distill       Run distillation manually
+   distill       Run distillation manually (--all drains backlog, --wait queues behind running distill)
    search <q>    Full-text search on event payloads
    mcp           Start MCP server (stdio transport, for Claude Code)
    ui            Start memory dashboard web UI (http://localhost:5555)

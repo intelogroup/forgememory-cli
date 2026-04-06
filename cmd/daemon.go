@@ -268,10 +268,24 @@ func distillLoop(d *distill.Distiller, database *db.DB, interval time.Duration) 
 	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
 	for range ticker.C {
+		// Skip if a manual `forge distill` is already running.
+		lock, lockErr := acquireDistillLock()
+		if lockErr != nil {
+			log.Printf("Distillation skipped: could not acquire lock: %v", lockErr)
+			continue
+		}
+		if lock == nil {
+			log.Printf("Distillation skipped: manual distill already in progress")
+			continue
+		}
+
 		runAt := time.Now().UTC()
 		start := time.Now()
 		_, undistilled, _ := database.EventCount()
 		count, err := d.DistillBatch(50)
+		lock.Close()
+		cleanDistillLock()
+
 		next := runAt.Add(interval)
 		if err != nil {
 			log.Printf("Distillation error: %v", err)
@@ -335,7 +349,23 @@ func writeAddr(addr string) {
 	home := forgeHome()
 	dir := filepath.Join(home, ".forge")
 	_ = os.MkdirAll(dir, 0o700)
-	_ = os.WriteFile(filepath.Join(dir, "forge.addr"), []byte(addr), 0o600)
+	finalPath := filepath.Join(dir, "forge.addr")
+	tmp, err := os.CreateTemp(dir, "forge.addr.tmp.*")
+	if err != nil {
+		_ = os.WriteFile(finalPath, []byte(addr), 0o600)
+		os.Setenv("FORGE_PIPE_ADDR", addr)
+		return
+	}
+	if _, werr := tmp.WriteString(addr); werr != nil {
+		tmp.Close()
+		_ = os.Remove(tmp.Name())
+		_ = os.WriteFile(finalPath, []byte(addr), 0o600)
+		os.Setenv("FORGE_PIPE_ADDR", addr)
+		return
+	}
+	_ = tmp.Chmod(0o600)
+	tmp.Close()
+	_ = os.Rename(tmp.Name(), finalPath)
 	os.Setenv("FORGE_PIPE_ADDR", addr)
 }
 
@@ -665,6 +695,66 @@ func cleanLock() {
 
 func cleanStartupLock() {
 	_ = os.Remove(startupLockPath())
+}
+
+func distillLockPath() string {
+	return filepath.Join(forgeHome(), ".forge", "forge.distill.lock")
+}
+
+// acquireDistillLock acquires an exclusive distillation lock. Returns (lock,
+// nil) on success, (nil, nil) when another distill is already running (caller
+// should exit gracefully), or (nil, err) on unexpected failure.
+//
+// Unlike the daemon lock, staleness is determined solely by PID liveness —
+// no process-identity check — so any alive process holding the lock blocks.
+func acquireDistillLock() (*os.File, error) {
+	lockPath := distillLockPath()
+	if err := os.MkdirAll(filepath.Dir(lockPath), 0o700); err != nil {
+		return nil, fmt.Errorf("create distill lock dir: %w", err)
+	}
+
+	for attempt := 0; attempt < 2; attempt++ {
+		f, err := os.OpenFile(lockPath, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o600)
+		if err == nil {
+			if _, werr := fmt.Fprintf(f, "%d", os.Getpid()); werr != nil {
+				f.Close()
+				_ = os.Remove(lockPath)
+				return nil, fmt.Errorf("write distill lock pid: %w", werr)
+			}
+			f.Close()
+			// Re-open to hold the lock fd open.
+			f, err = os.OpenFile(lockPath, os.O_WRONLY, 0o600)
+			if err != nil {
+				return nil, fmt.Errorf("reopen distill lock: %w", err)
+			}
+			return f, nil
+		}
+		if os.IsExist(err) {
+			// Check staleness by PID liveness only — no identity check.
+			if isDistillLockStale(lockPath) {
+				_ = os.Remove(lockPath)
+				continue // retry
+			}
+			return nil, nil // live holder — signal blocked
+		}
+		return nil, fmt.Errorf("acquire distill lock: %w", err)
+	}
+	return nil, nil // could not acquire after retries — treat as blocked
+}
+
+// isDistillLockStale reports whether the distill lock is held by a dead process.
+// Unlike the daemon lock, we do not check process identity — any alive PID
+// means the lock is legitimately held.
+func isDistillLockStale(lockPath string) bool {
+	pid := readLockPID(lockPath)
+	if pid <= 0 {
+		return true // no valid PID → stale
+	}
+	return !isProcessAlive(pid)
+}
+
+func cleanDistillLock() {
+	_ = os.Remove(distillLockPath())
 }
 
 // cleanSocket removes the daemon socket file.
