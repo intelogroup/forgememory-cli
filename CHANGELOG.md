@@ -1,5 +1,27 @@
 # Changelog
 
+## [0.4.23] - 2026-04-07
+
+### Fixed
+- Fixed a TOCTOU race in `acquireDistillLock` where a goroutine could read an
+  empty lock file (PID not yet written) as stale, remove it, and acquire a second
+  lock — causing concurrent distillation. Fix uses a process-level `sync.Mutex`
+  fast path (`TryLock`) to reject same-process concurrency before touching the
+  filesystem, plus hardened `isDistillLockStale` to distinguish empty in-progress
+  files (size=0, mtime < 1s) from garbage content.
+
+### Added
+- `forge agent-guide` — new command that prints a copy-pasteable CLAUDE.md /
+  system prompt block with correct MCP tool call triggers.
+- `forge help mcp` — expanded from a single-line summary to full per-tool docs
+  with `When`, `Returns`, and `Params` for all 9 MCP tools.
+- `--help` now includes an **Agent setup** section with a 5-step onboarding guide.
+
+### Changed
+- All 9 MCP tool descriptions rewritten to lead with a trigger condition
+  ("Call at session start…", "Call when something is broken…") so agents know
+  *when* to invoke each tool, not just what it returns.
+
 ## [0.4.14] - 2026-04-05
 
 ### Added
