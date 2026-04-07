@@ -701,6 +701,11 @@ func distillLockPath() string {
 	return filepath.Join(forgeHome(), ".forge", "forge.distill.lock")
 }
 
+// distillInProcess is an in-process guard that prevents concurrent goroutines
+// within the same process from racing on the filesystem lock. The filesystem
+// lock (forge.distill.lock) handles cross-process exclusion.
+var distillInProcess sync.Mutex
+
 // acquireDistillLock acquires an exclusive distillation lock. Returns (lock,
 // nil) on success, (nil, nil) when another distill is already running (caller
 // should exit gracefully), or (nil, err) on unexpected failure.
@@ -708,8 +713,17 @@ func distillLockPath() string {
 // Unlike the daemon lock, staleness is determined solely by PID liveness —
 // no process-identity check — so any alive process holding the lock blocks.
 func acquireDistillLock() (*os.File, error) {
+	// Fast path: reject concurrent goroutines in this process immediately,
+	// before touching the filesystem. This eliminates the TOCTOU window
+	// between O_EXCL file creation and PID write that would let a second
+	// goroutine misread an empty lock file as stale and steal it.
+	if !distillInProcess.TryLock() {
+		return nil, nil
+	}
+
 	lockPath := distillLockPath()
 	if err := os.MkdirAll(filepath.Dir(lockPath), 0o700); err != nil {
+		distillInProcess.Unlock()
 		return nil, fmt.Errorf("create distill lock dir: %w", err)
 	}
 
@@ -719,14 +733,11 @@ func acquireDistillLock() (*os.File, error) {
 			if _, werr := fmt.Fprintf(f, "%d", os.Getpid()); werr != nil {
 				f.Close()
 				_ = os.Remove(lockPath)
+				distillInProcess.Unlock()
 				return nil, fmt.Errorf("write distill lock pid: %w", werr)
 			}
-			f.Close()
-			// Re-open to hold the lock fd open.
-			f, err = os.OpenFile(lockPath, os.O_WRONLY, 0o600)
-			if err != nil {
-				return nil, fmt.Errorf("reopen distill lock: %w", err)
-			}
+			// Keep f open — the open fd is the lock. Close+reopen creates a
+			// window where another goroutine can O_EXCL-create the same file.
 			return f, nil
 		}
 		if os.IsExist(err) {
@@ -735,10 +746,13 @@ func acquireDistillLock() (*os.File, error) {
 				_ = os.Remove(lockPath)
 				continue // retry
 			}
+			distillInProcess.Unlock()
 			return nil, nil // live holder — signal blocked
 		}
+		distillInProcess.Unlock()
 		return nil, fmt.Errorf("acquire distill lock: %w", err)
 	}
+	distillInProcess.Unlock()
 	return nil, nil // could not acquire after retries — treat as blocked
 }
 
@@ -748,13 +762,21 @@ func acquireDistillLock() (*os.File, error) {
 func isDistillLockStale(lockPath string) bool {
 	pid := readLockPID(lockPath)
 	if pid <= 0 {
-		return true // no valid PID → stale
+		// Distinguish two cases:
+		//   size=0, very recent → file created by O_EXCL but PID not yet written
+		//                         (the create→Fprintf window); not stale.
+		//   size>0, pid=0       → garbage/corrupted content → stale.
+		if info, err := os.Stat(lockPath); err == nil && info.Size() == 0 && time.Since(info.ModTime()) < time.Second {
+			return false
+		}
+		return true
 	}
 	return !isProcessAlive(pid)
 }
 
 func cleanDistillLock() {
 	_ = os.Remove(distillLockPath())
+	distillInProcess.Unlock()
 }
 
 // cleanSocket removes the daemon socket file.

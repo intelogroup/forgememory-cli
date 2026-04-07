@@ -150,7 +150,7 @@ func (s *Server) handleToolsList(req Request) *Response {
 	tools := []Tool{
 		{
 			Name:        "get_recent_context",
-			Description: "Returns recent project-scoped memories, including session summaries, principles, active failures, and cached external context.",
+			Description: "Call at the start of every session to prime context. Returns session summaries, principles, active failures, and cached external context.",
 			InputSchema: map[string]any{
 				"type": "object",
 				"properties": map[string]any{
@@ -168,7 +168,7 @@ func (s *Server) handleToolsList(req Request) *Response {
 		},
 		{
 			Name:        "search_memories",
-			Description: "Project-scoped full-text search on captured event payloads. Use when the user asks 'did I fix this before?' or about past errors.",
+			Description: "Call before solving an error or implementing a feature to check if this was done before. Full-text search on captured tool-use payloads.",
 			InputSchema: map[string]any{
 				"type": "object",
 				"properties": map[string]any{
@@ -191,7 +191,7 @@ func (s *Server) handleToolsList(req Request) *Response {
 		},
 		{
 			Name:        "get_principles",
-			Description: "Returns project-scoped distilled high-level principles (architecture decisions, patterns, preferences).",
+			Description: "Call before making architecture or design decisions. Returns distilled high-level patterns and preferences for this project.",
 			InputSchema: map[string]any{
 				"type": "object",
 				"properties": map[string]any{
@@ -209,7 +209,7 @@ func (s *Server) handleToolsList(req Request) *Response {
 		},
 		{
 			Name:        "get_session_summaries",
-			Description: "Returns project-scoped synthesized summaries of recent work sessions.",
+			Description: "Call when you need a narrative of recent work. Returns synthesized summaries of past sessions across agents.",
 			InputSchema: map[string]any{
 				"type": "object",
 				"properties": map[string]any{
@@ -227,7 +227,7 @@ func (s *Server) handleToolsList(req Request) *Response {
 		},
 		{
 			Name:        "get_project_timeline",
-			Description: "Returns a cross-agent timeline for the current project showing all sessions from Claude, Gemini, and Codex.",
+			Description: "Call to orient yourself on cross-agent history. Returns chronological session entries from Claude, Gemini, and Codex.",
 			InputSchema: map[string]any{
 				"type": "object",
 				"properties": map[string]any{
@@ -245,7 +245,7 @@ func (s *Server) handleToolsList(req Request) *Response {
 		},
 		{
 			Name:        "get_external_context",
-			Description: "Returns cached external context summaries for the current project. Uses stored retrieval results only; does not perform live fetches.",
+			Description: "Call to retrieve previously fetched library/API docs cached for this project. Does not perform live fetches.",
 			InputSchema: map[string]any{
 				"type": "object",
 				"properties": map[string]any{
@@ -275,7 +275,7 @@ func (s *Server) handleToolsList(req Request) *Response {
 		},
 		{
 			Name:        "get_active_failures",
-			Description: "Returns active project-scoped failure alerts detected from prior sessions.",
+			Description: "Call when something is mysteriously broken. Returns unresolved failure alerts detected from prior sessions.",
 			InputSchema: map[string]any{
 				"type": "object",
 				"properties": map[string]any{
@@ -293,7 +293,7 @@ func (s *Server) handleToolsList(req Request) *Response {
 		},
 		{
 			Name:        "get_distillation_health",
-			Description: "Returns latest distillation health state including last success/failure, error message, and undistilled backlog.",
+			Description: "Call to check if distillation is running and healthy. Returns last run status, error message, and undistilled backlog count.",
 			InputSchema: map[string]any{
 				"type":       "object",
 				"properties": map[string]any{},
@@ -301,7 +301,7 @@ func (s *Server) handleToolsList(req Request) *Response {
 		},
 		{
 			Name:        "get_alerts",
-			Description: "Returns active distillation alerts for agent-visible failures and backlog growth.",
+			Description: "Call to check for active distillation or backlog alerts that may affect memory quality.",
 			InputSchema: map[string]any{
 				"type":       "object",
 				"properties": map[string]any{},

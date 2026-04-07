@@ -67,6 +67,8 @@ func main() {
 		runSynthesizeSession(os.Args[2:]) // internal, not shown in help
 	case "version":
 		fmt.Printf("forge %s\n", version)
+	case "agent-guide":
+		runAgentGuide(os.Args[2:])
 	case "help", "--help", "-h":
 		runHelp(os.Args[2:])
 	default:
@@ -87,7 +89,7 @@ func printUsage() {
    sync-integrations Refresh Codex/Claude/Gemini MCP and hook integrations
    start         Start the daemon
    stop          Stop the daemon
-   status        Show DB stats, daemon health, skill status
+   status        Show DB stats, daemon health, skill status (--json for machine-readable)
    health        Show distillation health and alerts
    save          Save a memory directly (--type --content [--principle])
    scan          Mine recent git history for learnings (--dry-run)
@@ -98,11 +100,19 @@ func printUsage() {
     doctor        Self-test: check DB, daemon, agents, binary
     config        Configure inference provider (--provider --api-key [--model --timeout --retries])
     login         Login to Forge (--email --password [--purchase])
+    agent-guide   Print copy-pasteable agent setup guide (CLAUDE.md / system prompt)
     hook          (internal) Hook entrypoint — called by agents
    daemon        (internal) Daemon entrypoint — long-running service
    version       Print version
    help          Print this help
-   help mcp      Show MCP tool docs
+   help mcp      Show MCP tool docs with params
+
+ Agent setup:
+   1. forge init            — detect agents, install hooks + skills
+   2. forge start           — start background daemon
+   3. Add MCP server:         {"forge": {"command": "forge", "args": ["mcp"]}}
+   4. forge agent-guide     — copy-pasteable CLAUDE.md / system prompt block
+   5. forge help mcp        — full MCP tool docs with params
 
  Environment:
    FORGE_SESSION_ID    Session identifier (set by hook)
