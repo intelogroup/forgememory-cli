@@ -3,6 +3,7 @@ package config
 import (
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 )
@@ -90,12 +91,14 @@ func TestSave_RoundTrip(t *testing.T) {
 	if got.DistillInterval != cfg.DistillInterval {
 		t.Fatalf("DistillInterval = %q, want %q", got.DistillInterval, cfg.DistillInterval)
 	}
-	info, err := os.Stat(Path())
-	if err != nil {
-		t.Fatalf("Stat: %v", err)
-	}
-	if info.Mode().Perm() != 0o600 {
-		t.Fatalf("file mode = %o, want 600", info.Mode().Perm())
+	if runtime.GOOS != "windows" {
+		info, err := os.Stat(Path())
+		if err != nil {
+			t.Fatalf("Stat: %v", err)
+		}
+		if info.Mode().Perm() != 0o600 {
+			t.Fatalf("file mode = %o, want 600", info.Mode().Perm())
+		}
 	}
 }
 
