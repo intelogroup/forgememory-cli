@@ -425,6 +425,83 @@ func TestFindBestPromptRecall_ReturnsSameProjectHighConfidenceMatch(t *testing.T
 	}
 }
 
+func TestFindBestPromptRecall_NeverInjectsConflictingPrinciples(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+
+	database, err := db.Open("")
+	if err != nil {
+		t.Fatalf("db.Open: %v", err)
+	}
+	defer database.Close()
+
+	// Insert a conflicting principle in the same project.
+	pA := &db.Principle{
+		ID: "conflict-a", ProjectID: "forgememory-cli",
+		Title: "Conflicting principle A", Narrative: "Always use daemon startup retry for refused connection errors.",
+		Type: "pattern", ImpactScore: 0.9,
+	}
+	pB := &db.Principle{
+		ID: "conflict-b", ProjectID: "other-project",
+		Title: "Conflicting principle B", Narrative: "Never retry daemon startup on refused connection — fail fast instead.",
+		Type: "pattern", ImpactScore: 0.9,
+	}
+	if _, err := database.InsertPrinciple(pA); err != nil {
+		t.Fatalf("InsertPrinciple A: %v", err)
+	}
+	if _, err := database.InsertPrinciple(pB); err != nil {
+		t.Fatalf("InsertPrinciple B: %v", err)
+	}
+	if err := database.MarkConflicting(pA.ID, pB.ID); err != nil {
+		t.Fatalf("MarkConflicting: %v", err)
+	}
+
+	// Neither same-project nor cross-project scan should surface conflicting principles.
+	match := findBestPromptRecall(database, "forgememory-cli", "daemon startup retry refused connection error")
+	if match != nil {
+		t.Fatalf("expected no match — conflicting principles must not be injected, got: %+v", match)
+	}
+}
+
+func TestLoadSessionRecallContext_NeverInjectsConflictingPrincipleAsFallback(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+
+	database, err := db.Open("")
+	if err != nil {
+		t.Fatalf("db.Open: %v", err)
+	}
+	defer database.Close()
+
+	pA := &db.Principle{
+		ID: "fallback-a", ProjectID: "proj-a",
+		Title: "Conflicting fallback A", Narrative: "Use X approach for auth tokens.",
+		Type: "pattern", ImpactScore: 0.8,
+	}
+	pB := &db.Principle{
+		ID: "fallback-b", ProjectID: "proj-b",
+		Title: "Conflicting fallback B", Narrative: "Use Y approach for auth tokens.",
+		Type: "pattern", ImpactScore: 0.8,
+	}
+	if _, err := database.InsertPrinciple(pA); err != nil {
+		t.Fatalf("InsertPrinciple A: %v", err)
+	}
+	if _, err := database.InsertPrinciple(pB); err != nil {
+		t.Fatalf("InsertPrinciple B: %v", err)
+	}
+	if err := database.MarkConflicting(pA.ID, pB.ID); err != nil {
+		t.Fatalf("MarkConflicting: %v", err)
+	}
+
+	// Request with empty project falls back to global recent — must exclude conflicting.
+	principles, _, _, _, _ := loadSessionRecallContext(database, "unknown-project", "")
+	for _, p := range principles {
+		if p.Status == "conflicting" {
+			t.Fatalf("conflicting principle must not be injected as fallback context: %+v", p)
+		}
+	}
+}
+
 func TestFindBestPromptRecall_PrefersMoreRecentMatchOnScoreTie(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)

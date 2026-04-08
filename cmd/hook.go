@@ -267,7 +267,7 @@ func loadSessionRecallContext(database *db.DB, projectID, promptText string) ([]
 	alerts, _ := database.ActiveAlertsByProject(projectID, 2)
 	externalSummaries, _ := database.FreshExternalContextSummariesByProject(projectID, 2)
 	if projectID != "" && len(principles) == 0 && len(summaries) == 0 {
-		principles, _ = database.RecentPrinciples(2)
+		principles, _ = database.RecentPrinciplesByProject("", 2)
 		summaries, _ = database.GetRecentSessionSummaries(2)
 	}
 	return principles, summaries, alerts, externalSummaries, findBestPromptRecall(database, projectID, promptText)
@@ -669,8 +669,8 @@ func findPromptRelevantPrinciples(database *db.DB, projectID string, tokens []st
 		}
 	}
 
-	// Cross-project scan — capped at 100 most recent principles.
-	cross, err := database.RecentPrinciples(100)
+	// Cross-project scan — active only, capped at 100.
+	cross, err := database.RecentActivePrinciples(100)
 	if err != nil {
 		return matches
 	}

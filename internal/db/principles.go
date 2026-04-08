@@ -82,6 +82,23 @@ func (d *DB) InsertPrinciple(p *Principle) (inserted bool, err error) {
 	return n == 1, err
 }
 
+// RecentActivePrinciples returns the most recent active principles across all projects.
+// Excludes conflicting principles — safe to use for context injection.
+func (d *DB) RecentActivePrinciples(limit int) ([]Principle, error) {
+	rows, err := d.conn.Query(
+		`SELECT id, ts, type, title, narrative, impact_score, project_id, source_event, fingerprint,
+		        COALESCE(concepts,''), COALESCE(files_modified,''),
+		        COALESCE(status,''), COALESCE(conflict_peer_id,'')
+		 FROM principles
+		 WHERE status = 'active' OR status IS NULL OR status = ''
+		 ORDER BY ts DESC LIMIT ?`, limit,
+	)
+	if err != nil {
+		return nil, err
+	}
+	return scanPrinciples(rows)
+}
+
 // RecentPrinciples returns the most recent principles (all statuses — used by dashboard).
 func (d *DB) RecentPrinciples(limit int) ([]Principle, error) {
 	rows, err := d.conn.Query(
