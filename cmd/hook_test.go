@@ -394,7 +394,7 @@ func TestFindBestPromptRecall_CanUseSessionSummary(t *testing.T) {
 	}
 }
 
-func TestFindBestPromptRecall_SkipsSameProjectMatches(t *testing.T) {
+func TestFindBestPromptRecall_ReturnsSameProjectHighConfidenceMatch(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
 
@@ -415,9 +415,13 @@ func TestFindBestPromptRecall_SkipsSameProjectMatches(t *testing.T) {
 		t.Fatalf("InsertPrinciple: %v", err)
 	}
 
+	// Same-project principles are now included in recall — high-confidence match should surface.
 	match := findBestPromptRecall(database, "forgememory-cli", "Implement daemon startup retry for refused connection.")
-	if match != nil {
-		t.Fatalf("expected no proactive cross-project recall for same-project memory, got %#v", match)
+	if match == nil {
+		t.Fatal("expected same-project high-confidence match to be returned")
+	}
+	if match.ProjectID != "forgememory-cli" {
+		t.Fatalf("ProjectID = %q, want forgememory-cli", match.ProjectID)
 	}
 }
 

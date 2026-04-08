@@ -369,7 +369,7 @@ const indexHTML = `<!DOCTYPE html>
                 return;
             }
             
-            container.innerHTML = events.map(e => '<div class="card"><div class="card-header"><div><span class="badge badge-' + e.source_tool + '">' + e.source_tool + '</span><span class="badge ' + (e.distilled ? 'badge-distilled' : 'badge-raw') + '">' + (e.distilled ? 'distilled' : 'raw') + '</span></div><div class="card-meta">' + e.ts.substring(0, 16) + '</div></div><div class="card-body"><strong>' + e.event_type + '</strong> ' + (e.tool_name ? '(' + e.tool_name + ')' : '') + '<br><small style="color:#666">Session: ' + e.session_id.substring(0,8) + ' | Project: ' + e.project_id + '</small><p style="margin-top:8px;font-family:monospace;font-size:12px;color:#888">' + escapeHtml(e.payload) + '</p></div></div>').join('');
+            container.innerHTML = events.map(e => '<div class="card"><div class="card-header"><div><span class="badge badge-' + e.source_tool + '">' + e.source_tool + '</span><span class="badge ' + (e.distilled ? 'badge-distilled' : 'badge-raw') + '">' + (e.distilled ? 'distilled' : 'raw') + '</span></div><div class="card-meta">' + e.ts.substring(0, 16) + '</div></div><div class="card-body"><strong>' + e.event_type + '</strong> ' + (e.tool_name ? '(' + e.tool_name + ')' : '') + '<br><small style="color:#666">Session: ' + e.session_id.substring(0,8) + ' | ' + projectLabel(e.project_id) + '</small><p style="margin-top:8px;font-family:monospace;font-size:12px;color:#888">' + escapeHtml(e.payload) + '</p></div></div>').join('');
         }
         
         async function loadPrinciples() {
@@ -382,7 +382,7 @@ const indexHTML = `<!DOCTYPE html>
                 return;
             }
             
-            container.innerHTML = principles.map(p => '<div class="card"><div class="card-header"><div class="card-title">' + escapeHtml(p.title) + '</div><div><span class="principle-type">' + p.type + '</span><span class="badge badge-distilled">' + (p.impact_score * 100).toFixed(0) + '%</span></div></div><div class="card-body">' + escapeHtml(p.narrative) + '<div class="impact-bar"><div class="impact-fill" style="width:' + (p.impact_score * 100) + '%"></div></div>' + (p.concepts && p.concepts.length ? '<div class="concepts">' + p.concepts.map(function(c){return '<span class="concept">' + c + '</span>';}).join('') + '</div>' : '') + '<small style="color:#666;margin-top:8px;display:block">' + p.ts.substring(0, 10) + ' | Project: ' + p.project_id + '</small></div></div>').join('');
+            container.innerHTML = principles.map(p => '<div class="card"><div class="card-header"><div class="card-title">' + escapeHtml(p.title) + '</div><div><span class="principle-type">' + p.type + '</span><span class="badge badge-distilled">' + (p.impact_score * 100).toFixed(0) + '%</span></div></div><div class="card-body">' + escapeHtml(p.narrative) + '<div class="impact-bar"><div class="impact-fill" style="width:' + (p.impact_score * 100) + '%"></div></div>' + (p.concepts && p.concepts.length ? '<div class="concepts">' + p.concepts.map(function(c){return '<span class="concept">' + c + '</span>';}).join('') + '</div>' : '') + '<small style="color:#666;margin-top:8px;display:block">' + p.ts.substring(0, 10) + ' | ' + projectLabel(p.project_id) + '</small></div></div>').join('');
         }
         
         async function loadConflicts() {
@@ -414,7 +414,7 @@ const indexHTML = `<!DOCTYPE html>
                 '<div class="card-body">' + escapeHtml(p.narrative) +
                 '<div class="impact-bar"><div class="impact-fill" style="width:' + (p.impact_score * 100) + '%"></div></div>' +
                 concepts +
-                '<small style="color:#666;display:block;margin-top:6px">' + p.ts.substring(0,10) + ' | ' + p.project_id + '</small>' +
+                '<small style="color:#666;display:block;margin-top:6px">' + p.ts.substring(0,10) + ' | ' + projectLabel(p.project_id) + '</small>' +
                 '<button class="btn-keep" onclick="resolveConflict(\'' + p.id + '\',\'' + deleteID + '\')">Keep This / Delete Other</button>' +
                 '</div></div>';
         }
@@ -435,6 +435,13 @@ const indexHTML = `<!DOCTYPE html>
             const div = document.createElement('div');
             div.textContent = text;
             return div.innerHTML;
+        }
+
+        // Show full project_id (git root basename). Wrap in a span with title
+        // tooltip so ambiguous short names like "developer" show on hover.
+        function projectLabel(id) {
+            if (!id) return '<span style="color:#555">unknown</span>';
+            return '<span title="git root: ' + escapeHtml(id) + '" style="color:#888;font-family:monospace">' + escapeHtml(id) + '</span>';
         }
 
         function loadAll() {

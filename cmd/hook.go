@@ -638,22 +638,51 @@ func findBestPromptRecall(database *db.DB, projectID, promptText string) *prompt
 }
 
 func findPromptRelevantPrinciples(database *db.DB, projectID string, tokens []string) []promptRecallMatch {
-	principles, err := database.RecentPrinciples(250)
-	if err != nil {
-		return nil
-	}
-
+	// Scan same-project principles first (cheaper, higher signal). If we find a
+	// high-confidence match there, skip the cross-project scan entirely.
 	var matches []promptRecallMatch
 	seen := make(map[string]bool)
-	for _, principle := range principles {
-		if sameProject(projectID, principle.ProjectID) {
+
+	if projectID != "" {
+		same, err := database.RecentPrinciplesByProject(projectID, 50)
+		if err == nil {
+			for _, p := range same {
+				match, ok := scorePromptPrincipleMatch(p, tokens)
+				if !ok || seen[p.Fingerprint] {
+					continue
+				}
+				seen[p.Fingerprint] = true
+				matches = append(matches, match)
+			}
+		}
+		// If we already have a high-confidence same-project hit, skip cross-project.
+		for _, m := range matches {
+			if m.Score >= 2.0 {
+				sort.SliceStable(matches, func(i, j int) bool {
+					if matches[i].Score == matches[j].Score {
+						return matches[i].TS > matches[j].TS
+					}
+					return matches[i].Score > matches[j].Score
+				})
+				return matches
+			}
+		}
+	}
+
+	// Cross-project scan — capped at 100 most recent principles.
+	cross, err := database.RecentPrinciples(100)
+	if err != nil {
+		return matches
+	}
+	for _, p := range cross {
+		if sameProject(projectID, p.ProjectID) {
 			continue
 		}
-		match, ok := scorePromptPrincipleMatch(principle, tokens)
-		if !ok || seen[principle.Fingerprint] {
+		match, ok := scorePromptPrincipleMatch(p, tokens)
+		if !ok || seen[p.Fingerprint] {
 			continue
 		}
-		seen[principle.Fingerprint] = true
+		seen[p.Fingerprint] = true
 		matches = append(matches, match)
 	}
 
@@ -688,22 +717,42 @@ func scorePromptPrincipleMatch(principle db.Principle, tokens []string) (promptR
 }
 
 func findPromptRelevantSessionSummaries(database *db.DB, projectID string, tokens []string) []promptRecallMatch {
-	summaries, err := database.GetRecentSessionSummaries(250)
-	if err != nil {
-		return nil
-	}
-
 	var matches []promptRecallMatch
 	seen := make(map[string]bool)
-	for _, summary := range summaries {
-		if sameProject(projectID, summary.ProjectID) {
+
+	if projectID != "" {
+		same, err := database.GetRecentSessionSummariesByProject(projectID, 20)
+		if err == nil {
+			for _, s := range same {
+				match, ok := scorePromptSessionSummaryMatch(s, tokens)
+				if !ok || seen[s.SessionID] {
+					continue
+				}
+				seen[s.SessionID] = true
+				matches = append(matches, match)
+			}
+		}
+		for _, m := range matches {
+			if m.Score >= 2.0 {
+				return matches
+			}
+		}
+	}
+
+	// Cross-project scan — capped at 80 most recent summaries.
+	cross, err := database.GetRecentSessionSummaries(80)
+	if err != nil {
+		return matches
+	}
+	for _, s := range cross {
+		if sameProject(projectID, s.ProjectID) {
 			continue
 		}
-		match, ok := scorePromptSessionSummaryMatch(summary, tokens)
-		if !ok || seen[summary.SessionID] {
+		match, ok := scorePromptSessionSummaryMatch(s, tokens)
+		if !ok || seen[s.SessionID] {
 			continue
 		}
-		seen[summary.SessionID] = true
+		seen[s.SessionID] = true
 		matches = append(matches, match)
 	}
 	return matches
