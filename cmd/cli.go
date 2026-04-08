@@ -124,6 +124,7 @@ func runInit(args []string) {
 func runSyncIntegrations(args []string) {
 	fmt.Println("Refreshing Forge integrations...")
 	home, _ := os.UserHomeDir()
+	checkAndRepairIntegrationPaths(home)
 	agents := syncIntegrations(home)
 	if len(agents) == 0 {
 		fmt.Println("  No agents detected.")
@@ -159,6 +160,10 @@ func repairServiceIfNeeded() error {
 
 func runStart(args []string) {
 	fmt.Println("Starting Forge daemon...")
+
+	home, _ := os.UserHomeDir()
+	checkAndRepairIntegrationPaths(home)
+	warnEnvVsConfig()
 
 	if err := repairServiceIfNeeded(); err != nil {
 		fmt.Fprintf(os.Stderr, "  Warning: could not check service registration: %v\n", err)
@@ -346,8 +351,14 @@ func runDistillDrain(d *distill.Distiller, database *db.DB, cfg distill.Config) 
 			os.Exit(1)
 		}
 		if count == 0 {
-			// Fewer than 3 events remain — cannot form a distillable batch.
-			break
+			// DistillBatch returns 0 when the LLM found no principles, but events
+			// are still marked as distilled. Check remaining to decide whether to
+			// continue (events consumed, more remain) or stop (< 3 left).
+			_, newRemaining, _ := database.EventCount()
+			if newRemaining < 3 {
+				break
+			}
+			continue
 		}
 		totalPrinciples += count
 		_, newRemaining, _ := database.EventCount()
@@ -784,6 +795,86 @@ func runMCP(args []string) {
 	if err := server.Run(); err != nil {
 		fmt.Fprintf(os.Stderr, "MCP server error: %v\n", err)
 		os.Exit(1)
+	}
+}
+
+// checkAndRepairIntegrationPaths detects when hook/MCP binary paths in agent
+// settings are stale (pointing to an old forge binary after an upgrade) and
+// silently re-runs sync-integrations to fix them.
+func checkAndRepairIntegrationPaths(home string) {
+	currentPath := agent.ForgePath()
+	settingsPath := filepath.Join(home, ".claude", "settings.json")
+	data, err := os.ReadFile(settingsPath)
+	if err != nil {
+		return // no claude settings, nothing to repair
+	}
+
+	var settings map[string]any
+	if err := json.Unmarshal(data, &settings); err != nil {
+		return
+	}
+
+	// Scan all hook command strings for a forge binary path that differs from
+	// the current binary.
+	stalePath := findStaleForgePathInHooks(settings, currentPath)
+	if stalePath == "" {
+		return
+	}
+
+	fmt.Printf("  Detected stale hook binary (%s). Refreshing integrations...\n", stalePath)
+	syncIntegrations(home)
+	fmt.Printf("  Integrations updated to use %s.\n", currentPath)
+}
+
+// findStaleForgePathInHooks walks the hooks section of claude settings.json and
+// returns the first forge binary path that differs from currentPath, or "" if
+// all paths match (or no forge hooks are found).
+func findStaleForgePathInHooks(settings map[string]any, currentPath string) string {
+	hooks, _ := settings["hooks"].(map[string]any)
+	for _, arr := range hooks {
+		items, _ := arr.([]any)
+		for _, item := range items {
+			m, _ := item.(map[string]any)
+			inner, _ := m["hooks"].([]any)
+			for _, h := range inner {
+				hm, _ := h.(map[string]any)
+				cmd, _ := hm["command"].(string)
+				// Hook command looks like: "/path/to/forge" hook
+				// Extract the binary portion (up to the first space).
+				binaryPart := strings.SplitN(strings.Trim(cmd, `"`), `" `, 2)[0]
+				binaryPart = strings.TrimPrefix(binaryPart, `"`)
+				if binaryPart != "" && strings.Contains(binaryPart, "forge") && binaryPart != currentPath {
+					return binaryPart
+				}
+			}
+		}
+	}
+	return ""
+}
+
+// warnEnvVsConfig prints a warning when shell env vars override config file values
+// that the daemon cannot see (the daemon reads only ~/.forge/config at startup).
+func warnEnvVsConfig() {
+	fileCfg, err := config.Load()
+	if err != nil {
+		return
+	}
+	type check struct {
+		envKey    string
+		fileValue string
+		flag      string
+	}
+	checks := []check{
+		{"FORGE_PROVIDER", fileCfg.Provider, "--provider"},
+		{"FORGE_API_KEY", fileCfg.APIKey, "--api-key"},
+		{"FORGE_MODEL", fileCfg.Model, "--model"},
+	}
+	for _, c := range checks {
+		shellVal := os.Getenv(c.envKey)
+		if shellVal != "" && shellVal != c.fileValue {
+			fmt.Fprintf(os.Stderr, "  Warning: %s is set in your shell (%q) but not in ~/.forge/config.\n", c.envKey, shellVal)
+			fmt.Fprintf(os.Stderr, "           The daemon reads only ~/.forge/config. Run: forge config %s %s\n", c.flag, shellVal)
+		}
 	}
 }
 
@@ -1271,6 +1362,8 @@ func runConfig(args []string) {
 	timeoutFlag := fs.String("timeout", "", "Inference timeout (e.g. 30s)")
 	retriesFlag := fs.Int("retries", -1, "Retry attempts for transient failures")
 	intervalFlag := fs.String("interval", "", "Distillation interval (e.g. 10m)")
+	ollamaTimeoutFlag := fs.String("ollama-timeout", "", "Ollama request timeout (e.g. 120s); overrides --timeout for Ollama")
+	ollamaStartupWaitFlag := fs.String("ollama-startup-wait", "", "Grace period before first Ollama distill (e.g. 15s)")
 	jsonFlag := fs.Bool("json", false, "Machine-readable JSON output")
 	validateFlag := fs.Bool("validate", false, "Validate provider credentials/model access")
 	interactiveFlag := fs.Bool("interactive", false, "Interactive setup")
@@ -1323,6 +1416,12 @@ func runConfig(args []string) {
 		if cfg.DistillInterval != "" {
 			fmt.Printf("Interval:   %s\n", cfg.DistillInterval)
 		}
+		if cfg.OllamaTimeout != "" {
+			fmt.Printf("Ollama timeout:       %s\n", cfg.OllamaTimeout)
+		}
+		if cfg.OllamaStartupWait != "" {
+			fmt.Printf("Ollama startup wait:  %s\n", cfg.OllamaStartupWait)
+		}
 		return
 	}
 
@@ -1341,9 +1440,11 @@ func runConfig(args []string) {
 		fmt.Println("  --model          Model name (optional)")
 		fmt.Println("  --base-url       Base URL for API (optional)")
 		fmt.Println("  --context7-api-key Context7 API key for official docs")
-		fmt.Println("  --timeout        Inference timeout (e.g. 30s)")
-		fmt.Println("  --retries        Retry attempts for transient failures")
-		fmt.Println("  --interval       Distillation interval (e.g. 10m)")
+		fmt.Println("  --timeout              Inference timeout (e.g. 30s)")
+		fmt.Println("  --retries              Retry attempts for transient failures")
+		fmt.Println("  --interval             Distillation interval (e.g. 10m)")
+		fmt.Println("  --ollama-timeout       Ollama request timeout (e.g. 120s); overrides --timeout for Ollama")
+		fmt.Println("  --ollama-startup-wait  Grace period before first Ollama distill (e.g. 15s)")
 		fmt.Println("  --validate       Validate provider credentials/model access")
 		fmt.Println("  --json           JSON output (with --show)")
 		fmt.Println("  --interactive    Interactive setup")
@@ -1388,6 +1489,18 @@ func runConfig(args []string) {
 			os.Exit(1)
 		}
 	}
+	if *ollamaTimeoutFlag != "" {
+		if _, err := time.ParseDuration(*ollamaTimeoutFlag); err != nil {
+			fmt.Fprintf(os.Stderr, "Error: invalid --ollama-timeout value %q\n", *ollamaTimeoutFlag)
+			os.Exit(1)
+		}
+	}
+	if *ollamaStartupWaitFlag != "" {
+		if _, err := time.ParseDuration(*ollamaStartupWaitFlag); err != nil {
+			fmt.Fprintf(os.Stderr, "Error: invalid --ollama-startup-wait value %q\n", *ollamaStartupWaitFlag)
+			os.Exit(1)
+		}
+	}
 	if *retriesFlag < -1 {
 		fmt.Fprintln(os.Stderr, "Error: --retries must be >= 0")
 		os.Exit(1)
@@ -1418,6 +1531,12 @@ func runConfig(args []string) {
 	}
 	if *intervalFlag != "" {
 		cfg.DistillInterval = *intervalFlag
+	}
+	if *ollamaTimeoutFlag != "" {
+		cfg.OllamaTimeout = *ollamaTimeoutFlag
+	}
+	if *ollamaStartupWaitFlag != "" {
+		cfg.OllamaStartupWait = *ollamaStartupWaitFlag
 	}
 	if cfg.Retries == 0 {
 		cfg.Retries = 3

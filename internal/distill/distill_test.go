@@ -23,6 +23,10 @@ func TestLoadConfigDefaults(t *testing.T) {
 	t.Setenv("FORGE_API_KEY", "")
 	t.Setenv("FORGE_MODEL", "")
 	t.Setenv("FORGE_BASE_URL", "")
+	t.Setenv("FORGE_TIMEOUT", "")
+	t.Setenv("FORGE_RETRIES", "")
+	t.Setenv("FORGE_OLLAMA_TIMEOUT", "")
+	t.Setenv("FORGE_OLLAMA_STARTUP_WAIT", "")
 
 	cfg := LoadConfig()
 	if cfg.Provider != ProviderForgememo {

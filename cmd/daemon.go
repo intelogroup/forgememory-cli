@@ -53,6 +53,12 @@ func runDaemon(args []string) {
 		if cfg.DistillInterval != "" {
 			os.Setenv("FORGE_DISTILL_INTERVAL", cfg.DistillInterval)
 		}
+		if cfg.OllamaTimeout != "" {
+			os.Setenv("FORGE_OLLAMA_TIMEOUT", cfg.OllamaTimeout)
+		}
+		if cfg.OllamaStartupWait != "" {
+			os.Setenv("FORGE_OLLAMA_STARTUP_WAIT", cfg.OllamaStartupWait)
+		}
 		log.Printf("Loaded config: provider=%s", cfg.Provider)
 	} else {
 		log.Printf("No config found, using defaults (provider: forgememo)")
@@ -178,6 +184,10 @@ func runDaemon(args []string) {
 	// Distillation loop
 	distillCfg := distill.LoadConfig()
 	distiller := distill.New(database, distillCfg)
+	if distillCfg.Provider == distill.ProviderOllama && distillCfg.OllamaStartupWait > 0 {
+		log.Printf("Waiting %s for Ollama to load model before first distillation...", distillCfg.OllamaStartupWait)
+		time.Sleep(distillCfg.OllamaStartupWait)
+	}
 	go distillLoop(distiller, database, distillCfg.DistillInterval)
 	retrievalWake := make(chan struct{}, 1)
 	retrieve.SetImmediateWakeChannel(retrievalWake)

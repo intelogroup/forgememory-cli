@@ -4,6 +4,7 @@ import (
 	"database/sql"
 	"fmt"
 	"os"
+	"os/user"
 	"path/filepath"
 	"strings"
 	"time"
@@ -23,9 +24,14 @@ func Open(path string) (*DB, error) {
 	if path == "" {
 		path = defaultPath()
 	}
-	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+	dir := filepath.Dir(path)
+	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return nil, fmt.Errorf("create db dir: %w", err)
 	}
+	// Best-effort: fix permission bits if they're too restrictive but we own the files.
+	_ = os.Chmod(dir, 0o700)
+	_ = os.Chmod(path, 0o600)
+
 	conn, err := sql.Open("sqlite", path+"?_pragma=journal_mode(wal)&_pragma=synchronous(normal)&_pragma=busy_timeout(5000)")
 	if err != nil {
 		return nil, fmt.Errorf("open sqlite: %w", err)
@@ -34,6 +40,9 @@ func Open(path string) (*DB, error) {
 	db := &DB{conn: conn, Path: path}
 	if err := db.migrate(); err != nil {
 		conn.Close()
+		if strings.Contains(err.Error(), "readonly") {
+			return nil, readonlyDBError(path)
+		}
 		return nil, fmt.Errorf("migrate: %w", err)
 	}
 	return db, nil
@@ -45,6 +54,18 @@ func (d *DB) Close() error {
 
 func (d *DB) Conn() *sql.DB {
 	return d.conn
+}
+
+func readonlyDBError(path string) error {
+	username := "$(whoami)"
+	if u, err := user.Current(); err == nil {
+		username = u.Username
+	}
+	dir := filepath.Dir(path)
+	return fmt.Errorf(
+		"database at %s is read-only\n\nThis usually means the file was created by a different user (e.g. root).\nFix: sudo chown -R %s %s",
+		path, username, dir,
+	)
 }
 
 func defaultPath() string {

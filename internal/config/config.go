@@ -8,16 +8,18 @@ import (
 )
 
 type Config struct {
-	Provider        string
-	APIKey          string
-	Model           string
-	BaseURL         string
-	Context7APIKey  string
-	ExaAPIKey       string
-	TavilyAPIKey    string
-	Timeout         string
-	Retries         int
-	DistillInterval string
+	Provider           string
+	APIKey             string
+	Model              string
+	BaseURL            string
+	Context7APIKey     string
+	ExaAPIKey          string
+	TavilyAPIKey       string
+	Timeout            string
+	Retries            int
+	DistillInterval    string
+	OllamaTimeout      string
+	OllamaStartupWait  string
 }
 
 func Path() string {
@@ -71,6 +73,10 @@ func Load() (Config, error) {
 			fmt.Sscanf(value, "%d", &cfg.Retries)
 		case "FORGE_DISTILL_INTERVAL":
 			cfg.DistillInterval = value
+		case "FORGE_OLLAMA_TIMEOUT":
+			cfg.OllamaTimeout = value
+		case "FORGE_OLLAMA_STARTUP_WAIT":
+			cfg.OllamaStartupWait = value
 		}
 	}
 	return cfg, nil
@@ -114,6 +120,12 @@ func Save(cfg Config) error {
 	if cfg.DistillInterval != "" {
 		lines = append(lines, fmt.Sprintf("FORGE_DISTILL_INTERVAL=%s", cfg.DistillInterval))
 	}
+	if cfg.OllamaTimeout != "" {
+		lines = append(lines, fmt.Sprintf("FORGE_OLLAMA_TIMEOUT=%s", cfg.OllamaTimeout))
+	}
+	if cfg.OllamaStartupWait != "" {
+		lines = append(lines, fmt.Sprintf("FORGE_OLLAMA_STARTUP_WAIT=%s", cfg.OllamaStartupWait))
+	}
 
 	return os.WriteFile(path, []byte(strings.Join(lines, "\n")+"\n"), 0o600)
 }
@@ -153,6 +165,12 @@ func SetEnvFromFile() error {
 	}
 	if cfg.DistillInterval != "" {
 		os.Setenv("FORGE_DISTILL_INTERVAL", cfg.DistillInterval)
+	}
+	if cfg.OllamaTimeout != "" {
+		os.Setenv("FORGE_OLLAMA_TIMEOUT", cfg.OllamaTimeout)
+	}
+	if cfg.OllamaStartupWait != "" {
+		os.Setenv("FORGE_OLLAMA_STARTUP_WAIT", cfg.OllamaStartupWait)
 	}
 	return nil
 }

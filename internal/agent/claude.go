@@ -7,6 +7,7 @@ import (
 	"log"
 	"os"
 	"path/filepath"
+	"strings"
 )
 
 type claudeAdapter struct{}
@@ -45,7 +46,9 @@ func upsertHookArray(existing []any, newEntry map[string]any, forgeEventType str
 }
 
 // isForgeHookItem reports whether item is a hook array entry that Forge owns
-// for the given event type, identified by FORGE_EVENT_TYPE in the hook's env.
+// for the given event type. It checks FORGE_EVENT_TYPE in the hook's env
+// (current format) and also catches stale-format entries where the command
+// string contains "forge hook" without the env key (pre-dedup versions).
 func isForgeHookItem(item any, forgeEventType string) bool {
 	m, ok := item.(map[string]any)
 	if !ok {
@@ -57,8 +60,14 @@ func isForgeHookItem(item any, forgeEventType string) bool {
 		if !ok {
 			continue
 		}
+		// Current format: check FORGE_EVENT_TYPE env key.
 		env, _ := hm["env"].(map[string]any)
 		if v, _ := env["FORGE_EVENT_TYPE"].(string); v == forgeEventType {
+			return true
+		}
+		// Stale format (pre-dedup): command contains "forge hook" with no env key.
+		// Treat as a Forge-owned entry so it gets replaced rather than accumulated.
+		if cmd, _ := hm["command"].(string); strings.Contains(cmd, "forge hook") || strings.Contains(cmd, `forge" hook`) {
 			return true
 		}
 	}

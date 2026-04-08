@@ -94,14 +94,16 @@ func DiagnosticHints(cfg Config, err error) []string {
 
 // Config holds distillation configuration.
 type Config struct {
-	Provider        Provider
-	APIKey          string
-	Model           string
-	BaseURL         string
-	PaymentURL      string
-	Timeout         time.Duration
-	Retries         int
-	DistillInterval time.Duration
+	Provider          Provider
+	APIKey            string
+	Model             string
+	BaseURL           string
+	PaymentURL        string
+	Timeout           time.Duration
+	Retries           int
+	DistillInterval   time.Duration
+	OllamaTimeout     time.Duration
+	OllamaStartupWait time.Duration
 }
 
 // LoadConfig loads distillation config from environment.
@@ -110,16 +112,20 @@ func LoadConfig() Config {
 	timeout := parseDurationOrDefault(os.Getenv("FORGE_TIMEOUT"), 30*time.Second)
 	retries := parseIntOrDefault(os.Getenv("FORGE_RETRIES"), 3)
 	distillInterval := parseDurationOrDefault(os.Getenv("FORGE_DISTILL_INTERVAL"), 10*time.Minute)
+	ollamaTimeout := parseDurationOrDefault(os.Getenv("FORGE_OLLAMA_TIMEOUT"), 120*time.Second)
+	ollamaStartupWait := parseDurationOrDefault(os.Getenv("FORGE_OLLAMA_STARTUP_WAIT"), 0)
 
 	cfg := Config{
-		Provider:        Provider(os.Getenv("FORGE_PROVIDER")),
-		APIKey:          os.Getenv("FORGE_API_KEY"),
-		Model:           os.Getenv("FORGE_MODEL"),
-		BaseURL:         os.Getenv("FORGE_BASE_URL"),
-		PaymentURL:      os.Getenv("FORGE_PAYMENT_URL"),
-		Timeout:         timeout,
-		Retries:         retries,
-		DistillInterval: distillInterval,
+		Provider:          Provider(os.Getenv("FORGE_PROVIDER")),
+		APIKey:            os.Getenv("FORGE_API_KEY"),
+		Model:             os.Getenv("FORGE_MODEL"),
+		BaseURL:           os.Getenv("FORGE_BASE_URL"),
+		PaymentURL:        os.Getenv("FORGE_PAYMENT_URL"),
+		Timeout:           timeout,
+		Retries:           retries,
+		DistillInterval:   distillInterval,
+		OllamaTimeout:     ollamaTimeout,
+		OllamaStartupWait: ollamaStartupWait,
 	}
 	if cfg.BaseURL == "" {
 		cfg.BaseURL = os.Getenv("FORGE_API_URL") // legacy compatibility
@@ -148,6 +154,12 @@ func LoadConfig() Config {
 			}
 			if os.Getenv("FORGE_DISTILL_INTERVAL") == "" && fileCfg.DistillInterval != "" {
 				cfg.DistillInterval = parseDurationOrDefault(fileCfg.DistillInterval, cfg.DistillInterval)
+			}
+			if os.Getenv("FORGE_OLLAMA_TIMEOUT") == "" && fileCfg.OllamaTimeout != "" {
+				cfg.OllamaTimeout = parseDurationOrDefault(fileCfg.OllamaTimeout, cfg.OllamaTimeout)
+			}
+			if os.Getenv("FORGE_OLLAMA_STARTUP_WAIT") == "" && fileCfg.OllamaStartupWait != "" {
+				cfg.OllamaStartupWait = parseDurationOrDefault(fileCfg.OllamaStartupWait, cfg.OllamaStartupWait)
 			}
 		}
 	}
@@ -252,6 +264,9 @@ func New(database *db.DB, config Config) *Distiller {
 	if timeout <= 0 {
 		timeout = 30 * time.Second
 	}
+	if config.Provider == ProviderOllama && config.OllamaTimeout > 0 {
+		timeout = config.OllamaTimeout
+	}
 	return &Distiller{
 		db:     database,
 		config: config,
@@ -354,7 +369,7 @@ func (d *Distiller) buildPrompt(events []db.Event) string {
 	sb.WriteString("Events:\n")
 
 	for i, e := range events {
-		sb.WriteString(fmt.Sprintf("%d. [%s] %s (%s): %s\n", i+1, e.TS[:16], e.EventType, e.ToolName, truncatePayload(e.Payload, 200)))
+		sb.WriteString(fmt.Sprintf("%d. [%s] %s (%s): %s\n", i+1, e.TS[:16], e.EventType, e.ToolName, summarizeEventPayload(e)))
 	}
 
 	sb.WriteString("\nReturn ONLY the JSON array, no other text.\n")
@@ -366,6 +381,72 @@ func truncatePayload(s string, max int) string {
 		return s
 	}
 	return s[:max] + "..."
+}
+
+// summarizeEventPayload produces a human-readable summary of an event payload
+// for inclusion in LLM prompts. For PostToolUse events it extracts the actual
+// command / file path and response content rather than dumping raw JSON.
+func summarizeEventPayload(e db.Event) string {
+	if e.EventType != "PostToolUse" || e.Payload == "" {
+		return truncatePayload(e.Payload, 500)
+	}
+
+	var raw struct {
+		ToolInput    json.RawMessage `json:"tool_input"`
+		ToolResponse json.RawMessage `json:"tool_response"`
+	}
+	if err := json.Unmarshal([]byte(e.Payload), &raw); err != nil {
+		return truncatePayload(e.Payload, 500)
+	}
+
+	// Extract the most useful field from tool_input depending on tool type.
+	var inputSummary string
+	switch e.ToolName {
+	case "Bash":
+		var inp struct {
+			Command string `json:"command"`
+		}
+		if json.Unmarshal(raw.ToolInput, &inp) == nil && inp.Command != "" {
+			inputSummary = truncatePayload(inp.Command, 300)
+		}
+	case "Edit", "Write", "MultiEdit":
+		var inp struct {
+			FilePath string `json:"file_path"`
+			NewFile  string `json:"new_file"`
+		}
+		if json.Unmarshal(raw.ToolInput, &inp) == nil && inp.FilePath != "" {
+			inputSummary = inp.FilePath
+		}
+	}
+	if inputSummary == "" {
+		inputSummary = truncatePayload(string(raw.ToolInput), 300)
+	}
+
+	// Extract a useful slice of the tool response.
+	var respSummary string
+	// tool_response may be a string or an object {stdout, stderr, exit_code}.
+	var respObj struct {
+		Stdout   string `json:"stdout"`
+		Stderr   string `json:"stderr"`
+		ExitCode int    `json:"exit_code"`
+	}
+	if json.Unmarshal(raw.ToolResponse, &respObj) == nil && (respObj.Stdout != "" || respObj.Stderr != "") {
+		combined := strings.TrimSpace(respObj.Stdout + "\n" + respObj.Stderr)
+		respSummary = fmt.Sprintf("exit=%d %s", respObj.ExitCode, truncatePayload(combined, 400))
+	} else {
+		// Plain string response (e.g. Edit confirmation).
+		var s string
+		if json.Unmarshal(raw.ToolResponse, &s) == nil {
+			respSummary = truncatePayload(s, 400)
+		} else {
+			respSummary = truncatePayload(string(raw.ToolResponse), 400)
+		}
+	}
+
+	if respSummary != "" {
+		return fmt.Sprintf("input: %s → %s", inputSummary, respSummary)
+	}
+	return fmt.Sprintf("input: %s", inputSummary)
 }
 
 // SynthesizeSession generates a session summary from events and stores it.
@@ -397,7 +478,7 @@ func (d *Distiller) buildSessionPrompt(events []db.Event) string {
 	sb.WriteString("- next_steps: Recommended follow-up actions (1 sentence, or empty string)\n\n")
 	sb.WriteString("Session events:\n")
 	for i, e := range events {
-		sb.WriteString(fmt.Sprintf("%d. [%s] %s (%s): %s\n", i+1, e.TS[:16], e.EventType, e.ToolName, truncatePayload(e.Payload, 150)))
+		sb.WriteString(fmt.Sprintf("%d. [%s] %s (%s): %s\n", i+1, e.TS[:16], e.EventType, e.ToolName, summarizeEventPayload(e)))
 	}
 	sb.WriteString("\nReturn ONLY the JSON object, no other text.\n")
 	return sb.String()
