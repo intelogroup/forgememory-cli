@@ -77,3 +77,73 @@ func TestPayloadJSON_InvalidMapFallsBackToObject(t *testing.T) {
 		t.Fatalf("payloadJSON invalid input = %q, want {}", got)
 	}
 }
+
+func TestScanGemini_SkipsWhenHashUnchanged(t *testing.T) {
+	tmp := t.TempDir()
+	database, err := db.Open(filepath.Join(tmp, "test.db"))
+	if err != nil {
+		t.Fatalf("db.Open: %v", err)
+	}
+	defer database.Close()
+
+	home := filepath.Join(tmp, "home")
+	if err := os.MkdirAll(filepath.Join(home, ".gemini"), 0o700); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	geminiPath := filepath.Join(home, ".gemini", "GEMINI.md")
+	content := "stable memory content"
+	if err := os.WriteFile(geminiPath, []byte(content), 0o600); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	sc := &Scanner{DB: database}
+	hashes := hashStore{Hashes: map[string]string{}}
+
+	// First scan should save.
+	if saved := sc.scanGemini(home, hashes); saved != 1 {
+		t.Fatalf("first scan: saved = %d, want 1", saved)
+	}
+	// Second scan with same hash should be a no-op.
+	if saved := sc.scanGemini(home, hashes); saved != 0 {
+		t.Fatalf("second scan: saved = %d, want 0 (dedup)", saved)
+	}
+}
+
+func TestScanGemini_SkipsWhenFileAbsent(t *testing.T) {
+	tmp := t.TempDir()
+	database, err := db.Open(filepath.Join(tmp, "test.db"))
+	if err != nil {
+		t.Fatalf("db.Open: %v", err)
+	}
+	defer database.Close()
+
+	sc := &Scanner{DB: database}
+	hashes := hashStore{Hashes: map[string]string{}}
+	if saved := sc.scanGemini(filepath.Join(tmp, "no-home"), hashes); saved != 0 {
+		t.Fatalf("absent file: saved = %d, want 0", saved)
+	}
+}
+
+func TestLoadSaveHashes_RoundTrip(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+
+	original := hashStore{Hashes: map[string]string{
+		"file1": "abc123",
+		"file2": "def456",
+	}}
+	if err := saveHashes(original); err != nil {
+		t.Fatalf("saveHashes: %v", err)
+	}
+
+	loaded, err := loadHashes()
+	if err != nil {
+		t.Fatalf("loadHashes: %v", err)
+	}
+	if loaded.Hashes["file1"] != "abc123" {
+		t.Fatalf("file1 hash = %q, want abc123", loaded.Hashes["file1"])
+	}
+	if loaded.Hashes["file2"] != "def456" {
+		t.Fatalf("file2 hash = %q, want def456", loaded.Hashes["file2"])
+	}
+}

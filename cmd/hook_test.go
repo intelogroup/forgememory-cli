@@ -17,7 +17,7 @@ func TestBuildSessionRecallOutput_ProjectSummaryAndPrinciple(t *testing.T) {
 		{ProjectID: "forgememory-cli", Narrative: "Normalize project IDs to the repo basename before storing events and principles."},
 	}
 
-	out := buildSessionRecallOutput("forgememory-cli", summaries, principles, nil, nil, nil)
+	out := buildSessionRecallOutput("forgememory-cli", summaries, principles, nil, nil, nil, nil)
 
 	if !strings.Contains(out, "## Forge Context") {
 		t.Fatalf("missing recall heading: %q", out)
@@ -38,7 +38,7 @@ func TestBuildSessionRecallOutput_NextStepFallback(t *testing.T) {
 		{ProjectID: "forgememory-cli", Learnings: "Session synthesis is landing successfully.", NextSteps: "Verify the next Codex session writes summaries."},
 	}
 
-	out := buildSessionRecallOutput("forgememory-cli", summaries, nil, nil, nil, nil)
+	out := buildSessionRecallOutput("forgememory-cli", summaries, nil, nil, nil, nil, nil)
 
 	if !strings.Contains(out, "Next step: Verify the next Codex session writes summaries.") {
 		t.Fatalf("expected next-step fallback, got: %q", out)
@@ -58,6 +58,7 @@ func TestBuildSessionRecallOutput_IncludesPromptMatchedLesson(t *testing.T) {
 			Narrative:  "Treat refused-connection startup errors as a retryable daemon recovery path.",
 			Score:      2.1,
 		},
+		nil,
 	)
 
 	if !strings.Contains(out, "Prompt-matched principle from other-repo (high confidence): Treat refused-connection startup errors as a retryable daemon recovery path.") {
@@ -74,6 +75,7 @@ func TestBuildSessionRecallOutput_IncludesActiveFailureAlert(t *testing.T) {
 			AlertType: "repeated_failure",
 			Narrative: "Forge keeps seeing the same rustc failure signature while running cargo build: error[e0599] no method named serve found",
 		}},
+		nil,
 		nil,
 		nil,
 	)
@@ -94,6 +96,7 @@ func TestBuildSessionRecallOutput_IncludesCachedDocsInsight(t *testing.T) {
 			LibraryName: "rust",
 			Narrative:   "Rust E0599 usually means the method is not in scope or the trait providing it is not imported",
 		}},
+		nil,
 		nil,
 	)
 
@@ -117,6 +120,7 @@ func TestBuildSessionRecallOutput_PrefersOfficialDocsHintOverRepeatedFailureAler
 			Narrative:   "Rust E0599 usually means the method is not in scope or the trait providing it is not imported.",
 		}},
 		nil,
+		nil,
 	)
 
 	if !strings.Contains(out, "Official docs hint from context7 rust: Rust E0599 usually means the method is not in scope or the trait providing it is not imported.") {
@@ -124,6 +128,46 @@ func TestBuildSessionRecallOutput_PrefersOfficialDocsHintOverRepeatedFailureAler
 	}
 	if strings.Contains(out, "Active repeated failure:") {
 		t.Fatalf("expected repeated failure alert to be suppressed when official docs hint exists, got %q", out)
+	}
+}
+
+func TestBuildSessionRecallOutput_LastSessionInjectedOnSessionStart(t *testing.T) {
+	last := &db.SessionSummary{
+		SessionID: "prev-session",
+		ProjectID: "forgememory-cli",
+		Request:   "Wire up PostToolUse hook for Codex.",
+		Learnings: "Codex only fires Stop, not PostToolUse.",
+		NextSteps: "Add PostToolUse support to Codex scanner.",
+	}
+	out := buildSessionRecallOutput("forgememory-cli", nil, nil, nil, nil, nil, last)
+	if !strings.Contains(out, "Last session worked on: Wire up PostToolUse hook for Codex.") {
+		t.Fatalf("missing last session request: %q", out)
+	}
+	if !strings.Contains(out, "Learnings: Codex only fires Stop, not PostToolUse.") {
+		t.Fatalf("missing last session learnings: %q", out)
+	}
+	if !strings.Contains(out, "Next steps left: Add PostToolUse support to Codex scanner.") {
+		t.Fatalf("missing last session next steps: %q", out)
+	}
+}
+
+func TestBuildSessionRecallOutput_LowConfidenceMatchDropped(t *testing.T) {
+	out := buildSessionRecallOutput(
+		"forgememory-cli",
+		nil,
+		nil,
+		nil,
+		nil,
+		&promptRecallMatch{
+			SourceType: "principle",
+			ProjectID:  "other-repo",
+			Narrative:  "Low confidence match should not appear.",
+			Score:      1.3,
+		},
+		nil,
+	)
+	if strings.Contains(out, "Low confidence match") {
+		t.Fatalf("expected low-confidence match to be dropped, got: %q", out)
 	}
 }
 
@@ -177,7 +221,7 @@ func TestLoadSessionRecallContext_FallsBackToGlobalRecentContext(t *testing.T) {
 		t.Fatalf("expected fallback summary project_id to be forgememory-cli, got %q", summaries[0].ProjectID)
 	}
 
-	out := buildSessionRecallOutput("proj", summaries, principles, nil, nil, nil)
+	out := buildSessionRecallOutput("proj", summaries, principles, nil, nil, nil, nil)
 	if !strings.Contains(out, "Recent lessons for proj") {
 		t.Fatalf("expected output to stay scoped to requested project id, got %q", out)
 	}

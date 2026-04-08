@@ -105,9 +105,9 @@ func (s *Server) handleEvents(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handlePrinciples(w http.ResponseWriter, r *http.Request) {
-	limit := 20
+	limit := 1000
 	if l := r.URL.Query().Get("limit"); l != "" {
-		if parsed, err := strconv.Atoi(l); err == nil && parsed > 0 && parsed <= 50 {
+		if parsed, err := strconv.Atoi(l); err == nil && parsed > 0 && parsed <= 1000 {
 			limit = parsed
 		}
 	}
@@ -277,22 +277,22 @@ const indexHTML = `<!DOCTYPE html>
         body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; background: #0a0a0f; color: #e0e0e0; min-height: 100vh; }
         .container { max-width: 1200px; margin: 0 auto; padding: 20px; }
         header { display: flex; align-items: center; justify-content: space-between; padding: 20px 0; border-bottom: 1px solid #222; }
-        h1 { font-size: 24px; font-weight: 600; color: #fff; }
+        h1 { font-size: 18px; font-weight: 600; color: #fff; }
         .stats { display: flex; gap: 20px; }
-        .stat { background: #16161f; padding: 12px 20px; border-radius: 8px; text-align: center; }
-        .stat-value { font-size: 28px; font-weight: 700; color: #6366f1; }
-        .stat-label { font-size: 12px; color: #888; margin-top: 4px; }
+        .stat { background: #16161f; padding: 8px 14px; border-radius: 8px; text-align: center; }
+        .stat-value { font-size: 20px; font-weight: 700; color: #6366f1; }
+        .stat-label { font-size: 11px; color: #888; margin-top: 4px; }
         .tabs { display: flex; gap: 4px; margin: 20px 0; }
-        .tab { padding: 10px 20px; background: transparent; border: none; color: #888; cursor: pointer; border-radius: 6px; font-size: 14px; }
+        .tab { padding: 8px 16px; background: transparent; border: none; color: #888; cursor: pointer; border-radius: 6px; font-size: 12px; }
         .tab:hover { background: #16161f; color: #fff; }
         .tab.active { background: #6366f1; color: #fff; }
         .panel { display: none; }
         .panel.active { display: block; }
-        .card { background: #16161f; border-radius: 12px; padding: 16px; margin-bottom: 12px; border: 1px solid #222; }
-        .card-header { display: flex; justify-content: space-between; align-items: start; margin-bottom: 8px; }
-        .card-title { font-weight: 600; color: #fff; }
-        .card-meta { font-size: 12px; color: #666; }
-        .card-body { color: #aaa; font-size: 14px; line-height: 1.5; }
+        .card { background: #16161f; border-radius: 10px; padding: 10px 14px; margin-bottom: 8px; border: 1px solid #222; }
+        .card-header { display: flex; justify-content: space-between; align-items: start; margin-bottom: 6px; }
+        .card-title { font-weight: 600; color: #fff; font-size: 12px; }
+        .card-meta { font-size: 11px; color: #666; }
+        .card-body { color: #aaa; font-size: 11px; line-height: 1.4; }
         .badge { display: inline-block; padding: 2px 8px; border-radius: 4px; font-size: 11px; font-weight: 600; text-transform: uppercase; }
         .badge-claude { background: #ff6b35; color: #fff; }
         .badge-gemini { background: #4285f4; color: #fff; }
@@ -373,7 +373,7 @@ const indexHTML = `<!DOCTYPE html>
         }
         
         async function loadPrinciples() {
-            const res = await fetch('/api/principles?limit=20');
+            const res = await fetch('/api/principles?limit=1000');
             const principles = await res.json();
             const container = document.getElementById('principles-list');
             

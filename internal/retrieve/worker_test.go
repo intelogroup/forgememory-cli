@@ -442,8 +442,8 @@ func TestWorkerRunOnce_StoresExaSummary(t *testing.T) {
 	if summaries[0].Source != "exa" {
 		t.Fatalf("Source = %q, want exa", summaries[0].Source)
 	}
-	if summaries[0].SummaryKind != "web_hint" {
-		t.Fatalf("SummaryKind = %q, want web_hint", summaries[0].SummaryKind)
+	if summaries[0].SummaryKind != "web_hint" && summaries[0].SummaryKind != "web_hint_ai" {
+		t.Fatalf("SummaryKind = %q, want web_hint or web_hint_ai", summaries[0].SummaryKind)
 	}
 	if !strings.Contains(summaries[0].Narrative, "async") {
 		t.Fatalf("unexpected narrative %q", summaries[0].Narrative)

@@ -211,6 +211,9 @@ func handleSessionRecall(projectID, payload string) {
 	}
 	defer database.Close()
 
+	sessionID := envOr("FORGE_SESSION_ID", "")
+	isFirst := isFirstPromptOfSession(database, sessionID)
+
 	promptText := extractPromptText(payload)
 	_ = retrieve.EnqueuePromptRetrieval(database, projectID, promptText)
 	principles, summaries, alerts, externalSummaries, promptMatch := loadSessionRecallContext(database, projectID, promptText)
@@ -219,13 +222,43 @@ func handleSessionRecall(projectID, payload string) {
 		principles, summaries, alerts, externalSummaries, promptMatch = loadSessionRecallContext(database, projectID, promptText)
 	}
 
-	text := buildSessionRecallOutput(projectID, summaries, principles, alerts, externalSummaries, promptMatch)
+	// On session start, promote the last session summary to full detail.
+	var lastSession *db.SessionSummary
+	if isFirst && projectID != "" {
+		lastSession = loadLastProjectSession(database, projectID, sessionID)
+	}
+
+	text := buildSessionRecallOutput(projectID, summaries, principles, alerts, externalSummaries, promptMatch, lastSession)
 	if text == "" {
 		return
 	}
-	output := map[string]any{"hookSpecificOutput": text}
+	output := map[string]interface{}{"hookSpecificOutput": text}
 	data, _ := json.Marshal(output)
 	fmt.Println(string(data))
+}
+
+// isFirstPromptOfSession returns true when no prior events exist for this session ID.
+func isFirstPromptOfSession(database *db.DB, sessionID string) bool {
+	if sessionID == "" || sessionID == "unknown" {
+		return false
+	}
+	events, err := database.SessionEvents(sessionID, 1)
+	return err == nil && len(events) == 0
+}
+
+// loadLastProjectSession returns the most recent session summary for a project,
+// excluding the current session (which has not been synthesized yet).
+func loadLastProjectSession(database *db.DB, projectID, currentSessionID string) *db.SessionSummary {
+	summaries, err := database.GetRecentSessionSummariesByProject(projectID, 5)
+	if err != nil {
+		return nil
+	}
+	for i := range summaries {
+		if summaries[i].SessionID != currentSessionID {
+			return &summaries[i]
+		}
+	}
+	return nil
 }
 
 func loadSessionRecallContext(database *db.DB, projectID, promptText string) ([]db.Principle, []db.SessionSummary, []db.Alert, []db.ExternalContextSummary, *promptRecallMatch) {
@@ -390,10 +423,10 @@ func parseHookInput(payload, currentEventType string) (ClaudeHookInput, string) 
 	return input, currentEventType
 }
 
-func buildSessionRecallOutput(projectID string, summaries []db.SessionSummary, principles []db.Principle, alerts []db.Alert, externalSummaries []db.ExternalContextSummary, promptMatch *promptRecallMatch) string {
+func buildSessionRecallOutput(projectID string, summaries []db.SessionSummary, principles []db.Principle, alerts []db.Alert, externalSummaries []db.ExternalContextSummary, promptMatch *promptRecallMatch, lastSession *db.SessionSummary) string {
 	var sentences []string
 
-	if promptMatch != nil {
+	if promptMatch != nil && promptMatch.Score >= 2.0 {
 		source := displayProjectName(promptMatch.ProjectID)
 		sentences = append(sentences, fmt.Sprintf(
 			"Prompt-matched %s from %s (%s confidence): %s.",
@@ -452,6 +485,22 @@ func buildSessionRecallOutput(projectID string, summaries []db.SessionSummary, p
 				sentences = append(sentences, fmt.Sprintf("Next step: %s.", next))
 				break
 			}
+		}
+	}
+
+	if lastSession != nil {
+		var parts []string
+		if r := trimSentence(lastSession.Request); r != "" {
+			parts = append(parts, "Last session worked on: "+r)
+		}
+		if l := trimSentence(lastSession.Learnings); l != "" {
+			parts = append(parts, "Learnings: "+l)
+		}
+		if n := trimSentence(lastSession.NextSteps); n != "" {
+			parts = append(parts, "Next steps left: "+n)
+		}
+		if len(parts) > 0 {
+			sentences = append(sentences, strings.Join(parts, ". ")+".")
 		}
 	}
 
