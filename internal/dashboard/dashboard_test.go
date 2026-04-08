@@ -197,3 +197,55 @@ func TestHandleResolveConflict_InvalidInputs(t *testing.T) {
 		t.Errorf("empty body status = %d, want 400", rr.Code)
 	}
 }
+
+func TestShort(t *testing.T) {
+	cases := []struct {
+		input string
+		n     int
+		want  string
+	}{
+		{"hello", 10, "hello"},
+		{"hello world", 5, "hello"},
+		{"abc", 3, "abc"},
+		{"", 5, ""},
+	}
+	for _, tc := range cases {
+		got := short(tc.input, tc.n)
+		if got != tc.want {
+			t.Errorf("short(%q, %d) = %q, want %q", tc.input, tc.n, got, tc.want)
+		}
+	}
+}
+
+func TestHandleStats_ReturnsJSON(t *testing.T) {
+	d := openDashboardTestDB(t)
+
+	if err := d.InsertEvent(&db.Event{
+		SessionID:  "s",
+		ProjectID:  "p",
+		SourceTool: "claude",
+		EventType:  "PostToolUse",
+		Payload:    "{}",
+	}); err != nil {
+		t.Fatalf("InsertEvent: %v", err)
+	}
+
+	s := New(d, 0)
+	rr := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/api/stats", nil)
+	s.handleStats(rr, req)
+
+	if rr.Code != 200 {
+		t.Fatalf("status = %d, want 200", rr.Code)
+	}
+	var out map[string]any
+	if err := json.Unmarshal(rr.Body.Bytes(), &out); err != nil {
+		t.Fatalf("invalid JSON: %v", err)
+	}
+	if _, ok := out["total"]; !ok {
+		t.Error("expected 'total' in stats response")
+	}
+	if _, ok := out["principles"]; !ok {
+		t.Error("expected 'principles' in stats response")
+	}
+}
