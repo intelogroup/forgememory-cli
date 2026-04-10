@@ -12,6 +12,7 @@ import (
 	"net/http"
 	"os"
 	"os/exec"
+	"regexp"
 	"strconv"
 	"strings"
 	"syscall"
@@ -297,7 +298,14 @@ func (d *Distiller) DistillBatch(limit int) (int, error) {
 	if err != nil {
 		return 0, fmt.Errorf("get undistilled events: %w", err)
 	}
-	if len(events) < 3 {
+	batch, boundarySeen := selectDistillationBatch(events, limit)
+	if len(batch) == 0 {
+		return 0, nil
+	}
+	if len(batch) < 3 {
+		if boundarySeen {
+			return 0, markEventsDistilled(d.db, batch)
+		}
 		return 0, nil // Not enough events to distill
 	}
 
@@ -310,7 +318,7 @@ func (d *Distiller) DistillBatch(limit int) (int, error) {
 	}
 
 	// Build prompt from events
-	prompt := d.buildPrompt(events)
+	prompt := d.buildPrompt(batch)
 
 	// Call LLM
 	response, err := d.callLLM(prompt)
@@ -319,7 +327,7 @@ func (d *Distiller) DistillBatch(limit int) (int, error) {
 	}
 
 	// Parse principles from response
-	principles, err := d.parsePrinciples(response, events[0].ProjectID)
+	principles, err := d.parsePrinciples(response, batch[0].ProjectID)
 	if err != nil {
 		return 0, fmt.Errorf("parse principles: %w", err)
 	}
@@ -346,7 +354,7 @@ func (d *Distiller) DistillBatch(limit int) (int, error) {
 	}
 
 	// Mark events as distilled
-	for _, e := range events {
+	for _, e := range batch {
 		ids = append(ids, e.ID)
 	}
 	if err := d.db.MarkDistilled(ids); err != nil {
@@ -358,7 +366,7 @@ func (d *Distiller) DistillBatch(limit int) (int, error) {
 
 func (d *Distiller) buildPrompt(events []db.Event) string {
 	var sb strings.Builder
-	sb.WriteString("You are a memory distillation engine. Analyze these work session events and extract high-level principles.\n\n")
+	sb.WriteString("You are a memory distillation engine. Analyze these work session events and extract only durable, project-specific engineering principles.\n\n")
 	sb.WriteString("Return a JSON array. Each element must have:\n")
 	sb.WriteString("- type: architecture/bugfix/pattern/preference\n")
 	sb.WriteString("- title: short description (max 80 chars)\n")
@@ -366,10 +374,13 @@ func (d *Distiller) buildPrompt(events []db.Event) string {
 	sb.WriteString("- impact_score: 0.0-1.0\n")
 	sb.WriteString("- concepts: array of zero or more from [security, pattern, gotcha, performance, trade-off, how-it-works]\n")
 	sb.WriteString("- files_modified: array of file paths mentioned in the events (empty if none)\n\n")
+	sb.WriteString("Only emit a principle when the events show a concrete decision, fix, failure mode, or reusable project insight.\n")
+	sb.WriteString("Return [] if the evidence is thin, generic, or limited to routine tool usage.\n")
+	sb.WriteString("Do not produce principles about transcript paths, session IDs, JSONL files, tool names, searching, curl, grep, logs, or generic debugging workflow.\n\n")
 	sb.WriteString("Events:\n")
 
 	for i, e := range events {
-		sb.WriteString(fmt.Sprintf("%d. [%s] %s (%s): %s\n", i+1, e.TS[:16], e.EventType, e.ToolName, summarizeEventPayload(e)))
+		sb.WriteString(fmt.Sprintf("%d. [%s] %s (%s): %s\n", i+1, shortTS(e.TS), e.EventType, e.ToolName, summarizeEventPayload(e)))
 	}
 
 	sb.WriteString("\nReturn ONLY the JSON array, no other text.\n")
@@ -387,7 +398,18 @@ func truncatePayload(s string, max int) string {
 // for inclusion in LLM prompts. For PostToolUse events it extracts the actual
 // command / file path and response content rather than dumping raw JSON.
 func summarizeEventPayload(e db.Event) string {
-	if e.EventType != "PostToolUse" || e.Payload == "" {
+	if e.Payload == "" {
+		return ""
+	}
+	if e.EventType == "UserPromptSubmit" {
+		if prompt := strings.TrimSpace(extractPromptText(e.Payload)); prompt != "" {
+			return truncatePayload(prompt, 500)
+		}
+	}
+	if isSessionBoundaryEvent(e.EventType) {
+		return "session boundary"
+	}
+	if e.EventType != "PostToolUse" {
 		return truncatePayload(e.Payload, 500)
 	}
 
@@ -449,24 +471,79 @@ func summarizeEventPayload(e db.Event) string {
 	return fmt.Sprintf("input: %s", inputSummary)
 }
 
+func selectDistillationBatch(events []db.Event, limit int) ([]db.Event, bool) {
+	if len(events) == 0 || limit <= 0 {
+		return nil, false
+	}
+	first := events[0]
+	batch := make([]db.Event, 0, minInt(len(events), limit))
+	boundarySeen := false
+	for _, e := range events {
+		if len(batch) >= limit {
+			break
+		}
+		if len(batch) > 0 && (e.SessionID != first.SessionID || e.ProjectID != first.ProjectID) {
+			boundarySeen = true
+			break
+		}
+		batch = append(batch, e)
+	}
+	return batch, boundarySeen
+}
+
+func markEventsDistilled(database *db.DB, events []db.Event) error {
+	ids := make([]string, 0, len(events))
+	for _, e := range events {
+		ids = append(ids, e.ID)
+	}
+	return database.MarkDistilled(ids)
+}
+
+func isSessionBoundaryEvent(eventType string) bool {
+	switch eventType {
+	case "Stop", "SessionEnd", "AfterAgent":
+		return true
+	default:
+		return false
+	}
+}
+
+func minInt(a, b int) int {
+	if a < b {
+		return a
+	}
+	return b
+}
+
 // SynthesizeSession generates a session summary from events and stores it.
 func (d *Distiller) SynthesizeSession(sessionID, projectID string, events []db.Event) error {
+	_, err := d.SynthesizeCheckpoint(sessionID, projectID, "final", "", events)
+	return err
+}
+
+// SynthesizeCheckpoint generates a checkpoint summary from events and stores it.
+func (d *Distiller) SynthesizeCheckpoint(sessionID, projectID, checkpointKind, checkpointKey string, events []db.Event) (*db.SessionSummary, error) {
 	if len(events) == 0 {
-		return nil
+		return nil, nil
 	}
 	prompt := d.buildSessionPrompt(events)
 	response, err := d.callLLM(prompt)
 	if err != nil {
-		return fmt.Errorf("llm call: %w", err)
+		return nil, fmt.Errorf("llm call: %w", err)
 	}
 	summary, err := d.parseSessionSummary(response)
 	if err != nil {
-		return fmt.Errorf("parse session summary: %w", err)
+		return nil, fmt.Errorf("parse session summary: %w", err)
 	}
 	summary.ID = uuid.New().String()
 	summary.SessionID = sessionID
 	summary.ProjectID = projectID
-	return d.db.InsertSessionSummary(summary)
+	summary.CheckpointKind = checkpointKind
+	summary.CheckpointKey = checkpointKey
+	if err := d.db.InsertSessionSummary(summary); err != nil {
+		return nil, err
+	}
+	return summary, nil
 }
 
 func (d *Distiller) buildSessionPrompt(events []db.Event) string {
@@ -478,7 +555,7 @@ func (d *Distiller) buildSessionPrompt(events []db.Event) string {
 	sb.WriteString("- next_steps: Recommended follow-up actions (1 sentence, or empty string)\n\n")
 	sb.WriteString("Session events:\n")
 	for i, e := range events {
-		sb.WriteString(fmt.Sprintf("%d. [%s] %s (%s): %s\n", i+1, e.TS[:16], e.EventType, e.ToolName, summarizeEventPayload(e)))
+		sb.WriteString(fmt.Sprintf("%d. [%s] %s (%s): %s\n", i+1, shortTS(e.TS), e.EventType, e.ToolName, summarizeEventPayload(e)))
 	}
 	sb.WriteString("\nReturn ONLY the JSON object, no other text.\n")
 	return sb.String()
@@ -510,6 +587,71 @@ func (d *Distiller) parseSessionSummary(response string) (*db.SessionSummary, er
 		NextSteps:     raw.NextSteps,
 		Summary:       raw.Learnings, // backward compat
 	}, nil
+}
+
+// DistillCheckpointSummary extracts durable principles from a synthesized checkpoint.
+func (d *Distiller) DistillCheckpointSummary(summary db.SessionSummary, events []db.Event) (int, error) {
+	if d.db == nil {
+		return 0, nil
+	}
+	prompt := d.buildCheckpointPrinciplesPrompt(summary, events)
+	response, err := d.callLLM(prompt)
+	if err != nil {
+		return 0, fmt.Errorf("llm call failed: %w", err)
+	}
+	principles, err := d.parsePrinciples(response, summary.ProjectID)
+	if err != nil {
+		return 0, fmt.Errorf("parse principles: %w", err)
+	}
+
+	var inserted []db.Principle
+	for _, p := range principles {
+		ok, err := d.db.InsertPrinciple(&p)
+		if err != nil {
+			return 0, fmt.Errorf("insert principle: %w", err)
+		}
+		if ok {
+			inserted = append(inserted, p)
+		}
+	}
+	if len(inserted) > 0 {
+		if err := d.detectAndMarkConflicts(inserted); err != nil {
+			fmt.Fprintf(os.Stderr, "forge: conflict detection: %v\n", err)
+		}
+	}
+	return len(inserted), nil
+}
+
+func (d *Distiller) buildCheckpointPrinciplesPrompt(summary db.SessionSummary, events []db.Event) string {
+	var sb strings.Builder
+	sb.WriteString("You are a memory distillation engine. Extract only durable, project-specific engineering principles from this synthesized checkpoint.\n\n")
+	sb.WriteString("Return a JSON array. Each element must have:\n")
+	sb.WriteString("- type: architecture/bugfix/pattern/preference\n")
+	sb.WriteString("- title: short description (max 80 chars)\n")
+	sb.WriteString("- narrative: detailed explanation (2-3 sentences)\n")
+	sb.WriteString("- impact_score: 0.0-1.0\n")
+	sb.WriteString("- concepts: array of zero or more from [security, pattern, gotcha, performance, trade-off, how-it-works]\n")
+	sb.WriteString("- files_modified: array of file paths mentioned in the checkpoint or evidence (empty if none)\n\n")
+	sb.WriteString("Only emit a principle when this checkpoint contains a concrete fix, decision, failure mode, or reusable project insight.\n")
+	sb.WriteString("Return [] if this checkpoint is routine progress, bookkeeping, or generic workflow.\n")
+	sb.WriteString("Do not create principles about transcript paths, session IDs, JSONL files, tool names, logs, grep, curl, or generic debugging process.\n\n")
+	sb.WriteString("Checkpoint summary:\n")
+	sb.WriteString(fmt.Sprintf("kind: %s\n", firstNonEmptyString(summary.CheckpointKind, "final")))
+	sb.WriteString(fmt.Sprintf("request: %s\n", firstNonEmptyString(summary.Request, "(empty)")))
+	sb.WriteString(fmt.Sprintf("investigation: %s\n", firstNonEmptyString(summary.Investigation, "(empty)")))
+	sb.WriteString(fmt.Sprintf("learnings: %s\n", firstNonEmptyString(summary.Learnings, "(empty)")))
+	sb.WriteString(fmt.Sprintf("next_steps: %s\n", firstNonEmptyString(summary.NextSteps, "(empty)")))
+	if len(events) > 0 {
+		sb.WriteString("\nEvidence:\n")
+		for i, e := range events {
+			if i == 8 {
+				break
+			}
+			sb.WriteString(fmt.Sprintf("%d. [%s] %s (%s): %s\n", i+1, shortTS(e.TS), e.EventType, e.ToolName, summarizeEventPayload(e)))
+		}
+	}
+	sb.WriteString("\nReturn ONLY the JSON array, no other text.\n")
+	return sb.String()
 }
 
 func (d *Distiller) callLLM(prompt string) (string, error) {
@@ -953,20 +1095,118 @@ func (d *Distiller) parsePrinciples(response string, projectID string) ([]db.Pri
 
 	var principles []db.Principle
 	for _, r := range raw {
-		principles = append(principles, db.Principle{
+		p := db.Principle{
 			ID:            uuid.New().String(),
 			TS:            time.Now().UTC().Format(time.RFC3339),
-			Type:          r.Type,
-			Title:         r.Title,
-			Narrative:     r.Narrative,
+			Type:          strings.TrimSpace(r.Type),
+			Title:         strings.TrimSpace(r.Title),
+			Narrative:     strings.TrimSpace(r.Narrative),
 			ImpactScore:   r.ImpactScore,
 			ProjectID:     projectID,
 			Concepts:      db.FilterConcepts(r.Concepts),
 			FilesModified: r.FilesModified,
-		})
+		}
+		if !shouldKeepPrinciple(p) {
+			continue
+		}
+		principles = append(principles, p)
 	}
 
 	return principles, nil
+}
+
+var genericPrinciplePattern = regexp.MustCompile(`(?i)\b(curl|grep|rg|ripgrep|jsonl|transcript path|session id|tool call|tool metadata|log files?|debugging workflow|searching)\b`)
+
+func shouldKeepPrinciple(p db.Principle) bool {
+	if p.Title == "" || p.Narrative == "" || p.Type == "" {
+		return false
+	}
+	if p.ImpactScore < 0 {
+		p.ImpactScore = 0
+	}
+	if p.ImpactScore > 1 {
+		p.ImpactScore = 1
+	}
+	text := strings.ToLower(strings.TrimSpace(p.Title + " " + p.Narrative))
+	if text == "" {
+		return false
+	}
+	if genericPrinciplePattern.MatchString(text) {
+		return false
+	}
+	for _, phrase := range []string{
+		"use curl", "use grep", "use rg", "grep is useful", "logs help debugging",
+		"log files help", "search the codebase", "inspect transcript", "session ids help",
+	} {
+		if strings.Contains(text, phrase) {
+			return false
+		}
+	}
+	return true
+}
+
+func extractPromptText(payload string) string {
+	payload = strings.TrimSpace(payload)
+	if payload == "" {
+		return ""
+	}
+
+	var parsed any
+	if err := json.Unmarshal([]byte(payload), &parsed); err != nil {
+		return compactWhitespace(payload)
+	}
+
+	return compactWhitespace(flattenPromptValue(parsed))
+}
+
+func flattenPromptValue(value any) string {
+	switch v := value.(type) {
+	case nil:
+		return ""
+	case string:
+		return v
+	case []any:
+		parts := make([]string, 0, len(v))
+		for _, item := range v {
+			if text := flattenPromptValue(item); text != "" {
+				parts = append(parts, text)
+			}
+		}
+		return strings.Join(parts, " ")
+	case map[string]any:
+		parts := make([]string, 0, 6)
+		for _, key := range []string{"prompt", "user_prompt", "message", "text", "content", "input"} {
+			if text := flattenPromptValue(v[key]); text != "" {
+				parts = append(parts, text)
+			}
+		}
+		return strings.Join(parts, " ")
+	default:
+		return ""
+	}
+}
+
+func compactWhitespace(s string) string {
+	return strings.Join(strings.Fields(s), " ")
+}
+
+func shortTS(ts string) string {
+	if len(ts) >= 16 {
+		return ts[:16]
+	}
+	if strings.TrimSpace(ts) == "" {
+		return "unknown-time"
+	}
+	return ts
+}
+
+func firstNonEmptyString(values ...string) string {
+	for _, value := range values {
+		if strings.TrimSpace(value) != "" {
+			return value
+		}
+	}
+	return ""
 }
 
 // detectAndMarkConflicts compares newly inserted principles against existing

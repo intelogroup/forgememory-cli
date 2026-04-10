@@ -587,12 +587,9 @@ func runHealth(args []string) {
 	} else {
 		fmt.Println("  Last distilled: never")
 	}
-	if report.Distillation.NextScheduledAt != "" {
-		fmt.Printf("  Next scheduled: %s\n", formatRelativeTime(report.Distillation.NextScheduledAt))
-	}
 	fmt.Printf("  Status: %s\n", strings.ToUpper(status))
 	fmt.Printf("  Failed attempts: %d\n", report.Distillation.ConsecutiveFailures)
-	fmt.Printf("  Events stuck: %d\n", report.Events.Undistilled)
+	fmt.Printf("  Raw events queued: %d\n", report.Events.Undistilled)
 	if report.Distillation.LastErrorMessage != "" {
 		fmt.Printf("  Error: %s\n", report.Distillation.LastErrorMessage)
 	}
@@ -610,9 +607,6 @@ func healthAlerts(report statusReport) []string {
 	var alerts []string
 	if report.Distillation.ConsecutiveFailures >= 3 {
 		alerts = append(alerts, "distillation_failed: 3+ consecutive failures")
-	}
-	if report.Events.Undistilled >= 25 && report.Distillation.LastStatus == "failed" {
-		alerts = append(alerts, "event_backlog_high: undistilled backlog is growing")
 	}
 	if report.Distillation.LastErrorMessage != "" {
 		alerts = append(alerts, "last_error: "+truncate(report.Distillation.LastErrorMessage, 120))
@@ -670,7 +664,7 @@ func runSave(args []string) {
 		return
 	}
 
-	// Insert as event, then distill immediately.
+	// Insert as event, then synthesize/distill a manual checkpoint immediately.
 	event := &db.Event{
 		SessionID:  "manual-save",
 		ProjectID:  projectID,
@@ -684,16 +678,22 @@ func runSave(args []string) {
 	}
 
 	d := distill.New(database, distill.LoadConfig())
-	count, err := d.DistillBatch(50)
+	summary, err := d.SynthesizeCheckpoint("manual-save", projectID, "manual-save", checkpointKey("manual-save", "manual-save", event.ID), []db.Event{*event})
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "Saved but distillation failed: %v\n", err)
-		fmt.Println("Memory saved (will be distilled by daemon).")
+		fmt.Fprintf(os.Stderr, "Saved but checkpoint synthesis failed: %v\n", err)
+		fmt.Println("Memory saved.")
+		return
+	}
+	count, err := d.DistillCheckpointSummary(*summary, []db.Event{*event})
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Saved but principle distillation failed: %v\n", err)
+		fmt.Println("Memory saved.")
 		return
 	}
 	if count > 0 {
 		fmt.Printf("Memory saved and distilled into %d principle(s).\n", count)
 	} else {
-		fmt.Println("Memory saved (queued for distillation — need 3+ events).")
+		fmt.Println("Memory saved.")
 	}
 }
 
@@ -703,6 +703,9 @@ func runSynthesizeSession(args []string) {
 	fs := flag.NewFlagSet("synthesize-session", flag.ContinueOnError)
 	sessionID := fs.String("session-id", "", "Session ID")
 	projectID := fs.String("project-id", "", "Project ID")
+	checkpointKind := fs.String("checkpoint-kind", "final", "Checkpoint kind: final|compact|clear")
+	checkpointKey := fs.String("checkpoint-key", "", "Stable checkpoint key")
+	cutoffTS := fs.String("cutoff-ts", "", "Optional timestamp cutoff")
 	if err := fs.Parse(args); err != nil {
 		log.Printf("synthesize-session: flag parse error: %v", err)
 		os.Exit(0)
@@ -719,7 +722,14 @@ func runSynthesizeSession(args []string) {
 	}
 	defer database.Close()
 
-	events, err := database.SessionEvents(*sessionID, 20)
+	if *checkpointKey != "" {
+		exists, err := database.HasSessionCheckpoint(*checkpointKey)
+		if err == nil && exists {
+			os.Exit(0)
+		}
+	}
+
+	events, err := database.SessionEventsUpTo(*sessionID, *cutoffTS, 50)
 	if err != nil {
 		log.Printf("synthesize-session: failed to get session events: %v", err)
 		os.Exit(0)
@@ -734,13 +744,27 @@ func runSynthesizeSession(args []string) {
 		proj = events[0].ProjectID
 	}
 
+	runAt := time.Now().UTC()
+	start := time.Now()
 	d := distill.New(database, distill.LoadConfig())
-	if err := d.SynthesizeSession(*sessionID, proj, events); err != nil {
+	summary, err := d.SynthesizeCheckpoint(*sessionID, proj, *checkpointKind, *checkpointKey, events)
+	if err != nil {
 		log.Printf("synthesize-session: synthesis failed: %v", err)
+		_ = database.RecordDistillationFailure(runAt, time.Since(start), len(events), err.Error(), runAt)
 		os.Exit(1)
 	}
+	if summary == nil {
+		os.Exit(0)
+	}
+	count, err := d.DistillCheckpointSummary(*summary, events)
+	if err != nil {
+		log.Printf("synthesize-session: principle distillation failed: %v", err)
+		_ = database.RecordDistillationFailure(runAt, time.Since(start), len(events), err.Error(), runAt)
+		os.Exit(1)
+	}
+	_ = database.RecordDistillationSuccess(runAt, time.Since(start), len(events), count, runAt)
 
-	log.Printf("synthesize-session: synthesized session %s with %d events", *sessionID, len(events))
+	log.Printf("synthesize-session: synthesized %s checkpoint for session %s with %d events and %d principle(s)", *checkpointKind, *sessionID, len(events), count)
 	os.Exit(0)
 }
 

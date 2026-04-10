@@ -179,6 +179,40 @@ func (d *DB) SessionEvents(sessionID string, limit int) ([]Event, error) {
 	return events, rows.Err()
 }
 
+// SessionEventsUpTo returns session events in chronological order, optionally
+// capped at a cutoff timestamp.
+func (d *DB) SessionEventsUpTo(sessionID, cutoffTS string, limit int) ([]Event, error) {
+	if limit <= 0 {
+		limit = 50
+	}
+	query := `SELECT id, ts, session_id, project_id, source_tool, event_type, tool_name, payload, distilled
+		 FROM events WHERE session_id=?`
+	args := []any{sessionID}
+	if strings.TrimSpace(cutoffTS) != "" {
+		query += ` AND ts <= ?`
+		args = append(args, cutoffTS)
+	}
+	query += ` ORDER BY ts ASC LIMIT ?`
+	args = append(args, limit)
+
+	rows, err := d.conn.Query(query, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var events []Event
+	for rows.Next() {
+		var e Event
+		var distilled int
+		if err := rows.Scan(&e.ID, &e.TS, &e.SessionID, &e.ProjectID, &e.SourceTool, &e.EventType, &e.ToolName, &e.Payload, &distilled); err != nil {
+			return nil, err
+		}
+		e.Distilled = distilled == 1
+		events = append(events, e)
+	}
+	return events, rows.Err()
+}
+
 // RecentEvents returns the most recent events.
 func (d *DB) RecentEvents(limit int) ([]Event, error) {
 	rows, err := d.conn.Query(

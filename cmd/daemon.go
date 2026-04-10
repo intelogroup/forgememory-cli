@@ -181,14 +181,6 @@ func runDaemon(args []string) {
 		}
 	}()
 
-	// Distillation loop
-	distillCfg := distill.LoadConfig()
-	distiller := distill.New(database, distillCfg)
-	if distillCfg.Provider == distill.ProviderOllama && distillCfg.OllamaStartupWait > 0 {
-		log.Printf("Waiting %s for Ollama to load model before first distillation...", distillCfg.OllamaStartupWait)
-		time.Sleep(distillCfg.OllamaStartupWait)
-	}
-	go distillLoop(distiller, database, distillCfg.DistillInterval)
 	retrievalWake := make(chan struct{}, 1)
 	retrieve.SetImmediateWakeChannel(retrievalWake)
 	defer retrieve.SetImmediateWakeChannel(nil)

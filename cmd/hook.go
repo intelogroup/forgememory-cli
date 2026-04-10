@@ -163,9 +163,9 @@ func runHook(args []string) {
 
 	projectID := detectProjectIDForPath(input.CWD)
 
-	// Session end: synthesize summary asynchronously then forward event
+	// Session end: synthesize summary asynchronously then forward event.
 	if isSessionEndEvent(eventType) {
-		spawnSessionSynthesis(sessionID, projectID)
+		spawnSessionSynthesis(sessionID, projectID, "final", checkpointKey(sessionID, "final", ""), "")
 		// Fall through — still record the stop event
 	}
 
@@ -190,6 +190,12 @@ func runHook(args []string) {
 		// Silent failure — daemon is down, hook exits in <1ms
 		if eventType != "UserPromptSubmit" {
 			os.Exit(0)
+		}
+	}
+
+	if eventType == "UserPromptSubmit" {
+		if kind := promptCheckpointKind(payload); kind != "" {
+			spawnSessionSynthesis(sessionID, projectID, kind, checkpointKey(sessionID, kind, msg.TS), msg.TS)
 		}
 	}
 
@@ -368,13 +374,18 @@ func envInt(key string, fallback int) int {
 
 // spawnSessionSynthesis detaches a `forge synthesize-session` process so the
 // hook can return immediately without blocking on an LLM call.
-func spawnSessionSynthesis(sessionID, projectID string) {
+func spawnSessionSynthesis(sessionID, projectID, checkpointKind, checkpointKey, cutoffTS string) {
 	if sessionID == "" || sessionID == "unknown" {
 		return
 	}
 	cmd := exec.Command(os.Args[0], "synthesize-session",
 		"--session-id", sessionID,
-		"--project-id", projectID)
+		"--project-id", projectID,
+		"--checkpoint-kind", checkpointKind,
+		"--checkpoint-key", checkpointKey)
+	if cutoffTS != "" {
+		cmd.Args = append(cmd.Args, "--cutoff-ts", cutoffTS)
+	}
 	cmd.Stdout = nil
 	cmd.Stderr = nil
 	cmd.Stdin = nil
@@ -421,6 +432,25 @@ func parseHookInput(payload, currentEventType string) (ClaudeHookInput, string) 
 		currentEventType = input.HookEventName
 	}
 	return input, currentEventType
+}
+
+func promptCheckpointKind(payload string) string {
+	prompt := strings.ToLower(strings.TrimSpace(extractPromptText(payload)))
+	switch {
+	case strings.HasPrefix(prompt, "/clear"):
+		return "clear"
+	case strings.HasPrefix(prompt, "/compact"):
+		return "compact"
+	default:
+		return ""
+	}
+}
+
+func checkpointKey(sessionID, kind, suffix string) string {
+	if suffix == "" {
+		return sessionID + ":" + kind
+	}
+	return sessionID + ":" + kind + ":" + suffix
 }
 
 func buildSessionRecallOutput(projectID string, summaries []db.SessionSummary, principles []db.Principle, alerts []db.Alert, externalSummaries []db.ExternalContextSummary, promptMatch *promptRecallMatch, lastSession *db.SessionSummary) string {

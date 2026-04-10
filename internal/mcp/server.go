@@ -293,7 +293,7 @@ func (s *Server) handleToolsList(req Request) *Response {
 		},
 		{
 			Name:        "get_distillation_health",
-			Description: "Call to check if distillation is running and healthy. Returns last run status, error message, and undistilled backlog count.",
+			Description: "Call to check whether checkpoint-based distillation is healthy. Returns last run status, error message, and raw event queue count.",
 			InputSchema: map[string]any{
 				"type":       "object",
 				"properties": map[string]any{},

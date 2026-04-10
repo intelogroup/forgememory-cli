@@ -13,6 +13,8 @@ type SessionSummary struct {
 	TS            string `json:"ts"`
 	SessionID     string `json:"session_id"`
 	ProjectID     string `json:"project_id"`
+	CheckpointKind string `json:"checkpoint_kind"`
+	CheckpointKey  string `json:"checkpoint_key"`
 	Summary       string `json:"summary"` // legacy / combined text
 	Request       string `json:"request"`
 	Investigation string `json:"investigation"`
@@ -35,10 +37,10 @@ func (d *DB) InsertSessionSummary(s *SessionSummary) error {
 	}
 	_, err := d.conn.Exec(
 		`INSERT INTO session_summaries
-		 (id, ts, session_id, project_id, summary, request, investigation, learnings, next_steps, tokens)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-		s.ID, s.TS, s.SessionID, s.ProjectID, s.Summary,
-		s.Request, s.Investigation, s.Learnings, s.NextSteps, s.Tokens,
+		 (id, ts, session_id, project_id, checkpoint_kind, checkpoint_key, summary, request, investigation, learnings, next_steps, tokens)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		s.ID, s.TS, s.SessionID, s.ProjectID, s.CheckpointKind, s.CheckpointKey,
+		s.Summary, s.Request, s.Investigation, s.Learnings, s.NextSteps, s.Tokens,
 	)
 	return err
 }
@@ -47,6 +49,7 @@ func (d *DB) InsertSessionSummary(s *SessionSummary) error {
 func (d *DB) GetRecentSessionSummaries(limit int) ([]SessionSummary, error) {
 	rows, err := d.conn.Query(
 		`SELECT id, ts, session_id, project_id,
+		        COALESCE(checkpoint_kind,''), COALESCE(checkpoint_key,''),
 		        COALESCE(summary,''), COALESCE(request,''), COALESCE(investigation,''),
 		        COALESCE(learnings,''), COALESCE(next_steps,''), tokens
 		 FROM session_summaries ORDER BY ts DESC LIMIT ?`, limit,
@@ -65,6 +68,7 @@ func (d *DB) GetRecentSessionSummariesByProject(projectID string, limit int) ([]
 	exact, unixLike, windowsLike := projectIDSelectors(projectID)
 	rows, err := d.conn.Query(
 		`SELECT id, ts, session_id, project_id,
+		        COALESCE(checkpoint_kind,''), COALESCE(checkpoint_key,''),
 		        COALESCE(summary,''), COALESCE(request,''), COALESCE(investigation,''),
 		        COALESCE(learnings,''), COALESCE(next_steps,''), tokens
 		 FROM session_summaries
@@ -82,13 +86,26 @@ func scanSessionSummaries(rows *sql.Rows) ([]SessionSummary, error) {
 	defer rows.Close()
 	for rows.Next() {
 		var s SessionSummary
-		if err := rows.Scan(&s.ID, &s.TS, &s.SessionID, &s.ProjectID,
+		if err := rows.Scan(&s.ID, &s.TS, &s.SessionID, &s.ProjectID, &s.CheckpointKind, &s.CheckpointKey,
 			&s.Summary, &s.Request, &s.Investigation, &s.Learnings, &s.NextSteps, &s.Tokens); err != nil {
 			return nil, err
 		}
 		out = append(out, s)
 	}
 	return out, rows.Err()
+}
+
+// HasSessionCheckpoint reports whether a summary already exists for the checkpoint key.
+func (d *DB) HasSessionCheckpoint(checkpointKey string) (bool, error) {
+	if checkpointKey == "" {
+		return false, nil
+	}
+	var count int
+	err := d.conn.QueryRow(
+		`SELECT COUNT(*) FROM session_summaries WHERE checkpoint_key = ?`,
+		checkpointKey,
+	).Scan(&count)
+	return count > 0, err
 }
 
 // SessionSummaryCount returns total session summary count.

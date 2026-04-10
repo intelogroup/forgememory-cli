@@ -164,6 +164,25 @@ func TestParsePrinciplesInvalidJSON(t *testing.T) {
 	}
 }
 
+func TestParsePrinciples_FiltersGenericToolAdvice(t *testing.T) {
+	d := &Distiller{}
+	response := `[
+		{"type": "pattern", "title": "Use curl for API calls", "narrative": "curl is helpful for debugging APIs and logs help debugging too", "impact_score": 0.8},
+		{"type": "architecture", "title": "ApplicationBuilder base_url fix", "narrative": "Use ApplicationBuilder.base_url() on 0.8 to bypass Cisco Umbrella through the Cloudflare Worker instead of hardcoding endpoints.", "impact_score": 0.9}
+	]`
+
+	principles, err := d.parsePrinciples(response, "forge")
+	if err != nil {
+		t.Fatalf("parsePrinciples failed: %v", err)
+	}
+	if len(principles) != 1 {
+		t.Fatalf("expected only the specific principle to remain, got %d", len(principles))
+	}
+	if principles[0].Title != "ApplicationBuilder base_url fix" {
+		t.Fatalf("unexpected principle kept: %#v", principles[0])
+	}
+}
+
 func TestBuildPrompt(t *testing.T) {
 	d := &Distiller{}
 	prompt := d.buildPrompt(nil)
@@ -172,6 +191,29 @@ func TestBuildPrompt(t *testing.T) {
 	}
 	if !containsStr(prompt, "JSON array") {
 		t.Error("prompt should request JSON array")
+	}
+	if !containsStr(prompt, "Return [] if the evidence is thin") {
+		t.Error("prompt should tell the model to return an empty array for low-signal batches")
+	}
+}
+
+func TestBuildPrompt_StripsHookMetadataFromUserPrompt(t *testing.T) {
+	d := &Distiller{}
+	prompt := d.buildPrompt([]db.Event{{
+		SessionID: "sess-1",
+		ProjectID: "proj",
+		EventType: "UserPromptSubmit",
+		Payload: `{"session_id":"sess-1","transcript_path":"/tmp/transcript.jsonl","message":"Fix Cisco Umbrella bypass via Cloudflare Worker using ApplicationBuilder.base_url()","cwd":"/tmp/repo"}`,
+	}})
+
+	if !containsStr(prompt, "Fix Cisco Umbrella bypass via Cloudflare Worker using ApplicationBuilder.base_url()") {
+		t.Fatalf("prompt missing extracted user request: %q", prompt)
+	}
+	if containsStr(prompt, "transcript.jsonl") {
+		t.Fatalf("prompt should not include transcript metadata: %q", prompt)
+	}
+	if containsStr(prompt, `"session_id"`) {
+		t.Fatalf("prompt should not include raw hook JSON: %q", prompt)
 	}
 }
 
@@ -555,6 +597,82 @@ func TestDistillBatchPrincipleDedup(t *testing.T) {
 	}
 	if count != 1 {
 		t.Errorf("principles = %d, want 1 (duplicate title should be ignored by fingerprint)", count)
+	}
+}
+
+func TestDistillBatch_ScopesToSingleSession(t *testing.T) {
+	database, err := db.Open(t.TempDir() + "/test.db")
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	defer database.Close()
+
+	callCount := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		callCount++
+		json.NewEncoder(w).Encode(map[string]any{
+			"choices": []map[string]any{
+				{"message": map[string]string{"content": `[{"type":"pattern","title":"Session scoped principle","narrative":"A real project-specific principle.","impact_score":0.7}]`}},
+			},
+			"usage": map[string]int{"prompt_tokens": 40, "completion_tokens": 20, "total_tokens": 60},
+		})
+	}))
+	defer server.Close()
+
+	d := &Distiller{
+		db: database,
+		config: Config{
+			Provider: ProviderGroq,
+			Model:    "llama-3.3-70b-versatile",
+			APIKey:   "gsk-test",
+			BaseURL:  server.URL,
+		},
+		client: server.Client(),
+	}
+
+	for i := 0; i < 3; i++ {
+		if err := database.InsertEvent(&db.Event{
+			SessionID: "sess-1",
+			ProjectID: "proj",
+			EventType: "PostToolUse",
+			ToolName:  "Edit",
+			Payload:   `{"tool_input":{"file_path":"main.go"},"tool_response":"ok"}`,
+		}); err != nil {
+			t.Fatalf("InsertEvent: %v", err)
+		}
+	}
+	for i := 0; i < 3; i++ {
+		if err := database.InsertEvent(&db.Event{
+			SessionID: "sess-2",
+			ProjectID: "proj",
+			EventType: "PostToolUse",
+			ToolName:  "Edit",
+			Payload:   `{"tool_input":{"file_path":"other.go"},"tool_response":"ok"}`,
+		}); err != nil {
+			t.Fatalf("InsertEvent: %v", err)
+		}
+	}
+
+	if _, err := d.DistillBatch(50); err != nil {
+		t.Fatalf("first DistillBatch: %v", err)
+	}
+	if callCount != 1 {
+		t.Fatalf("expected one LLM call after first batch, got %d", callCount)
+	}
+	_, undistilled, _ := database.EventCount()
+	if undistilled != 3 {
+		t.Fatalf("undistilled after first batch = %d, want 3 remaining from second session", undistilled)
+	}
+
+	if _, err := d.DistillBatch(50); err != nil {
+		t.Fatalf("second DistillBatch: %v", err)
+	}
+	if callCount != 2 {
+		t.Fatalf("expected second LLM call for remaining session, got %d", callCount)
+	}
+	_, undistilled, _ = database.EventCount()
+	if undistilled != 0 {
+		t.Fatalf("undistilled after second batch = %d, want 0", undistilled)
 	}
 }
 

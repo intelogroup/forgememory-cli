@@ -14,8 +14,8 @@ import (
 	"github.com/google/uuid"
 )
 
-// Run scans ~/Developer for git repos, collects recent commits, and inserts
-// them as events for the normal distillation pipeline to process.
+// Run scans ~/Developer for git repos, collects recent commits, and turns
+// them into checkpoint summaries plus optional principles.
 // It also runs a second pass to scan AI tool memories (Gemini, Codex).
 // If dryRun is true, it prints repos found without writing anything.
 func Run(database *db.DB, d *distill.Distiller, dryRun bool) error {
@@ -40,6 +40,7 @@ func Run(database *db.DB, d *distill.Distiller, dryRun bool) error {
 	}
 
 	inserted := 0
+	distilled := 0
 	for _, repo := range repos {
 		commits, err := recentCommits(repo, 24*time.Hour)
 		if err != nil || len(commits) == 0 {
@@ -55,7 +56,7 @@ func Run(database *db.DB, d *distill.Distiller, dryRun bool) error {
 		event := &db.Event{
 			ID:         uuid.New().String(),
 			TS:         time.Now().UTC().Format(time.RFC3339),
-			SessionID:  "scanner",
+			SessionID:  "scanner:" + repoName,
 			ProjectID:  repoName,
 			SourceTool: "scanner",
 			EventType:  "ScannerRun",
@@ -65,17 +66,21 @@ func Run(database *db.DB, d *distill.Distiller, dryRun bool) error {
 			continue
 		}
 		inserted++
+
+		summary, err := d.SynthesizeCheckpoint(event.SessionID, repoName, "scan", "scan:"+repoName+":"+event.ID, []db.Event{*event})
+		if err != nil || summary == nil {
+			continue
+		}
+		count, err := d.DistillCheckpointSummary(*summary, []db.Event{*event})
+		if err == nil {
+			distilled += count
+		}
 	}
 
 	if inserted == 0 {
 		fmt.Println("No new commits found in the last 24 hours.")
 	} else {
-		fmt.Printf("Scanned %d repos, inserted %d event(s). Running distillation...\n", len(repos), inserted)
-		count, err := d.DistillBatch(inserted + 5)
-		if err != nil {
-			return fmt.Errorf("distill: %w", err)
-		}
-		fmt.Printf("Distilled %d principle(s) from scanner events.\n", count)
+		fmt.Printf("Scanned %d repos, inserted %d event(s), distilled %d principle(s).\n", len(repos), inserted, distilled)
 	}
 
 	// Second pass: scan AI tool memories

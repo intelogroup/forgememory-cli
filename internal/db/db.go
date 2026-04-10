@@ -230,6 +230,8 @@ func (d *DB) migrate() error {
 		{"session_summaries", "investigation", "TEXT DEFAULT ''"},
 		{"session_summaries", "learnings", "TEXT DEFAULT ''"},
 		{"session_summaries", "next_steps", "TEXT DEFAULT ''"},
+		{"session_summaries", "checkpoint_kind", "TEXT DEFAULT ''"},
+		{"session_summaries", "checkpoint_key", "TEXT DEFAULT ''"},
 		{"events", "git_root", "TEXT DEFAULT ''"},
 		{"failure_signatures", "command_family", "TEXT DEFAULT ''"},
 		{"external_context_summaries", "summary_kind", "TEXT DEFAULT ''"},
