@@ -630,10 +630,12 @@ func (d *Distiller) buildCheckpointPrinciplesPrompt(summary db.SessionSummary, e
 	sb.WriteString("- title: short description (max 80 chars)\n")
 	sb.WriteString("- narrative: detailed explanation (2-3 sentences)\n")
 	sb.WriteString("- impact_score: 0.0-1.0\n")
+	sb.WriteString("- outcome: \"success\" if this approach worked, \"failure\" if it definitively failed, \"unknown\" if unclear\n")
+	sb.WriteString("- impl_hint: the exact function call, flag, pattern, or code shape used — one tight sentence, max 120 chars. Empty string if not applicable.\n")
 	sb.WriteString("- concepts: array of zero or more from [security, pattern, gotcha, performance, trade-off, how-it-works]\n")
 	sb.WriteString("- files_modified: array of file paths mentioned in the checkpoint or evidence (empty if none)\n\n")
-	sb.WriteString("Only emit a principle when this checkpoint contains a concrete fix, decision, failure mode, or reusable project insight.\n")
-	sb.WriteString("Return [] if this checkpoint is routine progress, bookkeeping, or generic workflow.\n")
+	sb.WriteString("Only emit a principle when there is a clear outcome (a concrete fix worked, or an approach definitively failed) AND a specific implementation pattern.\n")
+	sb.WriteString("Return [] for vague progress, bookkeeping, situations where no concrete technique is identifiable, or routine workflow.\n")
 	sb.WriteString("Do not create principles about transcript paths, session IDs, JSONL files, tool names, logs, grep, curl, or generic debugging process.\n\n")
 	sb.WriteString("Checkpoint summary:\n")
 	sb.WriteString(fmt.Sprintf("kind: %s\n", firstNonEmptyString(summary.CheckpointKind, "final")))
@@ -1085,6 +1087,8 @@ func (d *Distiller) parsePrinciples(response string, projectID string) ([]db.Pri
 		Title         string   `json:"title"`
 		Narrative     string   `json:"narrative"`
 		ImpactScore   float64  `json:"impact_score"`
+		Outcome       string   `json:"outcome"`
+		ImplHint      string   `json:"impl_hint"`
 		Concepts      []string `json:"concepts"`
 		FilesModified []string `json:"files_modified"`
 	}
@@ -1095,6 +1099,14 @@ func (d *Distiller) parsePrinciples(response string, projectID string) ([]db.Pri
 
 	var principles []db.Principle
 	for _, r := range raw {
+		outcome := strings.TrimSpace(r.Outcome)
+		if outcome != "success" && outcome != "failure" {
+			outcome = "unknown"
+		}
+		implHint := strings.TrimSpace(r.ImplHint)
+		if runes := []rune(implHint); len(runes) > 120 {
+			implHint = string(runes[:120])
+		}
 		p := db.Principle{
 			ID:            uuid.New().String(),
 			TS:            time.Now().UTC().Format(time.RFC3339),
@@ -1103,6 +1115,8 @@ func (d *Distiller) parsePrinciples(response string, projectID string) ([]db.Pri
 			Narrative:     strings.TrimSpace(r.Narrative),
 			ImpactScore:   r.ImpactScore,
 			ProjectID:     projectID,
+			Outcome:       outcome,
+			ImplHint:      implHint,
 			Concepts:      db.FilterConcepts(r.Concepts),
 			FilesModified: r.FilesModified,
 		}

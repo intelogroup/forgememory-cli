@@ -87,9 +87,12 @@ type promptRecallMatch struct {
 	SourceType   string
 	ProjectID    string
 	Narrative    string
+	Title        string
 	TS           string
 	Score        float64
 	MatchedTerms []string
+	Outcome      string // "success" | "failure" | "unknown"
+	ImplHint     string // lean implementation fingerprint (≤120 chars)
 }
 
 // isWriteTool reports whether tool events should be captured.
@@ -414,12 +417,6 @@ func envOr(key, fallback string) string {
 	return fallback
 }
 
-func execCommand(name string, args ...string) (string, error) {
-	cmd := exec.Command(name, args...)
-	out, err := cmd.Output()
-	return string(out), err
-}
-
 func parseHookInput(payload, currentEventType string) (ClaudeHookInput, string) {
 	var input ClaudeHookInput
 	if strings.TrimSpace(payload) == "" {
@@ -456,15 +453,38 @@ func checkpointKey(sessionID, kind, suffix string) string {
 func buildSessionRecallOutput(projectID string, summaries []db.SessionSummary, principles []db.Principle, alerts []db.Alert, externalSummaries []db.ExternalContextSummary, promptMatch *promptRecallMatch, lastSession *db.SessionSummary) string {
 	var sentences []string
 
-	if promptMatch != nil && promptMatch.Score >= 2.0 {
+	matchThreshold := 2.0
+	if promptMatch != nil && promptMatch.ImplHint != "" {
+		matchThreshold = 1.5
+	}
+	if promptMatch != nil && promptMatch.Score >= matchThreshold {
 		source := displayProjectName(promptMatch.ProjectID)
-		sentences = append(sentences, fmt.Sprintf(
-			"Prompt-matched %s from %s (%s confidence): %s.",
-			promptMatch.SourceType,
-			source,
-			confidenceLabel(promptMatch.Score),
-			trimSentence(promptMatch.Narrative),
-		))
+		if promptMatch.ImplHint != "" {
+			outcome := promptMatch.Outcome
+			label := "Past " + outcome
+			if outcome == "" || outcome == "unknown" {
+				label = "Prior"
+			}
+			title := promptMatch.Title
+			if title == "" {
+				title = promptMatch.SourceType
+			}
+			sentences = append(sentences, fmt.Sprintf(
+				"%s [%s]: %s — %s.",
+				label,
+				source,
+				title,
+				promptMatch.ImplHint,
+			))
+		} else {
+			sentences = append(sentences, fmt.Sprintf(
+				"Prompt-matched %s from %s (%s confidence): %s.",
+				promptMatch.SourceType,
+				source,
+				confidenceLabel(promptMatch.Score),
+				trimSentence(promptMatch.Narrative),
+			))
+		}
 	}
 
 	hasOfficialHint := false
@@ -508,7 +528,17 @@ func buildSessionRecallOutput(projectID string, summaries []db.SessionSummary, p
 	}
 
 	if len(principles) > 0 {
-		sentences = append(sentences, fmt.Sprintf("Active principle: %s.", trimSentence(principles[0].Narrative)))
+		p0 := principles[0]
+		if p0.ImplHint != "" {
+			outcome := p0.Outcome
+			label := "Past " + outcome
+			if outcome == "" || outcome == "unknown" {
+				label = "Prior"
+			}
+			sentences = append(sentences, fmt.Sprintf("%s: %s — %s.", label, p0.Title, p0.ImplHint))
+		} else {
+			sentences = append(sentences, fmt.Sprintf("Active principle: %s.", trimSentence(p0.Narrative)))
+		}
 	} else {
 		for _, summary := range summaries {
 			if next := trimSentence(summary.NextSteps); next != "" {
@@ -686,8 +716,13 @@ func findPromptRelevantPrinciples(database *db.DB, projectID string, tokens []st
 			}
 		}
 		// If we already have a high-confidence same-project hit, skip cross-project.
+		// Principles with a concrete impl_hint are promoted at a lower threshold (1.5).
 		for _, m := range matches {
-			if m.Score >= 2.0 {
+			threshold := 2.0
+			if m.ImplHint != "" {
+				threshold = 1.5
+			}
+			if m.Score >= threshold {
 				sort.SliceStable(matches, func(i, j int) bool {
 					if matches[i].Score == matches[j].Score {
 						return matches[i].TS > matches[j].TS
@@ -740,9 +775,12 @@ func scorePromptPrincipleMatch(principle db.Principle, tokens []string) (promptR
 		SourceType:   "principle",
 		ProjectID:    principle.ProjectID,
 		Narrative:    principle.Narrative,
+		Title:        principle.Title,
 		TS:           principle.TS,
 		Score:        score,
 		MatchedTerms: matched,
+		Outcome:      principle.Outcome,
+		ImplHint:     principle.ImplHint,
 	}, true
 }
 

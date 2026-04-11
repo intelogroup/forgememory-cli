@@ -184,6 +184,8 @@ func runDaemon(args []string) {
 	retrievalWake := make(chan struct{}, 1)
 	retrieve.SetImmediateWakeChannel(retrievalWake)
 	defer retrieve.SetImmediateWakeChannel(nil)
+	distillCfg := distill.LoadConfig()
+	go distillLoop(distill.New(database, distillCfg), database, distillCfg.DistillInterval)
 	go retrievalLoop(retrieve.NewWorker(database), retrievalWake, stop)
 
 	<-stop

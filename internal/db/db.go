@@ -238,6 +238,8 @@ func (d *DB) migrate() error {
 		{"external_context_summaries", "hint", "TEXT DEFAULT ''"},
 		{"principles", "status", "TEXT DEFAULT ''"},
 		{"principles", "conflict_peer_id", "TEXT DEFAULT ''"},
+		{"principles", "outcome", "TEXT NOT NULL DEFAULT 'unknown'"},
+		{"principles", "impl_hint", "TEXT NOT NULL DEFAULT ''"},
 	}
 	extraMigrations := []string{
 		`CREATE TABLE IF NOT EXISTS projects (
