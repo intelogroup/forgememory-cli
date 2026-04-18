@@ -23,6 +23,8 @@ func main() {
 	switch os.Args[1] {
 	case "hook":
 		runHook(os.Args[2:])
+	case "compact-check":
+		runCompactCheck(os.Args[2:]) // internal, not shown in help
 	case "daemon":
 		runDaemon(os.Args[2:])
 	case "init":
@@ -97,11 +99,11 @@ func printUsage() {
    search <q>    Full-text search on event payloads
    mcp           Start MCP server (stdio transport, for Claude Code)
    ui            Start memory dashboard web UI (http://localhost:5555)
-    doctor        Self-test: check DB, daemon, agents, binary
-    config        Configure inference provider (--provider --api-key [--model --timeout --retries])
-    login         Login to Forge (--email --password [--purchase])
-    agent-guide   Print copy-pasteable agent setup guide (CLAUDE.md / system prompt)
-    hook          (internal) Hook entrypoint — called by agents
+   doctor        Self-test: check DB, daemon, agents, binary
+   config        Configure inference provider (--provider --api-key [--model --timeout --retries])
+   login         Login to Forge (--email --password [--purchase])
+   agent-guide   Print copy-pasteable agent setup guide (CLAUDE.md / system prompt)
+   hook          (internal) Hook entrypoint — called by agents
    daemon        (internal) Daemon entrypoint — long-running service
    version       Print version
    help          Print this help
