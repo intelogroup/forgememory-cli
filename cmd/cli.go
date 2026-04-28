@@ -312,7 +312,7 @@ func runDistill(args []string) {
 	}
 
 	fmt.Printf("Distilling %d events...\n", len(events))
-	count, err := d.DistillBatch(50)
+	count, err := d.DistillBatch(300)
 	if err != nil {
 		if shouldSkipDistillForMissingProvider(cfg, err) {
 			fmt.Printf("Skipping distillation: %s\n", distill.UserMessage(err))
@@ -340,7 +340,7 @@ func runDistillDrain(d *distill.Distiller, database *db.DB, cfg distill.Config) 
 		if remaining == 0 {
 			break
 		}
-		count, err := d.DistillBatch(50)
+		count, err := d.DistillBatch(300)
 		if err != nil {
 			if shouldSkipDistillForMissingProvider(cfg, err) {
 				fmt.Printf("Skipping distillation: %s\n", distill.UserMessage(err))
@@ -529,6 +529,11 @@ func runHelp(args []string) {
   get_alerts
     When:    checking for memory quality issues
     Returns: active distillation or backlog alerts
+    Params:  (none)
+
+  get_forge_status
+    When:    forge seems silent or broken — no principles, hooks not firing, distillation failing
+    Returns: daemon status, hook registration, event ingestion health, distillation health — with fix commands
     Params:  (none)
 
 See 'forge agent-guide' for a copy-pasteable CLAUDE.md / system prompt block.

@@ -366,11 +366,12 @@ func (d *Distiller) DistillBatch(limit int) (int, error) {
 
 func (d *Distiller) buildPrompt(events []db.Event) string {
 	var sb strings.Builder
-	sb.WriteString("You are a memory distillation engine. Analyze these work session events and extract only durable, project-specific engineering principles.\n\n")
+	sb.WriteString("You are a senior staff engineer writing personal reference notes for your future self. Analyze these work session events and extract only durable, project-specific engineering principles worth remembering six months from now.\n\n")
 	sb.WriteString("Return a JSON array. Each element must have:\n")
 	sb.WriteString("- type: architecture/bugfix/pattern/preference\n")
 	sb.WriteString("- title: short description (max 80 chars)\n")
-	sb.WriteString("- narrative: detailed explanation (2-3 sentences)\n")
+	sb.WriteString("- narrative: 2-4 sentences. Sentence 1: state the tech stack and situation where this applies (e.g. \"In a Convex + WorkOS app using clerk for sessions...\", \"When running Go HTTP server behind an nginx reverse proxy...\"). Sentences 2-4: name the specific function, flag, config key, or data structure involved and explain WHY it matters — not just what happened. Write in first-person imperative. BAD: \"Fixed retry logic.\" GOOD: \"In a Go service using pgx connection pool. Always wrap write calls in WithMaxRetries(3) in store.go — the default transport silently drops retries after TCP reset; reads are idempotent so retrying them masks stale-read bugs.\"\n")
+	sb.WriteString("- impl_hint: the exact function call, flag, pattern, or code shape — one tight sentence, max 120 chars. Empty string if not applicable.\n")
 	sb.WriteString("- impact_score: 0.0-1.0\n")
 	sb.WriteString("- concepts: array of zero or more from [security, pattern, gotcha, performance, trade-off, how-it-works]\n")
 	sb.WriteString("- files_modified: array of file paths mentioned in the events (empty if none)\n\n")
@@ -624,11 +625,11 @@ func (d *Distiller) DistillCheckpointSummary(summary db.SessionSummary, events [
 
 func (d *Distiller) buildCheckpointPrinciplesPrompt(summary db.SessionSummary, events []db.Event) string {
 	var sb strings.Builder
-	sb.WriteString("You are a memory distillation engine. Extract only durable, project-specific engineering principles from this synthesized checkpoint.\n\n")
+	sb.WriteString("You are a senior staff engineer writing personal reference notes for your future self. Extract only durable, project-specific engineering principles from this synthesized checkpoint — notes worth consulting before touching this area again.\n\n")
 	sb.WriteString("Return a JSON array. Each element must have:\n")
 	sb.WriteString("- type: architecture/bugfix/pattern/preference\n")
 	sb.WriteString("- title: short description (max 80 chars)\n")
-	sb.WriteString("- narrative: detailed explanation (2-3 sentences)\n")
+	sb.WriteString("- narrative: 2-4 sentences. Sentence 1: state the tech stack and situation where this applies (e.g. \"In a Next.js app using Convex + WorkOS...\", \"When deploying a Go service to Render behind a proxy...\"). Sentences 2-4: name the specific function, flag, config key, or data structure involved and explain WHY it matters. Write in first-person imperative. BAD: \"Caching was improved.\" GOOD: \"In a Next.js app with a reverse-proxy CDN. Always set Cache-Control: no-store on /auth endpoints via middleware/auth.go — the proxy caches 302 redirects and replays stale tokens to different users without it.\"\n")
 	sb.WriteString("- impact_score: 0.0-1.0\n")
 	sb.WriteString("- outcome: \"success\" if this approach worked, \"failure\" if it definitively failed, \"unknown\" if unclear\n")
 	sb.WriteString("- impl_hint: the exact function call, flag, pattern, or code shape used — one tight sentence, max 120 chars. Empty string if not applicable.\n")

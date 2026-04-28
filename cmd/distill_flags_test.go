@@ -54,8 +54,8 @@ func TestRunDistill_AllFlag_SingleBatch(t *testing.T) {
 func TestRunDistill_AllFlag_MultiBatch(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
-	// 110 events → at least 2 batches of 50.
-	seedEvents(t, 110)
+	// 700 events → at least 2 batches of 300.
+	seedEvents(t, 700)
 
 	srv, llmCalls := distillServer(t, "Drain multi batch principle")
 	t.Setenv("FORGE_PROVIDER", "ollama")
@@ -77,7 +77,7 @@ func TestRunDistill_AllFlag_MultiBatch(t *testing.T) {
 func TestRunDistill_AllFlag_PrintsProgressPerBatch(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
-	seedEvents(t, 60) // forces at least 2 batches
+	seedEvents(t, 700) // forces at least 2 batches of 300
 
 	srv, _ := distillServer(t, "Progress principle")
 	t.Setenv("FORGE_PROVIDER", "ollama")

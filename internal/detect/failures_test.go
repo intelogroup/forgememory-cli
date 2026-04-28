@@ -10,6 +10,12 @@ import (
 )
 
 func TestProcessEvent_RaisesAlertOnThirdRepeatedFailure(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	t.Setenv("FORGE_EXA_API_KEY", "")
+	t.Setenv("EXA_API_KEY", "")
+	t.Setenv("FORGE_TAVILY_API_KEY", "")
+	t.Setenv("TAVILY_API_KEY", "")
+
 	database, err := db.Open(filepath.Join(t.TempDir(), "test.db"))
 	if err != nil {
 		t.Fatalf("db.Open: %v", err)

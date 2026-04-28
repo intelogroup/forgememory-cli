@@ -241,7 +241,12 @@ func handleSessionRecall(projectID, payload string) {
 	if text == "" {
 		return
 	}
-	output := map[string]interface{}{"hookSpecificOutput": text}
+	output := map[string]interface{}{
+		"hookSpecificOutput": map[string]interface{}{
+			"hookEventName":     "UserPromptSubmit",
+			"additionalContext": text,
+		},
+	}
 	data, _ := json.Marshal(output)
 	fmt.Println(string(data))
 }
@@ -984,7 +989,6 @@ func firstNonEmpty(values ...string) string {
 	}
 	return ""
 }
-
 
 func trimSentence(text string) string {
 	text = strings.TrimSpace(text)

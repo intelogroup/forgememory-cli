@@ -759,7 +759,19 @@ func TestBinary_Hook_RepeatedFailureCreatesAlertAndInjectsRecall(t *testing.T) {
 	if err != nil {
 		t.Fatalf("forge hook recall output: %v", err)
 	}
-	if !strings.Contains(string(out), "Active repeated failure") {
+	var recall struct {
+		HookSpecificOutput struct {
+			HookEventName     string `json:"hookEventName"`
+			AdditionalContext string `json:"additionalContext"`
+		} `json:"hookSpecificOutput"`
+	}
+	if err := json.Unmarshal(out, &recall); err != nil {
+		t.Fatalf("expected JSON recall output, got %q: %v", string(out), err)
+	}
+	if recall.HookSpecificOutput.HookEventName != "UserPromptSubmit" {
+		t.Fatalf("expected UserPromptSubmit hook event name, got %q", recall.HookSpecificOutput.HookEventName)
+	}
+	if !strings.Contains(recall.HookSpecificOutput.AdditionalContext, "Active repeated failure") {
 		t.Fatalf("expected repeated-failure recall injection, got %q", string(out))
 	}
 }

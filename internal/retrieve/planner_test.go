@@ -9,6 +9,12 @@ import (
 )
 
 func TestEnqueuePromptRetrieval_QueuesContext7ForRustPrompt(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	t.Setenv("FORGE_EXA_API_KEY", "")
+	t.Setenv("EXA_API_KEY", "")
+	t.Setenv("FORGE_TAVILY_API_KEY", "")
+	t.Setenv("TAVILY_API_KEY", "")
+
 	database, err := db.Open(filepath.Join(t.TempDir(), "test.db"))
 	if err != nil {
 		t.Fatalf("db.Open: %v", err)
@@ -64,6 +70,12 @@ func TestEnqueuePromptRetrieval_QueuesContext7SetupForInstallPrompt(t *testing.T
 }
 
 func TestEnqueuePromptRetrieval_QueuesOpenSrcForSourceIntent(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	t.Setenv("FORGE_EXA_API_KEY", "")
+	t.Setenv("EXA_API_KEY", "")
+	t.Setenv("FORGE_TAVILY_API_KEY", "")
+	t.Setenv("TAVILY_API_KEY", "")
+
 	database, err := db.Open(filepath.Join(t.TempDir(), "test.db"))
 	if err != nil {
 		t.Fatalf("db.Open: %v", err)

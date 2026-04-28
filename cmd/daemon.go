@@ -265,13 +265,18 @@ func handleEventMsg(raw map[string]json.RawMessage, database *db.DB) {
 	}
 }
 
+const distillEventThreshold = 300
+
 func distillLoop(d *distill.Distiller, database *db.DB, interval time.Duration) {
-	if interval <= 0 {
-		interval = 10 * time.Minute
-	}
-	ticker := time.NewTicker(interval)
+	pollInterval := 60 * time.Second
+	ticker := time.NewTicker(pollInterval)
 	defer ticker.Stop()
 	for range ticker.C {
+		_, undistilled, _ := database.EventCount()
+		if undistilled < distillEventThreshold {
+			continue
+		}
+
 		// Skip if a manual `forge distill` is already running.
 		lock, lockErr := acquireDistillLock()
 		if lockErr != nil {
@@ -285,19 +290,18 @@ func distillLoop(d *distill.Distiller, database *db.DB, interval time.Duration) 
 
 		runAt := time.Now().UTC()
 		start := time.Now()
-		_, undistilled, _ := database.EventCount()
-		count, err := d.DistillBatch(50)
+		count, err := d.DistillBatch(300)
 		lock.Close()
 		cleanDistillLock()
 
-		next := runAt.Add(interval)
+		next := runAt.Add(pollInterval)
 		if err != nil {
 			log.Printf("Distillation error: %v", err)
 			if recErr := database.RecordDistillationFailure(runAt, time.Since(start), undistilled, err.Error(), next); recErr != nil {
 				log.Printf("Distillation health record error: %v", recErr)
 			}
 		} else if count > 0 {
-			log.Printf("Distilled %d principles from events", count)
+			log.Printf("Distilled %d principles from %d events", count, undistilled)
 			if recErr := database.RecordDistillationSuccess(runAt, time.Since(start), undistilled, count, next); recErr != nil {
 				log.Printf("Distillation health record error: %v", recErr)
 			}
