@@ -95,7 +95,7 @@ func setupCodex(home string) (string, error) {
 			"PostToolUse":      fmt.Sprintf(`%s hook --event PostToolUse`, forgePath),
 			"UserPromptSubmit": fmt.Sprintf(`%s hook --event UserPromptSubmit`, forgePath),
 			"Stop":             fmt.Sprintf(`%s hook --event Stop`, forgePath),
-			"SessionStart":     fmt.Sprintf(`FORGE_SOURCE_TOOL=codex %s inject-check`, forgePath),
+			// "SessionStart":     fmt.Sprintf(`FORGE_SOURCE_TOOL=codex %s inject-check`, forgePath),
 		},
 	}
 

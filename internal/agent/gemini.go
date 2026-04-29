@@ -123,7 +123,7 @@ func setupGemini(home string) (string, error) {
 	afterToolCommand := fmt.Sprintf(`"%s" hook --source gemini --event PostToolUse`, forgePath)
 	afterAgentCommand := fmt.Sprintf(`"%s" hook --source gemini --event Stop`, forgePath)
 	sessionEndCommand := fmt.Sprintf(`"%s" hook --source gemini --event SessionEnd`, forgePath)
-	sessionStartCommand := fmt.Sprintf(`FORGE_SOURCE_TOOL=gemini "%s" inject-check`, forgePath)
+	// sessionStartCommand := fmt.Sprintf(`FORGE_SOURCE_TOOL=gemini "%s" inject-check`, forgePath)
 
 	beforeAgentEntry := map[string]any{
 		"hooks": []any{map[string]any{"type": "command", "command": beforeAgentCommand}},
@@ -138,9 +138,10 @@ func setupGemini(home string) (string, error) {
 	sessionEndEntry := map[string]any{
 		"hooks": []any{map[string]any{"type": "command", "command": sessionEndCommand}},
 	}
-	sessionStartEntry := map[string]any{
-		"hooks": []any{map[string]any{"type": "command", "command": sessionStartCommand}},
-	}
+	// SessionStart inject-check disabled — can be noisy on remote/sandboxed agents
+	// sessionStartEntry := map[string]any{
+	// 	"hooks": []any{map[string]any{"type": "command", "command": sessionStartCommand}},
+	// }
 
 	existingHooks, _ := hooks["BeforeAgent"].([]any)
 	hooks["BeforeAgent"] = upsertCommandHookArray(existingHooks, beforeAgentEntry, beforeAgentCommand)
@@ -150,8 +151,9 @@ func setupGemini(home string) (string, error) {
 	hooks["AfterAgent"] = upsertCommandHookArray(existingHooks, afterAgentEntry, afterAgentCommand)
 	existingHooks, _ = hooks["SessionEnd"].([]any)
 	hooks["SessionEnd"] = upsertCommandHookArray(existingHooks, sessionEndEntry, sessionEndCommand)
-	existingHooks, _ = hooks["SessionStart"].([]any)
-	hooks["SessionStart"] = upsertCommandHookArray(existingHooks, sessionStartEntry, sessionStartCommand)
+	// SessionStart disabled
+	// existingHooks, _ = hooks["SessionStart"].([]any)
+	// hooks["SessionStart"] = upsertCommandHookArray(existingHooks, sessionStartEntry, sessionStartCommand)
 	settings["hooks"] = hooks
 
 	data, err := json.MarshalIndent(settings, "", "  ")

@@ -167,17 +167,18 @@ func setupClaude(home string) (string, error) {
 		},
 	}
 
-	sessionStartEntry := map[string]any{
-		"hooks": []any{
-			map[string]any{
-				"type":    "command",
-				"command": fmt.Sprintf(`"%s" inject-check`, forgePath),
-				"env": map[string]string{
-					"FORGE_SOURCE_TOOL": "claude",
-				},
-			},
-		},
-	}
+	// SessionStart inject-check disabled — can be noisy on remote/sandboxed agents
+	// sessionStartEntry := map[string]any{
+	// 	"hooks": []any{
+	// 		map[string]any{
+	// 			"type":    "command",
+	// 			"command": fmt.Sprintf(`"%s" inject-check`, forgePath),
+	// 			"env": map[string]string{
+	// 				"FORGE_SOURCE_TOOL": "claude",
+	// 			},
+	// 		},
+	// 	},
+	// }
 
 	existing, _ := hooks["PostToolUse"].([]any)
 	hooks["PostToolUse"] = upsertHookArray(existing, postToolUseEntry, "PostToolUse")
@@ -187,8 +188,9 @@ func setupClaude(home string) (string, error) {
 	hooks["Stop"] = upsertHookArray(existing, stopEntry, "Stop")
 	existing, _ = hooks["SessionEnd"].([]any)
 	hooks["SessionEnd"] = upsertHookArray(existing, sessionEndEntry, "SessionEnd")
-	existing, _ = hooks["SessionStart"].([]any)
-	hooks["SessionStart"] = upsertHookArray(existing, sessionStartEntry, "SessionStart")
+	// SessionStart disabled
+	// existing, _ = hooks["SessionStart"].([]any)
+	// hooks["SessionStart"] = upsertHookArray(existing, sessionStartEntry, "SessionStart")
 	settings["hooks"] = hooks
 
 	data, err := json.MarshalIndent(settings, "", "  ")
