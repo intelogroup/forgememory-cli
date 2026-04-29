@@ -1,0 +1,82 @@
+package main
+
+import (
+	"flag"
+	"log"
+	"os"
+	"time"
+
+	"github.com/forge/forge/internal/db"
+	"github.com/forge/forge/internal/distill"
+)
+
+// runSynthesizeSession is an internal command spawned by the Stop/SessionEnd hook.
+// It synthesizes a session summary and writes it to the DB.
+func runSynthesizeSession(args []string) {
+	fs := flag.NewFlagSet("synthesize-session", flag.ContinueOnError)
+	sessionID := fs.String("session-id", "", "Session ID")
+	projectID := fs.String("project-id", "", "Project ID")
+	checkpointKind := fs.String("checkpoint-kind", "final", "Checkpoint kind: final|compact|clear")
+	checkpointKey := fs.String("checkpoint-key", "", "Stable checkpoint key")
+	cutoffTS := fs.String("cutoff-ts", "", "Optional timestamp cutoff")
+	if err := fs.Parse(args); err != nil {
+		log.Printf("synthesize-session: flag parse error: %v", err)
+		os.Exit(0)
+	}
+
+	if *sessionID == "" {
+		os.Exit(0)
+	}
+
+	database, err := db.Open("")
+	if err != nil {
+		log.Printf("synthesize-session: failed to open DB: %v", err)
+		os.Exit(0)
+	}
+	defer database.Close()
+
+	if *checkpointKey != "" {
+		exists, err := database.HasSessionCheckpoint(*checkpointKey)
+		if err == nil && exists {
+			os.Exit(0)
+		}
+	}
+
+	events, err := database.SessionEventsUpTo(*sessionID, *cutoffTS, 50)
+	if err != nil {
+		log.Printf("synthesize-session: failed to get session events: %v", err)
+		os.Exit(0)
+	}
+	if len(events) < 3 {
+		log.Printf("synthesize-session: not enough events (%d) for synthesis", len(events))
+		os.Exit(0)
+	}
+
+	proj := *projectID
+	if proj == "" {
+		proj = events[0].ProjectID
+	}
+
+	runAt := time.Now().UTC()
+	start := time.Now()
+	d := distill.New(database, distill.LoadConfig())
+	summary, err := d.SynthesizeCheckpoint(*sessionID, proj, *checkpointKind, *checkpointKey, events)
+	if err != nil {
+		log.Printf("synthesize-session: synthesis failed: %v", err)
+		_ = database.RecordDistillationFailure(runAt, time.Since(start), len(events), err.Error(), runAt)
+		os.Exit(1)
+	}
+	if summary == nil {
+		os.Exit(0)
+	}
+	count, err := d.DistillCheckpointSummary(*summary, events)
+	if err != nil {
+		log.Printf("synthesize-session: principle distillation failed: %v", err)
+		_ = database.RecordDistillationFailure(runAt, time.Since(start), len(events), err.Error(), runAt)
+		os.Exit(1)
+	}
+	_ = database.RecordDistillationSuccess(runAt, time.Since(start), len(events), count, runAt)
+
+	log.Printf("synthesize-session: synthesized %s checkpoint for session %s with %d events and %d principle(s)", *checkpointKind, *sessionID, len(events), count)
+	os.Exit(0)
+}
