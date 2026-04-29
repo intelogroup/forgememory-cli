@@ -71,6 +71,8 @@ func main() {
 		fmt.Printf("forge %s\n", version)
 	case "agent-guide":
 		runAgentGuide(os.Args[2:])
+	case "inject-check":
+		runInjectCheck(os.Args[2:]) // internal, called by agent hooks
 	case "help", "--help", "-h":
 		runHelp(os.Args[2:])
 	default:

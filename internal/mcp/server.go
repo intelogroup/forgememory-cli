@@ -17,6 +17,7 @@ import (
 	"unicode"
 
 	"github.com/forge/forge/internal/db"
+	"github.com/forge/forge/internal/distill"
 )
 
 // MCP Protocol types
@@ -317,6 +318,24 @@ func (s *Server) handleToolsList(req Request) *Response {
 				"properties": map[string]any{},
 			},
 		},
+		{
+			Name:        "inject_principles",
+			Description: "Call before sending a prompt to a code agent. Injects relevant distilled principles from memory into the prompt so the agent benefits from past lessons.",
+			InputSchema: map[string]any{
+				"type": "object",
+				"properties": map[string]any{
+					"prompt": map[string]any{
+						"type":        "string",
+						"description": "The prompt to enhance with injected principles",
+					},
+					"project_id": map[string]any{
+						"type":        "string",
+						"description": "Optional project identifier. Defaults to the current repo/project.",
+					},
+				},
+				"required": []string{"prompt"},
+			},
+		},
 	}
 
 	return &Response{
@@ -357,6 +376,8 @@ func (s *Server) handleToolsCall(req Request) *Response {
 		result = s.getAlerts(params.Arguments)
 	case "get_forge_status":
 		result = s.getForgeStatus(params.Arguments)
+	case "inject_principles":
+		result = s.getInjectPrinciples(params.Arguments)
 	default:
 		return errorResponse(req.ID, "Unknown tool: "+params.Name)
 	}
@@ -1086,6 +1107,25 @@ func (s *Server) getForgeStatus(_ map[string]any) ToolResult {
 
 	return ToolResult{
 		Content: []ToolContent{{Type: "text", Text: sb.String()}},
+	}
+}
+
+func (s *Server) getInjectPrinciples(args map[string]any) ToolResult {
+	prompt, ok := args["prompt"].(string)
+	if !ok || prompt == "" {
+		return toolError("Missing required parameter: prompt")
+	}
+	projectID := projectIDFromArgs(args)
+
+	enhancedPrompt := distill.InjectPrinciplesForPrompt(s.db, prompt, projectID)
+	if enhancedPrompt == prompt {
+		return ToolResult{
+			Content: []ToolContent{{Type: "text", Text: prompt}},
+		}
+	}
+
+	return ToolResult{
+		Content: []ToolContent{{Type: "text", Text: enhancedPrompt}},
 	}
 }
 

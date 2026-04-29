@@ -82,6 +82,10 @@ func setupCodex(home string) (string, error) {
 				"description": "Returns distilled high-level principles (architecture decisions, patterns, preferences).",
 				"when_to_use": "User asks about project conventions or past decisions.",
 			},
+			"inject_principles": map[string]any{
+				"description": "Injects relevant past lessons into a given prompt. Pass the prompt and get back the enhanced version.",
+				"when_to_use": "Before sending a prompt to a code agent — prepends past lessons automatically.",
+			},
 			"get_session_summaries": map[string]any{
 				"description": "Returns synthesized summaries of recent work sessions.",
 				"when_to_use": "User asks what they were working on before a break or yesterday.",
@@ -91,6 +95,7 @@ func setupCodex(home string) (string, error) {
 			"PostToolUse":      fmt.Sprintf(`%s hook --event PostToolUse`, forgePath),
 			"UserPromptSubmit": fmt.Sprintf(`%s hook --event UserPromptSubmit`, forgePath),
 			"Stop":             fmt.Sprintf(`%s hook --event Stop`, forgePath),
+			"SessionStart":     fmt.Sprintf(`FORGE_SOURCE_TOOL=codex %s inject-check`, forgePath),
 		},
 	}
 

@@ -67,7 +67,7 @@ func isForgeHookItem(item any, forgeEventType string) bool {
 		}
 		// Stale format (pre-dedup): command contains "forge hook" with no env key.
 		// Treat as a Forge-owned entry so it gets replaced rather than accumulated.
-		if cmd, _ := hm["command"].(string); strings.Contains(cmd, "forge hook") || strings.Contains(cmd, `forge" hook`) {
+		if cmd, _ := hm["command"].(string); strings.Contains(cmd, "forge hook") || strings.Contains(cmd, `forge" hook`) || strings.Contains(cmd, "inject-check") {
 			return true
 		}
 	}
@@ -167,6 +167,18 @@ func setupClaude(home string) (string, error) {
 		},
 	}
 
+	sessionStartEntry := map[string]any{
+		"hooks": []any{
+			map[string]any{
+				"type":    "command",
+				"command": fmt.Sprintf(`"%s" inject-check`, forgePath),
+				"env": map[string]string{
+					"FORGE_SOURCE_TOOL": "claude",
+				},
+			},
+		},
+	}
+
 	existing, _ := hooks["PostToolUse"].([]any)
 	hooks["PostToolUse"] = upsertHookArray(existing, postToolUseEntry, "PostToolUse")
 	existing, _ = hooks["UserPromptSubmit"].([]any)
@@ -175,6 +187,8 @@ func setupClaude(home string) (string, error) {
 	hooks["Stop"] = upsertHookArray(existing, stopEntry, "Stop")
 	existing, _ = hooks["SessionEnd"].([]any)
 	hooks["SessionEnd"] = upsertHookArray(existing, sessionEndEntry, "SessionEnd")
+	existing, _ = hooks["SessionStart"].([]any)
+	hooks["SessionStart"] = upsertHookArray(existing, sessionStartEntry, "SessionStart")
 	settings["hooks"] = hooks
 
 	data, err := json.MarshalIndent(settings, "", "  ")
@@ -200,10 +214,10 @@ func setupClaude(home string) (string, error) {
 		"## How It Works\n\n" +
 		"- **Capture**: Every tool use is logged automatically via hooks.\n" +
 		"- **Distill**: The daemon runs every 10 minutes to summarize raw events into high-level insights.\n" +
-		"- **Inject**: When you ask about past work, Forge provides context via the MCP tool.\n\n" +
+		"- **Inject**: Past lessons are auto-injected into context at session start and available on demand.\n\n" +
 		"## MCP Tools\n\n" +
 		"### `get_recent_context`\n" +
-		"Returns distilled memories and session summaries.\n\n" +
+		"Returns distilled memories and session summaries. Call at session start to prime context.\n\n" +
 		"**When to use:**\n" +
 		"- User asks \"what was I doing before the break?\"\n" +
 		"- User asks \"what did we work on yesterday?\"\n" +
@@ -215,11 +229,18 @@ func setupClaude(home string) (string, error) {
 		"- User asks \"what errors have we seen?\"\n\n" +
 		"### `get_principles`\n" +
 		"Returns distilled high-level principles (architecture decisions, patterns, preferences).\n\n" +
+		"### `inject_principles`\n" +
+		"Injects relevant past lessons into a given prompt. Call before sending a prompt to a code agent.\n" +
+		"Pass the prompt as the `prompt` parameter, get back the enhanced prompt with lessons prepended.\n\n" +
+		"## Auto-Injection\n\n" +
+		"At every session start, Forge checks for past lessons relevant to the current project.\n" +
+		"If found, they appear as context you can see and act on — no tool call needed.\n\n" +
 		"## Hooks\n\n" +
 		"Forge hooks run automatically. You don't need to do anything — they capture:\n" +
 		"- `PostToolUse` — every tool invocation\n" +
 		"- `Stop` — when the agent finishes responding\n" +
-		"- `SessionEnd` — when the session closes\n\n" +
+		"- `SessionEnd` — when the session closes\n" +
+		"- `SessionStart` — auto-injects relevant past lessons\n\n" +
 		"## Commands\n\n" +
 		"```\nforge status\nforge search query\nforge distill\n```\n"
 	skillPath := filepath.Join(skillDir, "forge.md")

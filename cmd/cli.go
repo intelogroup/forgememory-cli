@@ -505,6 +505,11 @@ func runHelp(args []string) {
     Returns: distilled high-level patterns and preferences for this project
     Params:  limit (number, default 10), project_id (string, optional)
 
+  inject_principles
+    When:    before sending a prompt to a code agent
+    Returns: prompt with relevant past lessons prepended
+    Params:  prompt (string, required), project_id (string, optional)
+
   get_session_summaries
     When:    when you need a narrative of recent work
     Returns: synthesized summaries of past sessions across all agents
@@ -558,10 +563,16 @@ Call these tools at the right moment:
   get_recent_context    -> session start (always)
   search_memories       -> before solving errors or re-implementing features
   get_principles        -> before architecture/design decisions
+  inject_principles     -> before sending a prompt to a code agent (pass prompt as arg)
   get_active_failures   -> when something is mysteriously broken
   get_session_summaries -> when you need a narrative of recent work
   get_project_timeline  -> when orienting on cross-agent history
   get_external_context  -> when you need cached library/API docs
+
+## Auto-Injection
+
+At every session start, Forge auto-injects relevant past lessons into your context.
+No tool call needed — if principles exist for the current project, you'll see them.
 
 ## Claude Code Skills (installed by 'forge init')
 
@@ -797,6 +808,64 @@ func runScan(args []string) {
 		fmt.Fprintf(os.Stderr, "Scan error: %v\n", err)
 		os.Exit(1)
 	}
+}
+
+// runInjectCheck is called by agent hooks (SessionStart/BeforeAgent).
+// It checks for relevant distilled principles and outputs them as context
+// the agent can inject into the conversation.
+// Exit 0 with no output = no principles to inject (silent success).
+// Exit 0 with output = principles formatted for the calling agent.
+func runInjectCheck(args []string) {
+	sourceAgent := os.Getenv("FORGE_SOURCE_TOOL")
+
+	// Respect FORGE_INJECT_PRINCIPLES env var
+	if os.Getenv("FORGE_INJECT_PRINCIPLES") == "false" {
+		os.Exit(0)
+	}
+
+	// Detect project
+	projectID := distill.DetectProjectID("")
+	if projectID == "" {
+		os.Exit(0)
+	}
+
+	// Open DB and get principles
+	database, err := db.Open("")
+	if err != nil {
+		os.Exit(0)
+	}
+	defer database.Close()
+
+	principles, err := database.RecentPrinciplesByProject(projectID, 5)
+	if err != nil || len(principles) == 0 {
+		os.Exit(0)
+	}
+
+	// Build context text
+	var sb strings.Builder
+	sb.WriteString("\n## RELEVANT LESSONS FROM PREVIOUS WORK\n")
+	for _, p := range principles {
+		sb.WriteString(fmt.Sprintf("- %s: %s\n", p.Title, p.Narrative))
+	}
+	sb.WriteString("\n---\n")
+	context := sb.String()
+
+	switch sourceAgent {
+	case "gemini":
+		// Gemini CLI: JSON with additionalContext for SessionStart/BeforeAgent hooks
+		out := map[string]any{
+			"hookSpecificOutput": map[string]any{
+				"additionalContext": context,
+			},
+		}
+		b, _ := json.Marshal(out)
+		fmt.Println(string(b))
+	default:
+		// Claude Code / others: plain text to stdout (SessionStart adds to context)
+		fmt.Print(context)
+	}
+
+	os.Exit(0)
 }
 
 func runMCP(args []string) {

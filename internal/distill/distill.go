@@ -251,6 +251,17 @@ func parseIntOrDefault(raw string, fallback int) int {
 	return v
 }
 
+func parseBoolOrDefault(raw string, fallback bool) bool {
+	if raw == "" {
+		return fallback
+	}
+	v, err := strconv.ParseBool(raw)
+	if err != nil {
+		return fallback
+	}
+	return v
+}
+
 // Distiller handles event distillation.
 type Distiller struct {
 	db     *db.DB
@@ -659,6 +670,67 @@ func (d *Distiller) buildCheckpointPrinciplesPrompt(summary db.SessionSummary, e
 	}
 	sb.WriteString("\nReturn ONLY the JSON array, no other text.\n")
 	return sb.String()
+}
+
+// InjectPrinciplesForPrompt fetches relevant active principles for projectID,
+// formats them as a Markdown context block, and prepends them to the given prompt.
+// When database is nil or FORGE_INJECT_PRINCIPLES is set to false, the original prompt is returned unchanged.
+func InjectPrinciplesForPrompt(database *db.DB, prompt, projectID string) string {
+	if database == nil {
+		return prompt
+	}
+	if !parseBoolOrDefault(os.Getenv("FORGE_INJECT_PRINCIPLES"), true) {
+		return prompt
+	}
+
+	if projectID == "" {
+		projectID = DetectProjectID("")
+	}
+	if projectID == "" {
+		return prompt
+	}
+
+	principles, err := database.RecentPrinciplesByProject(projectID, 5)
+	if err != nil || len(principles) == 0 {
+		return prompt
+	}
+
+	var context strings.Builder
+	context.WriteString("\n## RELEVANT LESSONS FROM PREVIOUS WORK\n")
+	for _, p := range principles {
+		context.WriteString(fmt.Sprintf("- %s: %s\n", p.Title, p.Narrative))
+	}
+	context.WriteString("\n---\n\n")
+
+	return context.String() + prompt
+}
+
+// DetectProjectID resolves the project identifier.
+// Priority: hint arg > FORGE_PROJECT_ID env > git repo root > ""
+func DetectProjectID(hint string) string {
+	if hint != "" {
+		return hint
+	}
+	if v := strings.TrimSpace(os.Getenv("FORGE_PROJECT_ID")); v != "" {
+		return v
+	}
+	cwd, err := os.Getwd()
+	if err != nil {
+		return ""
+	}
+	out, err := exec.Command("git", "-C", cwd, "rev-parse", "--show-toplevel").Output()
+	if err != nil {
+		return ""
+	}
+	root := strings.TrimSpace(string(out))
+	if root == "" {
+		return ""
+	}
+	parts := strings.Split(root, "/")
+	if len(parts) > 0 {
+		return parts[len(parts)-1]
+	}
+	return ""
 }
 
 func (d *Distiller) callLLM(prompt string) (string, error) {

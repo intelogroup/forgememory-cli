@@ -123,6 +123,7 @@ func setupGemini(home string) (string, error) {
 	afterToolCommand := fmt.Sprintf(`"%s" hook --source gemini --event PostToolUse`, forgePath)
 	afterAgentCommand := fmt.Sprintf(`"%s" hook --source gemini --event Stop`, forgePath)
 	sessionEndCommand := fmt.Sprintf(`"%s" hook --source gemini --event SessionEnd`, forgePath)
+	sessionStartCommand := fmt.Sprintf(`FORGE_SOURCE_TOOL=gemini "%s" inject-check`, forgePath)
 
 	beforeAgentEntry := map[string]any{
 		"hooks": []any{map[string]any{"type": "command", "command": beforeAgentCommand}},
@@ -137,6 +138,9 @@ func setupGemini(home string) (string, error) {
 	sessionEndEntry := map[string]any{
 		"hooks": []any{map[string]any{"type": "command", "command": sessionEndCommand}},
 	}
+	sessionStartEntry := map[string]any{
+		"hooks": []any{map[string]any{"type": "command", "command": sessionStartCommand}},
+	}
 
 	existingHooks, _ := hooks["BeforeAgent"].([]any)
 	hooks["BeforeAgent"] = upsertCommandHookArray(existingHooks, beforeAgentEntry, beforeAgentCommand)
@@ -146,6 +150,8 @@ func setupGemini(home string) (string, error) {
 	hooks["AfterAgent"] = upsertCommandHookArray(existingHooks, afterAgentEntry, afterAgentCommand)
 	existingHooks, _ = hooks["SessionEnd"].([]any)
 	hooks["SessionEnd"] = upsertCommandHookArray(existingHooks, sessionEndEntry, sessionEndCommand)
+	existingHooks, _ = hooks["SessionStart"].([]any)
+	hooks["SessionStart"] = upsertCommandHookArray(existingHooks, sessionStartEntry, sessionStartCommand)
 	settings["hooks"] = hooks
 
 	data, err := json.MarshalIndent(settings, "", "  ")
@@ -171,7 +177,17 @@ func setupGemini(home string) (string, error) {
 		"## How It Works\n\n" +
 		"- **Capture**: Every tool use is logged automatically via hooks.\n" +
 		"- **Distill**: The daemon runs every 10 minutes to summarize raw events.\n" +
-		"- **Inject**: When you ask about past work, Forge provides context.\n\n" +
+		"- **Inject**: Past lessons are auto-injected at session start and available on demand.\n\n" +
+		"## MCP Tools\n\n" +
+		"### `get_recent_context` — session start (always)\n" +
+		"### `search_memories` — before solving errors or re-implementing features\n" +
+		"### `get_principles` — before architecture/design decisions\n" +
+		"### `inject_principles` — before sending a prompt to a code agent\n" +
+		"### `get_active_failures` — when something is mysteriously broken\n" +
+		"### `get_session_summaries` — when you need a narrative of recent work\n\n" +
+		"## Auto-Injection\n\n" +
+		"At every session start, Forge auto-injects past lessons into context.\n" +
+		"You don't need to call any tool — if principles exist, they appear automatically.\n\n" +
 		"## Commands\n\n" +
 		"```\nforge status\nforge search query\nforge distill\n```\n"
 	skillPath := filepath.Join(skillDir, "forge-skill.md")
