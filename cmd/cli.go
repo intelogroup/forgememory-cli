@@ -351,10 +351,14 @@ func runDistillDrain(d *distill.Distiller, database *db.DB, cfg distill.Config) 
 			os.Exit(1)
 		}
 		if count == 0 {
-			// DistillBatch returns 0 when the LLM found no principles, but events
-			// are still marked as distilled. Check remaining to decide whether to
-			// continue (events consumed, more remain) or stop (< 3 left).
+			// DistillBatch: 0 principles — events may still be undistilled (LLM
+			// returned empty) or may have been auto-consumed (< 3 boundary).
 			_, newRemaining, _ := database.EventCount()
+			if newRemaining == remaining {
+				// No events were consumed — LLM found nothing actionable.
+				// Stop draining to avoid re-processing the same batch forever.
+				break
+			}
 			if newRemaining < 3 {
 				break
 			}
@@ -1022,6 +1026,16 @@ func runDoctor(args []string) {
 		}
 		fmt.Println("  Repair complete.")
 		fmt.Println()
+
+		addr = readAddr()
+		if addr == "" || !isDaemonAlive(addr) {
+			result, err := ensureDaemonRunning(true)
+			if err != nil {
+				fmt.Printf("  Warning: could not restart daemon: %v\n", err)
+			} else if result.started {
+				fmt.Println("  Daemon restarted.")
+			}
+		}
 	}
 
 	// Check forge home writability

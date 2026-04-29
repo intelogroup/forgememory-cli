@@ -77,6 +77,7 @@ func TestIsManagedForgePath_ManagedPaths(t *testing.T) {
 		filepath.Join(home, ".local", "bin", "forge"),
 		filepath.Join(home, "go", "bin", "forge"),
 		filepath.Join(home, "bin", "forge"),
+		filepath.Join(home, ".nvm", "versions", "node", "v20.11.0", "bin", "forge"),
 	}
 	for _, p := range managed {
 		if !isManagedForgePath(p) {

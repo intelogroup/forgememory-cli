@@ -74,6 +74,7 @@ func isManagedForgePath(p string) bool {
 		filepath.Join(home, ".local", "bin"),
 		filepath.Join(home, "go", "bin"),
 		filepath.Join(home, "bin"),
+		filepath.Join(home, ".nvm"),
 	}
 	for _, prefix := range managed {
 		if strings.HasPrefix(p, prefix+string(filepath.Separator)) || p == prefix {
