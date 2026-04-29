@@ -1,17 +1,10 @@
-FROM golang:1.21-alpine AS builder
-
-WORKDIR /app
-COPY . .
-
-RUN go build -o /payment-server .
-
 FROM alpine:latest
 
 RUN apk --no-cache add ca-certificates
 
 WORKDIR /app
-COPY --from=builder /payment-server .
+COPY payment-server-linux .
 
 EXPOSE 8000
 
-CMD ["./payment-server"]
+CMD ["./payment-server-linux"]
