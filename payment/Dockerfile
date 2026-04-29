@@ -3,7 +3,7 @@ FROM golang:1.21-alpine AS builder
 WORKDIR /app
 COPY . .
 
-RUN go build -o /payment-server .
+RUN go mod tidy && go build -o /payment-server .
 
 FROM alpine:latest
 
