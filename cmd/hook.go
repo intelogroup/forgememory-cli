@@ -56,6 +56,40 @@ var writeTool = map[string]bool{
 // privatePattern matches <private>...</private> blocks (case-insensitive, dotall).
 var privatePattern = regexp.MustCompile(`(?si)<private>.*?</private>`)
 
+// noisePayloadPatterns match Docker/CI build output that pollutes forge memory.
+// These are high-confidence: their presence means the tool output is build noise,
+// not meaningful coding activity worth remembering.
+var noisePayloadPatterns = []*regexp.Regexp{
+	// Docker build markers
+	regexp.MustCompile(`(?m)^#\d+\s*\[(builder|stage|internal)\]`),
+	regexp.MustCompile(`(?m)extracting sha256:`),
+	regexp.MustCompile(`(?m)^\d+\.\d+Z\s+#\d+`),
+	regexp.MustCompile(`(?m)^sha256:[a-f0-9]{64}\s+\d+\.\d+[KMGT]B\s+/\s+\d+\.\d+[KMGT]B`),
+	regexp.MustCompile(`(?m)Dockerfile:\d+`),
+	// Docker build error
+	regexp.MustCompile(`failed to solve:`),
+	// CI/CD noise (GitHub Actions, etc.)
+	regexp.MustCompile(`##\[(error|warning|debug|notice)\]`),
+	regexp.MustCompile(`::(error|warning|debug|notice)::`),
+	// Build tool noise
+	regexp.MustCompile(`(?m)^make(\[\d+\])?: \*\*\*`),
+	regexp.MustCompile(`(?m)^\s*npm\s+(notice|warn|ERR)[!]?\s`),
+}
+
+// isNoisePayload reports whether the tool output payload is build/deploy noise
+// that should not be stored as a forge event.
+func isNoisePayload(payload string) bool {
+	if len(payload) < 100 {
+		return false
+	}
+	for _, p := range noisePayloadPatterns {
+		if p.MatchString(payload) {
+			return true
+		}
+	}
+	return false
+}
+
 var promptFieldPriority = map[string]int{
 	"prompt":      0,
 	"user_prompt": 0,
@@ -150,6 +184,11 @@ func runHook(args []string) {
 
 	// Read and strip private data from payload
 	payload := stripPrivate(string(readStdin()))
+
+	// Skip build/deploy noise — Docker logs, CI output pollutes memory.
+	if isNoisePayload(payload) {
+		os.Exit(0)
+	}
 
 	// Parse hook input to extract session/tool metadata.
 	input, eventType := parseHookInput(payload, eventType)

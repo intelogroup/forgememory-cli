@@ -583,3 +583,44 @@ func TestFindBestPromptRecall_AllowsSingleLongTokenMatch(t *testing.T) {
 		t.Fatalf("expected only dashboard to match, got %#v", match.MatchedTerms)
 	}
 }
+
+func TestIsNoisePayload_DockerBuild(t *testing.T) {
+	noise := `2026-04-29T18:21:07.339710746Z #14 [builder 4/4] RUN cd payment && go build -o /payment-server .
+2026-04-29T18:21:07.339715646Z #14 0.073 /bin/sh: cd: line 0: can't cd to payment: No such file or directory
+#14 ERROR: process "/bin/sh -c cd payment && go build" did not complete successfully: exit code: 2
+Dockerfile:6
+error: failed to solve: process did not complete successfully
+extracting sha256:54bf7053e2d96c2c7f4637ad7580bd64345b3c9fabb163e1fdb8894aea8a9af0 5.9s done
+sha256:54bf7053e2d96c2c7f4637ad7580bd64345b3c9fabb163e1fdb8894aea8a9af0 67.01MB / 67.01MB 0.7s done`
+	if !isNoisePayload(noise) {
+		t.Error("Docker build output should be detected as noise")
+	}
+}
+
+func TestIsNoisePayload_CleanCode(t *testing.T) {
+	clean := `{"tool_name":"Bash","tool_input":{"command":"go test ./..."},"tool_response":{"stdout":"ok  github.com/forge/forge/cmd","exit_code":0}}`
+	if isNoisePayload(clean) {
+		t.Error("clean code output should NOT be detected as noise")
+	}
+}
+
+func TestIsNoisePayload_ShortPayload(t *testing.T) {
+	if isNoisePayload("sha256:abc123") {
+		t.Error("short payload should not match noise patterns (len < 100)")
+	}
+}
+
+func TestIsNoisePayload_GitHubActionsCI(t *testing.T) {
+	ci := `##[error]Process completed with exit code 1.
+::error::Something went wrong.
+##[warning]This action is deprecated`
+	if !isNoisePayload(ci) {
+		t.Error("GitHub Actions CI output should be detected as noise")
+	}
+}
+
+func TestIsNoisePayload_Empty(t *testing.T) {
+	if isNoisePayload("") {
+		t.Error("empty payload should not be noise")
+	}
+}
