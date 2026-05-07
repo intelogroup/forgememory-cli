@@ -2,6 +2,7 @@ package main
 
 import (
 	"testing"
+	"time"
 )
 
 func TestMin(t *testing.T) {
@@ -149,5 +150,31 @@ func TestTransientForgeString_Slice(t *testing.T) {
 	result := transientForgeString(s)
 	if result == "" {
 		t.Error("expected transient string from slice")
+	}
+}
+
+func TestDistillBackoff(t *testing.T) {
+	// 0 failures and 1 failure → no backoff (recover quickly from a transient
+	// blip). 2+ failures → exponential 1m, 2m, 4m, 8m, 16m, capped at 30m.
+	cases := []struct {
+		failures int
+		want     time.Duration
+	}{
+		{0, 0},
+		{1, 0},
+		{2, 1 * time.Minute},
+		{3, 2 * time.Minute},
+		{4, 4 * time.Minute},
+		{5, 8 * time.Minute},
+		{6, 16 * time.Minute},
+		{7, 30 * time.Minute},
+		{20, 30 * time.Minute},
+		{1000, 30 * time.Minute},
+	}
+	for _, c := range cases {
+		got := distillBackoff(c.failures)
+		if got != c.want {
+			t.Errorf("distillBackoff(%d) = %v, want %v", c.failures, got, c.want)
+		}
 	}
 }

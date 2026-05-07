@@ -123,6 +123,16 @@ func (s *Server) handleRequest(req Request) *Response {
 		return s.handleToolsCall(req)
 	case "notifications/initialized":
 		return nil // notification, no response
+	case "resources/list":
+		// Forge does not expose MCP resources, but some clients (OpenCode)
+		// probe for them anyway and log a -32601 as ERROR. Return an empty
+		// list to keep their logs quiet.
+		return &Response{JSONRPC: "2.0", ID: req.ID, Result: map[string]any{"resources": []any{}}}
+	case "resources/templates/list":
+		return &Response{JSONRPC: "2.0", ID: req.ID, Result: map[string]any{"resourceTemplates": []any{}}}
+	case "prompts/list":
+		// Same rationale as resources/list — Forge does not declare prompts.
+		return &Response{JSONRPC: "2.0", ID: req.ID, Result: map[string]any{"prompts": []any{}}}
 	default:
 		return &Response{
 			JSONRPC: "2.0",

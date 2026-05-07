@@ -966,3 +966,24 @@ func TestDetectAndMarkConflicts_MarksFromLLMResponse(t *testing.T) {
 		}
 	}
 }
+
+func TestNormalizeOpenAIBase(t *testing.T) {
+	cases := []struct {
+		in, want string
+	}{
+		{"https://api.openai.com", "https://api.openai.com"},
+		{"https://api.openai.com/", "https://api.openai.com"},
+		{"https://api.openai.com/v1", "https://api.openai.com"},
+		{"https://api.openai.com/v1/", "https://api.openai.com"},
+		{"http://127.0.0.1:11434/v1", "http://127.0.0.1:11434"},
+		{"http://127.0.0.1:11434", "http://127.0.0.1:11434"},
+		{"http://host:8080/v1//", "http://host:8080"},
+		{"", ""},
+	}
+	for _, c := range cases {
+		got := normalizeOpenAIBase(c.in)
+		if got != c.want {
+			t.Errorf("normalizeOpenAIBase(%q) = %q, want %q", c.in, got, c.want)
+		}
+	}
+}

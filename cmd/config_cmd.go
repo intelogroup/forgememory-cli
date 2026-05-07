@@ -28,7 +28,8 @@ func runConfig(args []string) {
 	ollamaTimeoutFlag := fs.String("ollama-timeout", "", "Ollama request timeout (e.g. 120s); overrides --timeout for Ollama")
 	ollamaStartupWaitFlag := fs.String("ollama-startup-wait", "", "Grace period before first Ollama distill (e.g. 15s)")
 	jsonFlag := fs.Bool("json", false, "Machine-readable JSON output")
-	validateFlag := fs.Bool("validate", false, "Validate provider credentials/model access")
+	validateFlag := fs.Bool("validate", false, "Validate provider credentials/model access (now default; kept for compatibility)")
+	noValidateFlag := fs.Bool("no-validate", false, "Skip credential validation after saving (offline scripts)")
 	interactiveFlag := fs.Bool("interactive", false, "Interactive setup")
 	if err := fs.Parse(args); err != nil {
 		os.Exit(1)
@@ -108,7 +109,8 @@ func runConfig(args []string) {
 		fmt.Println("  --interval             Distillation interval (e.g. 10m)")
 		fmt.Println("  --ollama-timeout       Ollama request timeout (e.g. 120s); overrides --timeout for Ollama")
 		fmt.Println("  --ollama-startup-wait  Grace period before first Ollama distill (e.g. 15s)")
-		fmt.Println("  --validate       Validate provider credentials/model access")
+		fmt.Println("  --validate       Force credential validation (default when --provider/--api-key/--model/--base-url changes)")
+		fmt.Println("  --no-validate    Skip credential validation (for offline scripts)")
 		fmt.Println("  --json           JSON output (with --show)")
 		fmt.Println("  --interactive    Interactive setup")
 		fmt.Println("")
@@ -205,10 +207,24 @@ func runConfig(args []string) {
 		cfg.Retries = 3
 	}
 
-	if *validateFlag {
+	// Validate by default whenever credentials/model/base-url change. Skipping
+	// validation used to leave the daemon failing every minute with opaque
+	// "Invalid API key" errors. Allow opting out for offline scripts.
+	credChanged := *providerFlag != existing.Provider ||
+		(*apiKeyFlag != "" && *apiKeyFlag != existing.APIKey) ||
+		(*modelFlag != "" && *modelFlag != existing.Model) ||
+		(*baseURLFlag != "" && *baseURLFlag != existing.BaseURL)
+	shouldValidate := *validateFlag || (credChanged && !*noValidateFlag)
+
+	if shouldValidate {
 		fmt.Println("Testing connection...")
 		if err := distill.ValidateConfig(distillConfigFromUserConfig(cfg)); err != nil {
 			fmt.Fprintf(os.Stderr, "Validation failed: %s\n", distill.UserMessage(err))
+			fmt.Fprintln(os.Stderr, "Suggestions:")
+			for i, hint := range distill.DiagnosticHints(distillConfigFromUserConfig(cfg), err) {
+				fmt.Fprintf(os.Stderr, "  %d. %s\n", i+1, hint)
+			}
+			fmt.Fprintln(os.Stderr, "\nNot saving — config left unchanged. Use --no-validate to save without testing.")
 			os.Exit(1)
 		}
 		fmt.Println("Validation successful.")
@@ -218,6 +234,11 @@ func runConfig(args []string) {
 		fmt.Fprintf(os.Stderr, "Error saving config: %v\n", err)
 		os.Exit(1)
 	}
+
+	// Surface env-vs-config drift the moment the user touches config —
+	// otherwise a stale shell export will silently shadow the new value
+	// when the daemon next starts and the user has no idea why.
+	warnEnvVsConfig()
 
 	fmt.Printf("Configuration saved.\n")
 	fmt.Printf("Provider: %s\n", cfg.Provider)

@@ -1,5 +1,45 @@
 # Changelog
 
+## [0.4.38] - 2026-05-07
+
+### Fixed (OpenCode compatibility round)
+- **OpenCode plugin no longer requires the `$` shell helper.** The auto-generated
+  `~/.config/opencode/plugins/forge.js` previously destructured `{ $ }` from the
+  plugin context and used tagged template literals — OpenCode does not expose
+  `$`, so every event raised `$ is not a function`. The plugin now spawns the
+  forge hook binary via `node:child_process.spawn`, which is universally
+  available and avoids shell-quoting risk on the JSON payload.
+- **`--base-url` no longer double-appends `/v1`.** Setting `--base-url
+  http://host:11434/v1` produced `/v1/v1/chat/completions` → 404. A new
+  `normalizeOpenAIBase` helper strips trailing `/` and `/v1` for OpenAI, Groq,
+  and Anthropic paths.
+- **MCP server stops logging `-32601 Method not found` for `resources/list` and
+  `prompts/list` probes.** Returns empty `{resources: []}` /
+  `{resourceTemplates: []}` / `{prompts: []}` instead. Genuinely unknown
+  methods still produce `-32601`.
+- **`forge start` no longer rewrites agent skill files on every boot.** The
+  stale-hook detection now compares realpath + SHA256, not raw strings, so
+  npm-wrapper paths, symlinks, and same-version installs at different paths
+  are recognized as equivalent. A re-write only happens when the registered
+  binary is missing or its content actually differs.
+
+### Added
+- **Auto-validation on config changes.** `forge config --provider` /
+  `--api-key` / `--model` / `--base-url` now runs `distill.ValidateConfig`
+  by default and refuses to save on credential failure (config left
+  unchanged). New `--no-validate` opts out for offline scripts. Prevents the
+  "1-minute opaque-error treadmill" where a stale key kept firing failed
+  distillations every minute with no clear feedback.
+- **Exponential backoff on consecutive distillation failures.** Schedule:
+  no backoff for 0–1 failures, then 1m, 2m, 4m, 8m, 16m, capped at 30m.
+  After 3+ consecutive failures the daemon also annotates the recorded
+  error with `(N consecutive failures, next retry in Xm)` and logs at
+  CRITICAL severity, surfacing through `forge status` and the `get_alerts`
+  MCP tool.
+- **`forge config` warns about env-vs-config drift at save time.**
+  Previously the warning only fired at `forge start`, leaving stale shell
+  exports to silently shadow the new value when the daemon next reloaded.
+
 ## [0.4.23] - 2026-04-07
 
 ### Fixed

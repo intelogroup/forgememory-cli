@@ -1,9 +1,12 @@
 package main
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"flag"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -112,9 +115,19 @@ func checkAndRepairIntegrationPaths(home string) {
 }
 
 // findStaleForgePathInHooks walks the hooks section of claude settings.json and
-// returns the first forge binary path that differs from currentPath, or "" if
-// all paths match (or no forge hooks are found).
+// returns the first forge binary path that is genuinely stale, or "" if every
+// registered path resolves to the same binary as currentPath (or no forge hooks
+// exist).
+//
+// "Stale" means: the path no longer exists on disk, OR it points to a binary
+// whose contents differ from currentPath. String inequality alone is NOT
+// enough — npm wrappers, multiple installs, and symlinks all produce
+// equivalent binaries at different paths and used to trigger a re-write on
+// every `forge start`, churning the agent skill files.
 func findStaleForgePathInHooks(settings map[string]any, currentPath string) string {
+	currentReal := resolveRealPath(currentPath)
+	currentHash := fileSHA256(currentPath)
+
 	hooks, _ := settings["hooks"].(map[string]any)
 	for _, arr := range hooks {
 		items, _ := arr.([]any)
@@ -128,13 +141,73 @@ func findStaleForgePathInHooks(settings map[string]any, currentPath string) stri
 				// Extract the binary portion (up to the first space).
 				binaryPart := strings.SplitN(strings.Trim(cmd, `"`), `" `, 2)[0]
 				binaryPart = strings.TrimPrefix(binaryPart, `"`)
-				if binaryPart != "" && strings.Contains(binaryPart, "forge") && binaryPart != currentPath {
-					return binaryPart
+				if binaryPart == "" || !strings.Contains(binaryPart, "forge") {
+					continue
 				}
+				if isEquivalentBinary(binaryPart, currentPath, currentReal, currentHash) {
+					continue
+				}
+				return binaryPart
 			}
 		}
 	}
 	return ""
+}
+
+// isEquivalentBinary reports whether registeredPath and currentPath should be
+// treated as the same forge binary for integration purposes.
+func isEquivalentBinary(registeredPath, currentPath, currentReal, currentHash string) bool {
+	if registeredPath == currentPath {
+		return true
+	}
+	// If the registered path no longer exists, it must be refreshed.
+	if _, err := os.Stat(registeredPath); err != nil {
+		return false
+	}
+	if currentReal != "" {
+		if r := resolveRealPath(registeredPath); r != "" && r == currentReal {
+			return true
+		}
+	}
+	// As a last resort, compare file contents — covers the npm-wrapper and
+	// multi-install-same-version cases where two paths point to byte-identical
+	// binaries on different filesystem roots.
+	if currentHash != "" {
+		if h := fileSHA256(registeredPath); h != "" && h == currentHash {
+			return true
+		}
+	}
+	return false
+}
+
+func resolveRealPath(path string) string {
+	if path == "" {
+		return ""
+	}
+	abs, err := filepath.Abs(path)
+	if err != nil {
+		abs = path
+	}
+	if real, err := filepath.EvalSymlinks(abs); err == nil {
+		return real
+	}
+	return abs
+}
+
+func fileSHA256(path string) string {
+	if path == "" {
+		return ""
+	}
+	f, err := os.Open(path)
+	if err != nil {
+		return ""
+	}
+	defer f.Close()
+	h := sha256.New()
+	if _, err := io.Copy(h, f); err != nil {
+		return ""
+	}
+	return hex.EncodeToString(h.Sum(nil))
 }
 
 // warnEnvVsConfig prints a warning when shell env vars override config file values

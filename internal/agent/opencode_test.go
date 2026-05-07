@@ -120,6 +120,8 @@ func TestSetupOpencode_WritesPlugin(t *testing.T) {
 		"SessionEnd",
 		"UserPromptSubmit",
 		ForgePath(),
+		"node:child_process",
+		"spawn",
 	} {
 		if !strings.Contains(plugin, want) {
 			t.Errorf("plugin missing %q", want)
@@ -129,6 +131,12 @@ func TestSetupOpencode_WritesPlugin(t *testing.T) {
 	// Must only fire Stop when status === "idle".
 	if !strings.Contains(plugin, `"idle"`) {
 		t.Error("plugin should gate Stop on status === \"idle\"")
+	}
+
+	// Must NOT use the `$` shell helper — OpenCode does not expose it,
+	// and previous versions broke with "$ is not a function" at runtime.
+	if strings.Contains(plugin, "{ $ }") || strings.Contains(plugin, "({ $ })") {
+		t.Error("plugin must not destructure $ from context — OpenCode does not provide it")
 	}
 }
 

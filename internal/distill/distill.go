@@ -792,12 +792,22 @@ func (d *Distiller) callOllama(prompt string) (string, error) {
 	return "", lastErr
 }
 
+// normalizeOpenAIBase returns base with any trailing "/" or "/v1" stripped.
+// Users frequently set base-url to "http://host:port/v1" (the standard OpenAI
+// convention), which produced "/v1/v1/chat/completions" → 404 when we appended
+// our own "/v1/...". Tolerate both shapes.
+func normalizeOpenAIBase(base string) string {
+	base = strings.TrimRight(base, "/")
+	base = strings.TrimSuffix(base, "/v1")
+	return strings.TrimRight(base, "/")
+}
+
 func (d *Distiller) callOpenAI(prompt string) (string, error) {
 	base := d.config.BaseURL
 	if base == "" {
 		base = "https://api.openai.com"
 	}
-	url := base + "/v1/chat/completions"
+	url := normalizeOpenAIBase(base) + "/v1/chat/completions"
 
 	body := map[string]any{
 		"model": d.config.Model,
@@ -854,7 +864,7 @@ func (d *Distiller) callOpenAI(prompt string) (string, error) {
 }
 
 func (d *Distiller) callGroq(prompt string) (string, error) {
-	url := d.config.BaseURL + "/v1/chat/completions"
+	url := normalizeOpenAIBase(d.config.BaseURL) + "/v1/chat/completions"
 
 	body := map[string]any{
 		"model": d.config.Model,
@@ -916,7 +926,7 @@ func (d *Distiller) callAnthropic(prompt string) (string, error) {
 	if base == "" {
 		base = "https://api.anthropic.com"
 	}
-	url := base + "/v1/messages"
+	url := normalizeOpenAIBase(base) + "/v1/messages"
 
 	body := map[string]any{
 		"model":      d.config.Model,

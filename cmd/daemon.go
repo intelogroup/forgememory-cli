@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"math"
 	"net"
 	"os"
 	"os/signal"
@@ -267,6 +268,21 @@ func handleEventMsg(raw map[string]json.RawMessage, database *db.DB) {
 
 const distillEventThreshold = 300
 
+// distillBackoff returns the minimum interval that must elapse since the last
+// failure before another distill attempt is allowed, given consecutiveFailures.
+// Exponential: 1m, 2m, 4m, 8m, 16m, capped at 30m. The first failure does not
+// add backoff (returns 0) — recovery from transient errors should be fast.
+func distillBackoff(consecutiveFailures int) time.Duration {
+	if consecutiveFailures <= 1 {
+		return 0
+	}
+	exp := math.Pow(2, float64(consecutiveFailures-2))
+	if exp > 30 {
+		exp = 30
+	}
+	return time.Duration(exp) * time.Minute
+}
+
 func distillLoop(d *distill.Distiller, database *db.DB, interval time.Duration) {
 	pollInterval := 60 * time.Second
 	ticker := time.NewTicker(pollInterval)
@@ -275,6 +291,19 @@ func distillLoop(d *distill.Distiller, database *db.DB, interval time.Duration) 
 		_, undistilled, _ := database.EventCount()
 		if undistilled < distillEventThreshold {
 			continue
+		}
+
+		// Apply exponential backoff after consecutive failures so we don't
+		// hammer a misconfigured provider every minute. Without this, a stale
+		// API key produces thousands of consecutive failures before anyone
+		// notices.
+		if h, hErr := database.GetDistillationHealth(); hErr == nil && h.ConsecutiveFailures > 0 {
+			backoff := distillBackoff(h.ConsecutiveFailures)
+			if backoff > 0 {
+				if last, parseErr := time.Parse(time.RFC3339, h.LastErrorAt); parseErr == nil && time.Since(last) < backoff {
+					continue
+				}
+			}
 		}
 
 		// Skip if a manual `forge distill` is already running.
@@ -296,8 +325,22 @@ func distillLoop(d *distill.Distiller, database *db.DB, interval time.Duration) 
 
 		next := runAt.Add(pollInterval)
 		if err != nil {
-			log.Printf("Distillation error: %v", err)
-			if recErr := database.RecordDistillationFailure(runAt, time.Since(start), undistilled, err.Error(), next); recErr != nil {
+			// Annotate the error with the new failure count + backoff so
+			// `forge status` and the get_alerts MCP tool show what's happening.
+			h, _ := database.GetDistillationHealth()
+			nextFailures := h.ConsecutiveFailures + 1
+			backoff := distillBackoff(nextFailures)
+			if backoff > 0 {
+				next = runAt.Add(backoff)
+			}
+			msg := err.Error()
+			if nextFailures >= 3 {
+				msg = fmt.Sprintf("%s (%d consecutive failures, next retry in %s)", msg, nextFailures, backoff)
+				log.Printf("Distillation error (CRITICAL — %d consecutive): %v", nextFailures, err)
+			} else {
+				log.Printf("Distillation error: %v", err)
+			}
+			if recErr := database.RecordDistillationFailure(runAt, time.Since(start), undistilled, msg, next); recErr != nil {
 				log.Printf("Distillation health record error: %v", recErr)
 			}
 		} else if count > 0 {

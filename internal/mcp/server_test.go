@@ -11,6 +11,36 @@ import (
 	"github.com/forge/forge/internal/db"
 )
 
+func TestHandleRequestEmptyResourcesAndPrompts(t *testing.T) {
+	// OpenCode (and other MCP clients) probe resources/list and prompts/list
+	// even when the server does not declare those capabilities. Returning
+	// -32601 makes the client log an ERROR. We respond with empty payloads
+	// instead so probing is silent.
+	database := openTestDB(t)
+	server := New(database)
+
+	for _, method := range []string{"resources/list", "resources/templates/list", "prompts/list"} {
+		req := Request{JSONRPC: "2.0", ID: json.RawMessage("1"), Method: method}
+		resp := server.handleRequest(req)
+		if resp == nil {
+			t.Fatalf("%s: expected response", method)
+		}
+		if resp.Error != nil {
+			t.Fatalf("%s: returned error %+v, expected empty result", method, resp.Error)
+		}
+		if resp.Result == nil {
+			t.Fatalf("%s: nil result", method)
+		}
+	}
+
+	// A genuinely unknown method should still produce -32601.
+	req := Request{JSONRPC: "2.0", ID: json.RawMessage("1"), Method: "totally/made/up"}
+	resp := server.handleRequest(req)
+	if resp == nil || resp.Error == nil || resp.Error.Code != -32601 {
+		t.Fatalf("unknown method should return -32601, got %+v", resp)
+	}
+}
+
 func TestHandleToolsListIncludesScopedReadTools(t *testing.T) {
 	database := openTestDB(t)
 	server := New(database)

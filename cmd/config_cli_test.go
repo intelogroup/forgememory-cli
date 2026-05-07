@@ -14,7 +14,7 @@ func TestRunConfig_DefaultModelAnthropicHaiku(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
 
-	runConfig([]string{"--provider", "anthropic", "--api-key", "sk-ant-test"})
+	runConfig([]string{"--provider", "anthropic", "--api-key", "sk-ant-test", "--no-validate"})
 
 	cfg, err := config.Load()
 	if err != nil {
