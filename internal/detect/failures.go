@@ -26,7 +26,10 @@ var (
 	goUndefinedPattern  = regexp.MustCompile(`undefined: [a-z0-9_./*]+`)
 	pythonTracePattern  = regexp.MustCompile(`traceback \(most recent call last\):`)
 	genericFailPattern  = regexp.MustCompile(`(?i)\b(error|failed|failure|panic|exception|fatal|undefined:|could not compile|cannot find|not found|timed out)\b`)
-	successTextPatterns = []*regexp.Regexp{
+	// sourceCodeDeclPattern matches source code declaration lines that carry
+	// identifiers or parameters named "error"/"errors" but are not runtime failures.
+	sourceCodeDeclPattern = regexp.MustCompile(`(?i)^\s*(def |async def |func |fn |pub fn |class |public |private |protected )`)
+	successTextPatterns   = []*regexp.Regexp{
 		regexp.MustCompile(`(?i)\bbuild succeeded\b`),
 		regexp.MustCompile(`(?i)\bcompiled successfully\b`),
 		regexp.MustCompile(`(?i)\bfinished\b.*\b(target|release|dev)\b`),
@@ -125,7 +128,10 @@ func observeFailure(event *db.Event) *failureObservation {
 		texts = []string{event.Payload}
 	}
 
-	command := pickCommandFamily(texts)
+	command := extractCommandFamily(event.Payload)
+	if command == "" {
+		command = pickCommandFamily(texts)
+	}
 
 	lines := candidateLines(texts)
 	if len(lines) == 0 {
@@ -191,7 +197,10 @@ func observeSuccess(event *db.Event) *successObservation {
 		texts = []string{event.Payload}
 	}
 
-	command := pickCommandFamily(texts)
+	command := extractCommandFamily(event.Payload)
+	if command == "" {
+		command = pickCommandFamily(texts)
+	}
 	for _, text := range texts {
 		for _, line := range strings.Split(text, "\n") {
 			line = strings.TrimSpace(line)
@@ -206,6 +215,10 @@ func observeSuccess(event *db.Event) *successObservation {
 	return nil
 }
 
+// extractStrings returns text strings to scan for failure/success signals.
+// When the payload is a hook JSON object with a tool_response key, only that
+// subtree is scanned — this prevents false positives from file content inside
+// tool_input fields (old_string, new_string, content, etc.).
 func extractStrings(payload string) []string {
 	payload = strings.TrimSpace(payload)
 	if payload == "" {
@@ -217,31 +230,55 @@ func extractStrings(payload string) []string {
 		return []string{payload}
 	}
 
-	var out []string
-	var walk func(any)
-	walk = func(node any) {
-		switch value := node.(type) {
-		case map[string]any:
-			keys := make([]string, 0, len(value))
-			for key := range value {
-				keys = append(keys, key)
-			}
-			sort.Strings(keys)
-			for _, key := range keys {
-				walk(value[key])
-			}
-		case []any:
-			for _, child := range value {
-				walk(child)
-			}
-		case string:
-			if trimmed := strings.TrimSpace(value); trimmed != "" {
-				out = append(out, trimmed)
-			}
+	if obj, ok := parsed.(map[string]any); ok {
+		if toolResp, found := obj["tool_response"]; found {
+			var out []string
+			walkForStrings(toolResp, &out)
+			return out
 		}
 	}
-	walk(parsed)
+
+	var out []string
+	walkForStrings(parsed, &out)
 	return out
+}
+
+func walkForStrings(node any, out *[]string) {
+	switch value := node.(type) {
+	case map[string]any:
+		keys := make([]string, 0, len(value))
+		for key := range value {
+			keys = append(keys, key)
+		}
+		sort.Strings(keys)
+		for _, key := range keys {
+			walkForStrings(value[key], out)
+		}
+	case []any:
+		for _, child := range value {
+			walkForStrings(child, out)
+		}
+	case string:
+		if trimmed := strings.TrimSpace(value); trimmed != "" {
+			*out = append(*out, trimmed)
+		}
+	}
+}
+
+// extractCommandFamily reads the command from tool_input.command in the raw
+// payload and returns its family (e.g. "cargo build", "npm install"). Reading
+// directly from tool_input is more reliable than scanning output strings.
+func extractCommandFamily(payload string) string {
+	var obj map[string]any
+	if err := json.Unmarshal([]byte(payload), &obj); err != nil {
+		return ""
+	}
+	input, ok := obj["tool_input"].(map[string]any)
+	if !ok {
+		return ""
+	}
+	cmd, _ := input["command"].(string)
+	return commandFamily(strings.TrimSpace(cmd))
 }
 
 func candidateLines(texts []string) []string {
@@ -286,6 +323,9 @@ func classifyFailure(line string) string {
 	case goUndefinedPattern.MatchString(lowered):
 		return "go_build"
 	case genericFailPattern.MatchString(lowered):
+		if sourceCodeDeclPattern.MatchString(line) {
+			return ""
+		}
 		return "tool_error"
 	default:
 		return ""

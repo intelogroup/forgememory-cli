@@ -307,6 +307,39 @@ func TestProcessEvent_DoesNotResolveAlertOnUnrelatedSuccess(t *testing.T) {
 	}
 }
 
+func TestObserveFailure_IgnoresPythonFunctionSignatureInToolInput(t *testing.T) {
+	// Claude edits a file whose old_string/new_string contain a function with
+	// "errors" and label="error" — must never fire a failure observation.
+	payload := `{"tool_input":{"file_path":"cli.py","old_string":"def _print_report(errors, warnings, label=\"error\"):","new_string":"def _print_report(errors, warnings, label=\"error\"):"},"tool_response":{"type":"result","result":"The file has been edited successfully."}}`
+	event := &db.Event{
+		SessionID:  "sess-fp",
+		ProjectID:  "gliffon",
+		SourceTool: "claude",
+		ToolName:   "Edit",
+		Payload:    payload,
+	}
+	for i := 0; i < 5; i++ {
+		if obs := observeFailure(event); obs != nil {
+			t.Fatalf("false positive: observeFailure should not flag source code in tool_input, got %+v", obs)
+		}
+	}
+}
+
+func TestClassifyFailure_IgnoresSourceCodeDeclarations(t *testing.T) {
+	cases := []string{
+		`def _print_report(errors, warnings, label="error"):`,
+		`func handleError(err error) error {`,
+		`async def on_error(self, exception):`,
+		`class ErrorHandler(BaseException):`,
+		`public void throwError(String message) {`,
+	}
+	for _, line := range cases {
+		if got := classifyFailure(line); got != "" {
+			t.Fatalf("classifyFailure(%q) = %q, want empty — source code declaration should not be flagged", line, got)
+		}
+	}
+}
+
 func TestCommandFamily_IgnoresPathLikeText(t *testing.T) {
 	if got := commandFamily("/tmp/api-service"); got != "" {
 		t.Fatalf("commandFamily(path) = %q, want empty", got)
