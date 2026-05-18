@@ -96,6 +96,21 @@ No tool call needed — if principles exist for the current project, you'll see 
   /forge-status    -> check daemon health and memory stats
   /forge-search    -> search memory from the chat interface
 
+## Provider Setup
+
+Forge distills sessions using an LLM. Configure one of these:
+
+  forgememo (default): forge config --provider forgememo
+  OpenAI:              forge config --provider openai --api-key sk-...
+  Anthropic:           forge config --provider anthropic --api-key sk-ant-...
+  Groq:                forge config --provider groq --api-key gsk-...
+  Ollama:              forge config --provider ollama --model llama3:latest
+                       ollama pull llama3
+
+Your provider config is saved in ~/.forge/config.
+
+Run 'forge distill' to try extraction, or 'forge health' to check status.
+
 ## Quick health check
   forge status     -> DB stats, daemon, distillation state
   forge doctor     -> self-test: DB, daemon, agents, binary

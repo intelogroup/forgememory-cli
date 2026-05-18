@@ -153,6 +153,70 @@ func TestTransientForgeString_Slice(t *testing.T) {
 	}
 }
 
+func TestCheckProviderModelCompat(t *testing.T) {
+	ok := ""         // empty string = no error expected
+	const defaultOpenAI = "https://api.openai.com"
+	const defaultGroq = "https://api.groq.com/openai"
+	const customURL = "http://localhost:8080"
+
+	cases := []struct {
+		name     string
+		provider string
+		model    string
+		apiKey   string
+		baseURL  string
+		wantErr  bool
+	}{
+		// anthropic: must use claude- models and provide a key
+		{"anthropic ok", "anthropic", "claude-haiku-4-5-20251001", "sk-ant-abc", defaultOpenAI, false},
+		{"anthropic wrong model gpt", "anthropic", "gpt-4o", "sk-ant-abc", ok, true},
+		{"anthropic wrong model llama", "anthropic", "llama3:latest", "sk-ant-abc", ok, true},
+		{"anthropic no key", "anthropic", "claude-haiku-4-5-20251001", "", ok, true},
+		{"anthropic empty model ok", "anthropic", "", "sk-ant-abc", ok, false},
+
+		// forgememo: must use claude- models; no key required
+		{"forgememo ok", "forgememo", "claude-haiku-4-5-20251001", "", ok, false},
+		{"forgememo wrong model", "forgememo", "gpt-4o", "", ok, true},
+
+		// openai: requires api key; wrong models rejected on default base
+		{"openai ok", "openai", "gpt-4o", "sk-abc", defaultOpenAI, false},
+		{"openai no key", "openai", "gpt-4o", "", defaultOpenAI, true},
+		{"openai claude model default base", "openai", "claude-haiku-4-5-20251001", "sk-abc", defaultOpenAI, true},
+		{"openai llama model default base", "openai", "llama3:latest", "sk-abc", defaultOpenAI, true},
+		{"openai claude model custom base (proxy)", "openai", "claude-haiku-4-5-20251001", "sk-abc", customURL, false},
+		{"openai empty model ok", "openai", "", "sk-abc", defaultOpenAI, false},
+
+		// groq: requires api key; gpt-/claude- rejected on default base
+		{"groq ok", "groq", "llama-3.3-70b-versatile", "gsk-abc", defaultGroq, false},
+		{"groq no key", "groq", "llama-3.3-70b-versatile", "", defaultGroq, true},
+		{"groq gpt model default base", "groq", "gpt-4o", "gsk-abc", defaultGroq, true},
+		{"groq claude model default base", "groq", "claude-haiku-4-5-20251001", "gsk-abc", defaultGroq, true},
+		{"groq gpt model custom base (proxy)", "groq", "gpt-4o", "gsk-abc", customURL, false},
+
+		// ollama: gpt-/claude- always rejected regardless of base URL
+		{"ollama ok llama", "ollama", "llama3:latest", "", ok, false},
+		{"ollama ok custom name", "ollama", "my-fine-tune:v1", "", ok, false},
+		{"ollama gpt model", "ollama", "gpt-4o", "", ok, true},
+		{"ollama claude model", "ollama", "claude-haiku-4-5-20251001", "", ok, true},
+		{"ollama no key needed", "ollama", "llama3:latest", "", ok, false},
+
+		// codex/forgememo: no constraints checked beyond forgememo model prefix
+		{"codex no constraints", "codex", "any-model", "", ok, false},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			err := checkProviderModelCompat(tc.provider, tc.model, tc.apiKey, tc.baseURL)
+			if tc.wantErr && err == nil {
+				t.Errorf("expected error, got nil")
+			}
+			if !tc.wantErr && err != nil {
+				t.Errorf("unexpected error: %v", err)
+			}
+		})
+	}
+}
+
 func TestDistillBackoff(t *testing.T) {
 	// 0 failures and 1 failure → no backoff (recover quickly from a transient
 	// blip). 2+ failures → exponential 1m, 2m, 4m, 8m, 16m, capped at 30m.

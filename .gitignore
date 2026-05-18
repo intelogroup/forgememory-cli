@@ -37,3 +37,6 @@ payment/payment-server
 payment/payment-server-linux
 payment/payment-server-test
 payment/supabase/.temp/
+.claude/
+package/
+*.tgz

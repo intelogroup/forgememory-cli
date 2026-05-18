@@ -156,6 +156,44 @@ func (d *DB) SearchEventsByProject(projectID, query string, limit int) ([]Event,
 	return events, rows.Err()
 }
 
+// UndistilledCompletedSessions returns session IDs that have a boundary event
+// (Stop/SessionEnd/AfterAgent) but no checkpoint summary yet. These are sessions
+// that have ended and are ready for distillation. Returns at most `limit` sessions.
+func (d *DB) UndistilledCompletedSessions(limit int) ([]string, error) {
+	if limit <= 0 {
+		limit = 10
+	}
+	rows, err := d.conn.Query(
+		`SELECT DISTINCT e.session_id FROM events e
+		 WHERE e.event_type IN ('Stop','SessionEnd','AfterAgent')
+		   AND e.session_id NOT IN (
+		     SELECT session_id FROM session_summaries
+		     WHERE session_id != ''
+		   )
+		   AND e.session_id != 'unknown'
+		 ORDER BY e.ts DESC LIMIT ?`, limit,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var sessions []string
+	for rows.Next() {
+		var s string
+		if err := rows.Scan(&s); err != nil {
+			return nil, err
+		}
+		sessions = append(sessions, s)
+	}
+	return sessions, rows.Err()
+}
+
+// MarkSessionDistilled marks all events for a session as distilled.
+func (d *DB) MarkSessionDistilled(sessionID string) error {
+	_, err := d.conn.Exec("UPDATE events SET distilled=1 WHERE session_id=?", sessionID)
+	return err
+}
+
 // SessionEvents returns the most recent events for a specific session.
 func (d *DB) SessionEvents(sessionID string, limit int) ([]Event, error) {
 	rows, err := d.conn.Query(

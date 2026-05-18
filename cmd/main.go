@@ -118,13 +118,21 @@ func printUsage() {
    4. forge agent-guide     — copy-pasteable CLAUDE.md / system prompt block
    5. forge help mcp        — full MCP tool docs with params
 
+ Provider setup:
+   forge config --show
+   forge config --provider forgememo
+   forge config --provider openai --api-key sk-...
+   forge config --provider anthropic --api-key sk-ant-...
+   forge config --provider groq --api-key gsk-...
+   forge config --provider ollama --model llama3:latest
+
  Environment:
    FORGE_SESSION_ID    Session identifier (set by hook)
    FORGE_SOURCE_TOOL   Source agent: claude/gemini/codex (set by hook)
    FORGE_EVENT_TYPE    Event type: PostToolUse/SessionEnd/UserPromptSubmit (set by hook)
    FORGE_TOOL_NAME     Tool name if applicable (set by hook)
    FORGE_PIPE_ADDR     Daemon IPC address (set by daemon)
-   FORGE_PROVIDER      Inference provider: forgememo/anthropic/openai/ollama
+   FORGE_PROVIDER      Inference provider: forgememo/anthropic/openai/groq/ollama/codex
    FORGE_API_KEY       API key for inference provider
    FORGE_MODEL         Model override (provider default if omitted)
    FORGE_TIMEOUT       Inference timeout (e.g. 30s)

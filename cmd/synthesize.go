@@ -67,14 +67,17 @@ func runSynthesizeSession(args []string) {
 		os.Exit(1)
 	}
 	if summary == nil {
+		_ = database.MarkSessionDistilled(*sessionID)
 		os.Exit(0)
 	}
+
 	count, err := d.DistillCheckpointSummary(*summary, events)
 	if err != nil {
 		log.Printf("synthesize-session: principle distillation failed: %v", err)
 		_ = database.RecordDistillationFailure(runAt, time.Since(start), len(events), err.Error(), runAt)
-		os.Exit(1)
+		// Mark events distilled even when principles fail — the summary was saved
 	}
+	_ = database.MarkSessionDistilled(*sessionID)
 	_ = database.RecordDistillationSuccess(runAt, time.Since(start), len(events), count, runAt)
 
 	log.Printf("synthesize-session: synthesized %s checkpoint for session %s with %d events and %d principle(s)", *checkpointKind, *sessionID, len(events), count)

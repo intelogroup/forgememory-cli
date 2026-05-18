@@ -9,18 +9,19 @@ import (
 
 // SessionSummary is an LLM-synthesized summary of a single work session.
 type SessionSummary struct {
-	ID            string `json:"id"`
-	TS            string `json:"ts"`
-	SessionID     string `json:"session_id"`
-	ProjectID     string `json:"project_id"`
+	ID             string `json:"id"`
+	TS             string `json:"ts"`
+	SessionID      string `json:"session_id"`
+	ProjectID      string `json:"project_id"`
 	CheckpointKind string `json:"checkpoint_kind"`
 	CheckpointKey  string `json:"checkpoint_key"`
-	Summary       string `json:"summary"` // legacy / combined text
-	Request       string `json:"request"`
-	Investigation string `json:"investigation"`
-	Learnings     string `json:"learnings"`
-	NextSteps     string `json:"next_steps"`
-	Tokens        int    `json:"tokens"`
+	Summary        string `json:"summary"` // legacy / combined text
+	Request        string `json:"request"`
+	Investigation  string `json:"investigation"`
+	Learnings      string `json:"learnings"`
+	NextSteps      string `json:"next_steps"`
+	Keywords       string `json:"keywords"` // space-separated thematic tags
+	Tokens         int    `json:"tokens"`
 }
 
 // InsertSessionSummary stores a new session summary.
@@ -37,10 +38,10 @@ func (d *DB) InsertSessionSummary(s *SessionSummary) error {
 	}
 	_, err := d.conn.Exec(
 		`INSERT INTO session_summaries
-		 (id, ts, session_id, project_id, checkpoint_kind, checkpoint_key, summary, request, investigation, learnings, next_steps, tokens)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		 (id, ts, session_id, project_id, checkpoint_kind, checkpoint_key, summary, request, investigation, learnings, next_steps, keywords, tokens)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		s.ID, s.TS, s.SessionID, s.ProjectID, s.CheckpointKind, s.CheckpointKey,
-		s.Summary, s.Request, s.Investigation, s.Learnings, s.NextSteps, s.Tokens,
+		s.Summary, s.Request, s.Investigation, s.Learnings, s.NextSteps, s.Keywords, s.Tokens,
 	)
 	return err
 }
@@ -51,7 +52,7 @@ func (d *DB) GetRecentSessionSummaries(limit int) ([]SessionSummary, error) {
 		`SELECT id, ts, session_id, project_id,
 		        COALESCE(checkpoint_kind,''), COALESCE(checkpoint_key,''),
 		        COALESCE(summary,''), COALESCE(request,''), COALESCE(investigation,''),
-		        COALESCE(learnings,''), COALESCE(next_steps,''), tokens
+		        COALESCE(learnings,''), COALESCE(next_steps,''), COALESCE(keywords,''), tokens
 		 FROM session_summaries ORDER BY ts DESC LIMIT ?`, limit,
 	)
 	if err != nil {
@@ -70,7 +71,7 @@ func (d *DB) GetRecentSessionSummariesByProject(projectID string, limit int) ([]
 		`SELECT id, ts, session_id, project_id,
 		        COALESCE(checkpoint_kind,''), COALESCE(checkpoint_key,''),
 		        COALESCE(summary,''), COALESCE(request,''), COALESCE(investigation,''),
-		        COALESCE(learnings,''), COALESCE(next_steps,''), tokens
+		        COALESCE(learnings,''), COALESCE(next_steps,''), COALESCE(keywords,''), tokens
 		 FROM session_summaries
 		 WHERE project_id = ? OR project_id LIKE ? OR project_id LIKE ?
 		 ORDER BY ts DESC LIMIT ?`, exact, unixLike, windowsLike, limit,
@@ -87,7 +88,7 @@ func scanSessionSummaries(rows *sql.Rows) ([]SessionSummary, error) {
 	for rows.Next() {
 		var s SessionSummary
 		if err := rows.Scan(&s.ID, &s.TS, &s.SessionID, &s.ProjectID, &s.CheckpointKind, &s.CheckpointKey,
-			&s.Summary, &s.Request, &s.Investigation, &s.Learnings, &s.NextSteps, &s.Tokens); err != nil {
+			&s.Summary, &s.Request, &s.Investigation, &s.Learnings, &s.NextSteps, &s.Keywords, &s.Tokens); err != nil {
 			return nil, err
 		}
 		out = append(out, s)

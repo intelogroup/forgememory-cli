@@ -283,10 +283,16 @@ func distillBackoff(consecutiveFailures int) time.Duration {
 	return time.Duration(exp) * time.Minute
 }
 
+const crossSessionMinSessions = 5
+
 func distillLoop(d *distill.Distiller, database *db.DB, interval time.Duration) {
 	pollInterval := 60 * time.Second
 	ticker := time.NewTicker(pollInterval)
 	defer ticker.Stop()
+
+	// Track when we last ran cross-session synthesis per project.
+	lastCrossSessionRun := time.Time{}
+
 	for range ticker.C {
 		_, undistilled, _ := database.EventCount()
 		if undistilled < distillEventThreshold {
@@ -319,37 +325,113 @@ func distillLoop(d *distill.Distiller, database *db.DB, interval time.Duration) 
 
 		runAt := time.Now().UTC()
 		start := time.Now()
-		count, err := d.DistillBatch(300)
+
+		// Session-aware distillation: find completed sessions without checkpoints
+		// and synthesize them. This replaces the old batch-distill approach that
+		// grabbed 300 random events regardless of session boundaries.
+		sessions, sErr := database.UndistilledCompletedSessions(5)
+		if sErr != nil {
+			log.Printf("Distillation: failed to find completed sessions: %v", sErr)
+			lock.Close()
+			cleanDistillLock()
+			continue
+		}
+
+		if len(sessions) == 0 {
+			lock.Close()
+			cleanDistillLock()
+			continue
+		}
+
+		totalPrinciples := 0
+		totalEvents := 0
+		var lastErr error
+		for _, sessionID := range sessions {
+			events, err := database.SessionEventsUpTo(sessionID, "", 100)
+			if err != nil || len(events) < 3 {
+				// Not enough events — mark them distilled to prevent reprocessing
+				if err == nil {
+					_ = database.MarkSessionDistilled(sessionID)
+				}
+				continue
+			}
+			proj := events[0].ProjectID
+			checkpointKey := sessionID + ":daemon"
+
+			exists, _ := database.HasSessionCheckpoint(checkpointKey)
+			if exists {
+				_ = database.MarkSessionDistilled(sessionID)
+				continue
+			}
+
+			summary, err := d.SynthesizeCheckpoint(sessionID, proj, "daemon", checkpointKey, events)
+			if err != nil {
+				log.Printf("Distillation: session %s synthesis failed: %v", sessionID, err)
+				lastErr = err
+				continue
+			}
+			if summary == nil {
+				_ = database.MarkSessionDistilled(sessionID)
+				continue
+			}
+
+			count, err := d.DistillCheckpointSummary(*summary, events)
+			if err != nil {
+				log.Printf("Distillation: session %s principle extraction failed: %v", sessionID, err)
+				lastErr = err
+				// Still mark events distilled — summary was saved
+			}
+			_ = database.MarkSessionDistilled(sessionID)
+			totalPrinciples += count
+			totalEvents += len(events)
+		}
+
+		// Cross-session synthesis: run periodically (every 30 min) for projects
+		// with enough session summaries to find patterns.
+		crossSessionCount := 0
+		if time.Since(lastCrossSessionRun) > 30*time.Minute {
+			projects, pErr := database.ProjectIDsWithEnoughSessions(crossSessionMinSessions)
+			if pErr == nil {
+				for _, proj := range projects {
+					n, err := d.SynthesizeCrossSession(proj, crossSessionMinSessions)
+					if err != nil {
+						log.Printf("Cross-session synthesis for %s: %v", proj, err)
+					} else {
+						crossSessionCount += n
+					}
+				}
+			}
+			lastCrossSessionRun = time.Now()
+		}
+
 		lock.Close()
 		cleanDistillLock()
 
 		next := runAt.Add(pollInterval)
-		if err != nil {
-			// Annotate the error with the new failure count + backoff so
-			// `forge status` and the get_alerts MCP tool show what's happening.
+		if lastErr != nil {
 			h, _ := database.GetDistillationHealth()
 			nextFailures := h.ConsecutiveFailures + 1
 			backoff := distillBackoff(nextFailures)
 			if backoff > 0 {
 				next = runAt.Add(backoff)
 			}
-			msg := err.Error()
+			msg := lastErr.Error()
 			if nextFailures >= 3 {
 				msg = fmt.Sprintf("%s (%d consecutive failures, next retry in %s)", msg, nextFailures, backoff)
-				log.Printf("Distillation error (CRITICAL — %d consecutive): %v", nextFailures, err)
+				log.Printf("Distillation error (CRITICAL — %d consecutive): %v", nextFailures, lastErr)
 			} else {
-				log.Printf("Distillation error: %v", err)
+				log.Printf("Distillation error: %v", lastErr)
 			}
-			if recErr := database.RecordDistillationFailure(runAt, time.Since(start), undistilled, msg, next); recErr != nil {
+			if recErr := database.RecordDistillationFailure(runAt, time.Since(start), totalEvents, msg, next); recErr != nil {
 				log.Printf("Distillation health record error: %v", recErr)
 			}
-		} else if count > 0 {
-			log.Printf("Distilled %d principles from %d events", count, undistilled)
-			if recErr := database.RecordDistillationSuccess(runAt, time.Since(start), undistilled, count, next); recErr != nil {
+		} else if totalPrinciples > 0 {
+			log.Printf("Distilled %d principles from %d events across %d session(s)", totalPrinciples, totalEvents, len(sessions))
+			if recErr := database.RecordDistillationSuccess(runAt, time.Since(start), totalEvents, totalPrinciples, next); recErr != nil {
 				log.Printf("Distillation health record error: %v", recErr)
 			}
 		} else {
-			if recErr := database.RecordDistillationSuccess(runAt, time.Since(start), undistilled, 0, next); recErr != nil {
+			if recErr := database.RecordDistillationSuccess(runAt, time.Since(start), totalEvents, 0, next); recErr != nil {
 				log.Printf("Distillation health record error: %v", recErr)
 			}
 		}
@@ -554,8 +636,9 @@ type statusReport struct {
 		Total       int `json:"total"`
 		Undistilled int `json:"undistilled"`
 	} `json:"events"`
-	Principles    int    `json:"principles"`
-	Sessions      int    `json:"sessions"`
+	Principles            int    `json:"principles"`
+	Sessions              int    `json:"sessions"`
+	CrossSessionPatterns  int    `json:"cross_session_patterns"`
 	Daemon        string `json:"daemon"`
 	DaemonAddress string `json:"daemon_address,omitempty"`
 	LastDistilled string `json:"last_distilled,omitempty"`
@@ -593,6 +676,7 @@ func collectStatusReport() (statusReport, error) {
 	total, undistilled, _ := database.EventCount()
 	principles, _ := database.PrincipleCount()
 	sessions, _ := database.SessionSummaryCount()
+	crossPatterns, _ := database.CrossSessionPatternCount()
 	addr := readAddr()
 	cfg := distill.LoadConfig()
 
@@ -603,6 +687,7 @@ func collectStatusReport() (statusReport, error) {
 	report.Events.Undistilled = undistilled
 	report.Principles = principles
 	report.Sessions = sessions
+	report.CrossSessionPatterns = crossPatterns
 	report.LastDistilled = loadLastDistilled(database)
 	if h, hErr := database.GetDistillationHealth(); hErr == nil {
 		report.Distillation.LastRunAt = h.LastRunAt
@@ -662,6 +747,7 @@ func statusOutput() {
 	fmt.Printf("Events:     %d (%d undistilled)\n", report.Events.Total, report.Events.Undistilled)
 	fmt.Printf("Principles: %d\n", report.Principles)
 	fmt.Printf("Sessions:   %d\n", report.Sessions)
+	fmt.Printf("Cross-session patterns: %d\n", report.CrossSessionPatterns)
 	if report.DaemonAddress != "" {
 		fmt.Printf("Daemon:     %s (%s)\n", report.Daemon, report.DaemonAddress)
 	} else {

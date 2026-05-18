@@ -232,6 +232,7 @@ func (d *DB) migrate() error {
 		{"session_summaries", "next_steps", "TEXT DEFAULT ''"},
 		{"session_summaries", "checkpoint_kind", "TEXT DEFAULT ''"},
 		{"session_summaries", "checkpoint_key", "TEXT DEFAULT ''"},
+		{"session_summaries", "keywords", "TEXT DEFAULT ''"},
 		{"events", "git_root", "TEXT DEFAULT ''"},
 		{"failure_signatures", "command_family", "TEXT DEFAULT ''"},
 		{"external_context_summaries", "summary_kind", "TEXT DEFAULT ''"},
@@ -242,6 +243,18 @@ func (d *DB) migrate() error {
 		{"principles", "impl_hint", "TEXT NOT NULL DEFAULT ''"},
 	}
 	extraMigrations := []string{
+		`CREATE TABLE IF NOT EXISTS cross_session_patterns (
+			id TEXT PRIMARY KEY,
+			ts TEXT NOT NULL,
+			project_id TEXT NOT NULL,
+			pattern TEXT NOT NULL,
+			pattern_type TEXT NOT NULL,
+			evidence_session_ids TEXT NOT NULL DEFAULT '[]',
+			confidence REAL DEFAULT 0.5,
+			synthesized BOOLEAN DEFAULT 0
+		)`,
+		`CREATE INDEX IF NOT EXISTS idx_cross_session_patterns_project
+		 ON cross_session_patterns(project_id, ts DESC)`,
 		`CREATE TABLE IF NOT EXISTS projects (
 			id           TEXT PRIMARY KEY,
 			git_root     TEXT NOT NULL,

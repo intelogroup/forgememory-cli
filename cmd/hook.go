@@ -316,14 +316,76 @@ func loadLastProjectSession(database *db.DB, projectID, currentSessionID string)
 
 func loadSessionRecallContext(database *db.DB, projectID, promptText string) ([]db.Principle, []db.SessionSummary, []db.Alert, []db.ExternalContextSummary, *promptRecallMatch) {
 	principles, _ := database.RecentPrinciplesByProject(projectID, 2)
-	summaries, _ := database.GetRecentSessionSummariesByProject(projectID, 2)
+
+	// Load more summaries than needed and score them against the current prompt
+	// for relevance, so the most contextually relevant lessons are injected.
+	tokens := recallTokens(promptText)
+	summaries := loadRankedSummaries(database, projectID, tokens, 10)
+
 	alerts, _ := database.ActiveAlertsByProject(projectID, 2)
 	externalSummaries, _ := database.FreshExternalContextSummariesByProject(projectID, 2)
 	if projectID != "" && len(principles) == 0 && len(summaries) == 0 {
 		principles, _ = database.RecentPrinciplesByProject("", 2)
-		summaries, _ = database.GetRecentSessionSummaries(2)
+		summaries = loadRankedSummaries(database, "", tokens, 10)
 	}
 	return principles, summaries, alerts, externalSummaries, findBestPromptRecall(database, projectID, promptText)
+}
+
+// loadRankedSummaries loads recent session summaries and returns the top n
+// ranked by prompt-token relevance, falling back to most recent if no prompt
+// tokens are available.
+func loadRankedSummaries(database *db.DB, projectID string, tokens []string, n int) []db.SessionSummary {
+	loadLimit := n * 3
+	var summaries []db.SessionSummary
+	var err error
+	if projectID != "" {
+		summaries, err = database.GetRecentSessionSummariesByProject(projectID, loadLimit)
+	} else {
+		summaries, err = database.GetRecentSessionSummaries(loadLimit)
+	}
+	if err != nil || len(summaries) == 0 {
+		return summaries
+	}
+
+	// If few or no tokens, fall back to most recent.
+	if len(tokens) < 2 {
+		if len(summaries) > n {
+			summaries = summaries[:n]
+		}
+		return summaries
+	}
+
+	type scored struct {
+		summary db.SessionSummary
+		score   float64
+	}
+	var scoredList []scored
+	for _, s := range summaries {
+		if match, ok := scorePromptSessionSummaryMatch(s, tokens); ok {
+			scoredList = append(scoredList, scored{s, match.Score})
+		} else {
+			scoredList = append(scoredList, scored{s, 0})
+		}
+	}
+
+	sort.SliceStable(scoredList, func(i, j int) bool {
+		if scoredList[i].score == scoredList[j].score {
+			return scoredList[i].summary.TS > scoredList[j].summary.TS
+		}
+		return scoredList[i].score > scoredList[j].score
+	})
+
+	out := make([]db.SessionSummary, 0, n)
+	for i := 0; i < len(scoredList) && i < n; i++ {
+		out = append(out, scoredList[i].summary)
+	}
+	if len(out) == 0 && len(summaries) > 0 {
+		if len(summaries) > n {
+			summaries = summaries[:n]
+		}
+		return summaries
+	}
+	return out
 }
 
 func shouldWaitForOfficialHint(alerts []db.Alert, externalSummaries []db.ExternalContextSummary) bool {
@@ -889,6 +951,7 @@ func scorePromptSessionSummaryMatch(summary db.SessionSummary, tokens []string) 
 		summary.Learnings,
 		summary.NextSteps,
 		summary.Summary,
+		summary.Keywords,
 	}, " "), summary.TS, tokens, quality, 1.55, 1.15)
 	if !ok {
 		return promptRecallMatch{}, false

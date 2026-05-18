@@ -239,6 +239,24 @@ func (s *Server) handleToolsList(req Request) *Response {
 			},
 		},
 		{
+			Name:        "get_cross_session_patterns",
+			Description: "Call to see recurring patterns across multiple work sessions. Returns cross-session patterns like failure modes, tool preferences, and project progress.",
+			InputSchema: map[string]any{
+				"type": "object",
+				"properties": map[string]any{
+					"limit": map[string]any{
+						"type":        "number",
+						"description": "Number of patterns to return (default 10)",
+						"default":     10,
+					},
+					"project_id": map[string]any{
+						"type":        "string",
+						"description": "Optional project identifier. Defaults to the current repo/project.",
+					},
+				},
+			},
+		},
+		{
 			Name:        "get_project_timeline",
 			Description: "Call to orient yourself on cross-agent history. Returns chronological session entries from Claude, Gemini, and Codex.",
 			InputSchema: map[string]any{
@@ -374,6 +392,8 @@ func (s *Server) handleToolsCall(req Request) *Response {
 		result = s.getPrinciples(params.Arguments)
 	case "get_session_summaries":
 		result = s.getSessionSummaries(params.Arguments)
+	case "get_cross_session_patterns":
+		result = s.getCrossSessionPatterns(params.Arguments)
 	case "get_project_timeline":
 		result = s.getProjectTimeline(params.Arguments)
 	case "get_external_context":
@@ -591,6 +611,41 @@ func (s *Server) getSessionSummaries(args map[string]any) ToolResult {
 			}
 			if s.NextSteps != "" {
 				text += fmt.Sprintf("**Next**: %s\n", s.NextSteps)
+			}
+			text += "\n"
+		}
+	}
+
+	return ToolResult{
+		Content: []ToolContent{{Type: "text", Text: text}},
+	}
+}
+
+func (s *Server) getCrossSessionPatterns(args map[string]any) ToolResult {
+	limit := intFromArgs(args, "limit", 10)
+	projectID := projectIDFromArgs(args)
+
+	patterns, err := s.db.RecentCrossSessionPatternsByProject(projectID, limit)
+	if err != nil {
+		return toolError("Failed to get cross-session patterns: " + err.Error())
+	}
+
+	text := fmt.Sprintf("## Cross-Session Patterns: %s\n\n", projectID)
+
+	if len(patterns) == 0 {
+		text += "No cross-session patterns yet. Patterns are generated automatically after enough session summaries are collected (minimum 3 related sessions).\n"
+	} else {
+		for _, p := range patterns {
+			ts := p.TS
+			if len(ts) >= 10 {
+				ts = ts[:10]
+			}
+			patternType := strings.ReplaceAll(p.PatternType, "_", " ")
+			text += fmt.Sprintf("### %s [%s]\n", p.Pattern, patternType)
+			text += fmt.Sprintf("- **Confidence**: %.1f | **Date**: %s\n", p.Confidence, ts)
+			var sessionIDs []string
+			if err := json.Unmarshal([]byte(p.EvidenceSessionIDs), &sessionIDs); err == nil && len(sessionIDs) > 0 {
+				text += fmt.Sprintf("- **Evidence**: %d sessions\n", len(sessionIDs))
 			}
 			text += "\n"
 		}

@@ -537,6 +537,116 @@ func (d *Distiller) SynthesizeSession(sessionID, projectID string, events []db.E
 	return err
 }
 
+// SynthesizeCrossSession generates cross-session patterns by analyzing recent
+// session summaries for a project. It reads the last N summaries, asks the LLM
+// to find recurring patterns, and stores them.
+func (d *Distiller) SynthesizeCrossSession(projectID string, summaryCount int) (int, error) {
+	limit := summaryCount
+	if limit <= 0 {
+		limit = 5
+	}
+	summaries, err := d.db.GetRecentSessionSummariesByProject(projectID, limit+10)
+	if err != nil {
+		return 0, fmt.Errorf("get session summaries: %w", err)
+	}
+	if len(summaries) < 3 {
+		return 0, nil
+	}
+	if len(summaries) > limit {
+		summaries = summaries[:limit]
+	}
+
+	prompt := d.buildCrossSessionPrompt(summaries)
+	response, err := d.callLLM(prompt)
+	if err != nil {
+		return 0, fmt.Errorf("llm call: %w", err)
+	}
+
+	patterns, err := d.parseCrossSessionPatterns(response, projectID, summaries)
+	if err != nil {
+		return 0, fmt.Errorf("parse patterns: %w", err)
+	}
+
+	count := 0
+	for _, p := range patterns {
+		if err := d.db.InsertCrossSessionPattern(&p); err != nil {
+			return count, fmt.Errorf("insert pattern: %w", err)
+		}
+		count++
+	}
+	return count, nil
+}
+
+func (d *Distiller) buildCrossSessionPrompt(summaries []db.SessionSummary) string {
+	var sb strings.Builder
+	sb.WriteString("You are a senior staff engineer reviewing recent work sessions. Analyze these session summaries and find recurring patterns, failure modes, tool preferences, project progress, or knowledge gaps that span multiple sessions.\n\n")
+	sb.WriteString("Return a JSON array of patterns. Each element must have:\n")
+	sb.WriteString("- pattern: 2-3 sentence description of the recurring pattern\n")
+	sb.WriteString("- pattern_type: one of recurring_failure / tool_preference / project_progress / knowledge_gap / workflow\n")
+	sb.WriteString("- confidence: 0.0-1.0 how confident you are this is a real pattern\n")
+	sb.WriteString("- evidence_session_indices: array of 0-based indices into the session list below that support this pattern\n\n")
+	sb.WriteString("Sessions:\n")
+	for i, s := range summaries {
+		sb.WriteString(fmt.Sprintf("%d. [%s] kind=%s\n", i, s.TS, firstNonEmptyString(s.CheckpointKind, "final")))
+		sb.WriteString(fmt.Sprintf("   request: %s\n", firstNonEmptyString(s.Request, "(empty)")))
+		sb.WriteString(fmt.Sprintf("   investigation: %s\n", firstNonEmptyString(s.Investigation, "(empty)")))
+		sb.WriteString(fmt.Sprintf("   learnings: %s\n", firstNonEmptyString(s.Learnings, "(empty)")))
+		sb.WriteString(fmt.Sprintf("   next_steps: %s\n", firstNonEmptyString(s.NextSteps, "(empty)")))
+	}
+	sb.WriteString("\nReturn ONLY the JSON array, no other text.\n")
+	return sb.String()
+}
+
+func (d *Distiller) parseCrossSessionPatterns(response, projectID string, summaries []db.SessionSummary) ([]db.CrossSessionPattern, error) {
+	response = strings.TrimSpace(response)
+	start := strings.Index(response, "[")
+	end := strings.LastIndex(response, "]")
+	if start >= 0 && end > start {
+		response = response[start : end+1]
+	}
+
+	var raw []struct {
+		Pattern               string  `json:"pattern"`
+		PatternType           string  `json:"pattern_type"`
+		Confidence            float64 `json:"confidence"`
+		EvidenceSessionIndices []int  `json:"evidence_session_indices"`
+	}
+	if err := json.Unmarshal([]byte(response), &raw); err != nil {
+		return nil, fmt.Errorf("parse JSON: %w", err)
+	}
+
+	var out []db.CrossSessionPattern
+	for _, r := range raw {
+		if r.Pattern == "" || r.PatternType == "" {
+			continue
+		}
+		validTypes := map[string]bool{
+			"recurring_failure": true, "tool_preference": true,
+			"project_progress": true, "knowledge_gap": true, "workflow": true,
+		}
+		if !validTypes[r.PatternType] {
+			r.PatternType = "workflow"
+		}
+
+		sessionIDs := make([]string, 0, len(r.EvidenceSessionIndices))
+		for _, idx := range r.EvidenceSessionIndices {
+			if idx >= 0 && idx < len(summaries) {
+				sessionIDs = append(sessionIDs, summaries[idx].SessionID)
+			}
+		}
+		evidenceJSON, _ := json.Marshal(sessionIDs)
+
+		out = append(out, db.CrossSessionPattern{
+			ProjectID:          projectID,
+			Pattern:            r.Pattern,
+			PatternType:        r.PatternType,
+			Confidence:         r.Confidence,
+			EvidenceSessionIDs: string(evidenceJSON),
+		})
+	}
+	return out, nil
+}
+
 // SynthesizeCheckpoint generates a checkpoint summary from events and stores it.
 func (d *Distiller) SynthesizeCheckpoint(sessionID, projectID, checkpointKind, checkpointKey string, events []db.Event) (*db.SessionSummary, error) {
 	if len(events) == 0 {
@@ -568,7 +678,8 @@ func (d *Distiller) buildSessionPrompt(events []db.Event) string {
 	sb.WriteString("- request: What was the user trying to accomplish? (1 sentence)\n")
 	sb.WriteString("- investigation: What was explored or debugged? (1-2 sentences)\n")
 	sb.WriteString("- learnings: Key findings or solutions discovered (1-2 sentences)\n")
-	sb.WriteString("- next_steps: Recommended follow-up actions (1 sentence, or empty string)\n\n")
+	sb.WriteString("- next_steps: Recommended follow-up actions (1 sentence, or empty string)\n")
+	sb.WriteString("- keywords: Array of 3-5 key technical terms, libraries, frameworks, or concepts from this session (e.g. [\"sqlite\", \"fts5\", \"go\", \"migration\"]). These will be used to recall this session later when relevant topics come up.\n\n")
 	sb.WriteString("Session events:\n")
 	for i, e := range events {
 		sb.WriteString(fmt.Sprintf("%d. [%s] %s (%s): %s\n", i+1, shortTS(e.TS), e.EventType, e.ToolName, summarizeEventPayload(e)))
@@ -587,20 +698,23 @@ func (d *Distiller) parseSessionSummary(response string) (*db.SessionSummary, er
 	}
 
 	var raw struct {
-		Request       string `json:"request"`
-		Investigation string `json:"investigation"`
-		Learnings     string `json:"learnings"`
-		NextSteps     string `json:"next_steps"`
+		Request       string   `json:"request"`
+		Investigation string   `json:"investigation"`
+		Learnings     string   `json:"learnings"`
+		NextSteps     string   `json:"next_steps"`
+		Keywords      []string `json:"keywords"`
 	}
 	if err := json.Unmarshal([]byte(response), &raw); err != nil {
 		return nil, fmt.Errorf("parse JSON: %w", err)
 	}
+	keywords := strings.Join(raw.Keywords, " ")
 	return &db.SessionSummary{
 		TS:            time.Now().UTC().Format(time.RFC3339),
 		Request:       raw.Request,
 		Investigation: raw.Investigation,
 		Learnings:     raw.Learnings,
 		NextSteps:     raw.NextSteps,
+		Keywords:      keywords,
 		Summary:       raw.Learnings, // backward compat
 	}, nil
 }
