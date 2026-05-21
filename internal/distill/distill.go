@@ -264,10 +264,18 @@ func parseBoolOrDefault(raw string, fallback bool) bool {
 
 // Distiller handles event distillation.
 type Distiller struct {
-	db     *db.DB
-	config Config
-	client *http.Client
-	Usage  UsageStats
+	db             *db.DB
+	config         Config
+	client         *http.Client
+	Usage          UsageStats
+	sessionContext string // optional context prepended to synthesis prompts
+}
+
+// SetSessionContext sets optional context (existing principles, past sessions, patterns)
+// that will be prepended to synthesis prompts. This allows the LLM to be aware of
+// what it already knows before extracting new knowledge.
+func (d *Distiller) SetSessionContext(context string) {
+	d.sessionContext = context
 }
 
 // New creates a new Distiller.
@@ -674,6 +682,10 @@ func (d *Distiller) SynthesizeCheckpoint(sessionID, projectID, checkpointKind, c
 
 func (d *Distiller) buildSessionPrompt(events []db.Event) string {
 	var sb strings.Builder
+	if d.sessionContext != "" {
+		sb.WriteString(d.sessionContext)
+		sb.WriteString("\n\n")
+	}
 	sb.WriteString("Analyze this coding session and produce a concise summary. Return JSON with these fields:\n")
 	sb.WriteString("- request: What was the user trying to accomplish? (1 sentence)\n")
 	sb.WriteString("- investigation: What was explored or debugged? (1-2 sentences)\n")
@@ -754,6 +766,10 @@ func (d *Distiller) DistillCheckpointSummary(summary db.SessionSummary, events [
 
 func (d *Distiller) buildCheckpointPrinciplesPrompt(summary db.SessionSummary, events []db.Event) string {
 	var sb strings.Builder
+	if d.sessionContext != "" {
+		sb.WriteString(d.sessionContext)
+		sb.WriteString("\n\n")
+	}
 	sb.WriteString("You are a senior staff engineer writing personal reference notes for your future self. Extract only durable, project-specific engineering principles from this synthesized checkpoint — notes worth consulting before touching this area again.\n\n")
 	sb.WriteString("Return a JSON array. Each element must have:\n")
 	sb.WriteString("- type: architecture/bugfix/pattern/preference\n")
@@ -766,7 +782,11 @@ func (d *Distiller) buildCheckpointPrinciplesPrompt(summary db.SessionSummary, e
 	sb.WriteString("- files_modified: array of file paths mentioned in the checkpoint or evidence (empty if none)\n\n")
 	sb.WriteString("Only emit a principle when there is a clear outcome (a concrete fix worked, or an approach definitively failed) AND a specific implementation pattern.\n")
 	sb.WriteString("Return [] for vague progress, bookkeeping, situations where no concrete technique is identifiable, or routine workflow.\n")
-	sb.WriteString("Do not create principles about transcript paths, session IDs, JSONL files, tool names, logs, grep, curl, or generic debugging process.\n\n")
+	sb.WriteString("Do not create principles about transcript paths, session IDs, JSONL files, tool names, logs, grep, curl, or generic debugging process.\n")
+	if d.sessionContext != "" {
+		sb.WriteString("\nIMPORTANT: The existing knowledge block above shows what we already know. Only extract NEW principles that are not already covered. If the events extend or reinforce an existing principle, skip it. Avoid duplication.\n")
+	}
+	sb.WriteString("\n")
 	sb.WriteString("Checkpoint summary:\n")
 	sb.WriteString(fmt.Sprintf("kind: %s\n", firstNonEmptyString(summary.CheckpointKind, "final")))
 	sb.WriteString(fmt.Sprintf("request: %s\n", firstNonEmptyString(summary.Request, "(empty)")))

@@ -8,6 +8,7 @@ import (
 	"math"
 	"net"
 	"os"
+	"os/exec"
 	"os/signal"
 	"path/filepath"
 	"runtime"
@@ -323,9 +324,6 @@ func distillLoop(d *distill.Distiller, database *db.DB, interval time.Duration) 
 			continue
 		}
 
-		runAt := time.Now().UTC()
-		start := time.Now()
-
 		// Session-aware distillation: find completed sessions without checkpoints
 		// and synthesize them. This replaces the old batch-distill approach that
 		// grabbed 300 random events regardless of session boundaries.
@@ -343,47 +341,33 @@ func distillLoop(d *distill.Distiller, database *db.DB, interval time.Duration) 
 			continue
 		}
 
-		totalPrinciples := 0
-		totalEvents := 0
 		var lastErr error
 		for _, sessionID := range sessions {
-			events, err := database.SessionEventsUpTo(sessionID, "", 100)
-			if err != nil || len(events) < 3 {
-				// Not enough events — mark them distilled to prevent reprocessing
-				if err == nil {
-					_ = database.MarkSessionDistilled(sessionID)
-				}
-				continue
-			}
-			proj := events[0].ProjectID
+			proj := ""
 			checkpointKey := sessionID + ":daemon"
 
+			// Check if already processed (fast path before spawning subprocess)
 			exists, _ := database.HasSessionCheckpoint(checkpointKey)
 			if exists {
 				_ = database.MarkSessionDistilled(sessionID)
 				continue
 			}
 
-			summary, err := d.SynthesizeCheckpoint(sessionID, proj, "daemon", checkpointKey, events)
-			if err != nil {
-				log.Printf("Distillation: session %s synthesis failed: %v", sessionID, err)
-				lastErr = err
-				continue
-			}
-			if summary == nil {
-				_ = database.MarkSessionDistilled(sessionID)
-				continue
-			}
+			// Spawn distill-agent subprocess which gathers MCP context and runs
+			// context-aware synthesis. The agent records its own health in the DB.
+			cmd := exec.Command(os.Args[0], "distill-agent",
+				"--session-id", sessionID,
+				"--project-id", proj,
+				"--checkpoint-kind", "daemon",
+				"--checkpoint-key", checkpointKey)
+			cmd.Stdout = nil
+			cmd.Stderr = nil
+			cmd.Stdin = nil
 
-			count, err := d.DistillCheckpointSummary(*summary, events)
-			if err != nil {
-				log.Printf("Distillation: session %s principle extraction failed: %v", sessionID, err)
+			if err := cmd.Run(); err != nil {
+				log.Printf("Distillation: session %s distill-agent failed: %v", sessionID, err)
 				lastErr = err
-				// Still mark events distilled — summary was saved
 			}
-			_ = database.MarkSessionDistilled(sessionID)
-			totalPrinciples += count
-			totalEvents += len(events)
 		}
 
 		// Cross-session synthesis: run periodically (every 30 min) for projects
@@ -407,33 +391,10 @@ func distillLoop(d *distill.Distiller, database *db.DB, interval time.Duration) 
 		lock.Close()
 		cleanDistillLock()
 
-		next := runAt.Add(pollInterval)
 		if lastErr != nil {
-			h, _ := database.GetDistillationHealth()
-			nextFailures := h.ConsecutiveFailures + 1
-			backoff := distillBackoff(nextFailures)
-			if backoff > 0 {
-				next = runAt.Add(backoff)
-			}
-			msg := lastErr.Error()
-			if nextFailures >= 3 {
-				msg = fmt.Sprintf("%s (%d consecutive failures, next retry in %s)", msg, nextFailures, backoff)
-				log.Printf("Distillation error (CRITICAL — %d consecutive): %v", nextFailures, lastErr)
-			} else {
-				log.Printf("Distillation error: %v", lastErr)
-			}
-			if recErr := database.RecordDistillationFailure(runAt, time.Since(start), totalEvents, msg, next); recErr != nil {
-				log.Printf("Distillation health record error: %v", recErr)
-			}
-		} else if totalPrinciples > 0 {
-			log.Printf("Distilled %d principles from %d events across %d session(s)", totalPrinciples, totalEvents, len(sessions))
-			if recErr := database.RecordDistillationSuccess(runAt, time.Since(start), totalEvents, totalPrinciples, next); recErr != nil {
-				log.Printf("Distillation health record error: %v", recErr)
-			}
+			log.Printf("Distillation error: %v", lastErr)
 		} else {
-			if recErr := database.RecordDistillationSuccess(runAt, time.Since(start), totalEvents, 0, next); recErr != nil {
-				log.Printf("Distillation health record error: %v", recErr)
-			}
+			log.Printf("Distillation cycle complete: processed %d session(s)", len(sessions))
 		}
 	}
 }
