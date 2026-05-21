@@ -867,6 +867,12 @@ func DetectProjectID(hint string) string {
 	return ""
 }
 
+// CallLLM is a public wrapper around callLLM, needed by the distill-agent
+// for custom prompt building (e.g., chunked session synthesis).
+func (d *Distiller) CallLLM(prompt string) (string, error) {
+	return d.callLLM(prompt)
+}
+
 func (d *Distiller) callLLM(prompt string) (string, error) {
 	switch d.config.Provider {
 	case ProviderOllama:
@@ -1292,6 +1298,11 @@ func CompletePrompt(cfg Config, prompt string) (string, error) {
 	return d.callLLM(prompt)
 }
 
+// ParsePrinciples is a public wrapper around parsePrinciples.
+func (d *Distiller) ParsePrinciples(response string, projectID string) ([]db.Principle, error) {
+	return d.parsePrinciples(response, projectID)
+}
+
 func (d *Distiller) parsePrinciples(response string, projectID string) ([]db.Principle, error) {
 	// Extract JSON array from response
 	response = strings.TrimSpace(response)
@@ -1425,7 +1436,21 @@ func compactWhitespace(s string) string {
 	return strings.Join(strings.Fields(s), " ")
 }
 
+// SummarizeEventPayload is the public export of summarizeEventPayload.
+func SummarizeEventPayload(e db.Event) string {
+	return summarizeEventPayload(e)
+}
+
+// ShortTS is the public export of shortTS.
+func ShortTS(ts string) string {
+	return shortT(ts)
+}
+
 func shortTS(ts string) string {
+	return shortT(ts)
+}
+
+func shortT(ts string) string {
 	if len(ts) >= 16 {
 		return ts[:16]
 	}

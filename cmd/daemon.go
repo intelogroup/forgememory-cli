@@ -267,8 +267,6 @@ func handleEventMsg(raw map[string]json.RawMessage, database *db.DB) {
 	}
 }
 
-const distillEventThreshold = 300
-
 // distillBackoff returns the minimum interval that must elapse since the last
 // failure before another distill attempt is allowed, given consecutiveFailures.
 // Exponential: 1m, 2m, 4m, 8m, 16m, capped at 30m. The first failure does not
@@ -295,8 +293,14 @@ func distillLoop(d *distill.Distiller, database *db.DB, interval time.Duration) 
 	lastCrossSessionRun := time.Time{}
 
 	for range ticker.C {
-		_, undistilled, _ := database.EventCount()
-		if undistilled < distillEventThreshold {
+		// Check for completed sessions first — avoids spinning on orphaned
+		// events (unknown session ID) that can never be distilled.
+		sessions, sErr := database.UndistilledCompletedSessions(5)
+		if sErr != nil {
+			log.Printf("Distillation: failed to find completed sessions: %v", sErr)
+			continue
+		}
+		if len(sessions) == 0 {
 			continue
 		}
 
@@ -324,23 +328,6 @@ func distillLoop(d *distill.Distiller, database *db.DB, interval time.Duration) 
 			continue
 		}
 
-		// Session-aware distillation: find completed sessions without checkpoints
-		// and synthesize them. This replaces the old batch-distill approach that
-		// grabbed 300 random events regardless of session boundaries.
-		sessions, sErr := database.UndistilledCompletedSessions(5)
-		if sErr != nil {
-			log.Printf("Distillation: failed to find completed sessions: %v", sErr)
-			lock.Close()
-			cleanDistillLock()
-			continue
-		}
-
-		if len(sessions) == 0 {
-			lock.Close()
-			cleanDistillLock()
-			continue
-		}
-
 		var lastErr error
 		for _, sessionID := range sessions {
 			proj := ""
@@ -360,8 +347,8 @@ func distillLoop(d *distill.Distiller, database *db.DB, interval time.Duration) 
 				"--project-id", proj,
 				"--checkpoint-kind", "daemon",
 				"--checkpoint-key", checkpointKey)
-			cmd.Stdout = nil
-			cmd.Stderr = nil
+			cmd.Stdout = os.Stderr
+			cmd.Stderr = os.Stderr
 			cmd.Stdin = nil
 
 			if err := cmd.Run(); err != nil {
