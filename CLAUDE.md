@@ -10,7 +10,7 @@ Go CLI + payment server for Forgememo. Captures agent tool usage, distills insig
 | Path | Purpose |
 |------|---------|
 | `cmd/cli.go` | Main CLI — `forge init/start/stop/login/config/distill/status` |
-| `internal/distill/` | Distillation engine (LLM-based insight extraction) |
+| `internal/distill/` | Distillation engine (supports Forgememo, Anthropic, OpenAI, Groq, NVIDIA, Ollama) |
 | `internal/config/` | Config read/write (`~/.forge/config`) |
 | `internal/db/` | SQLite DB for runs/memory |
 | `internal/service/` | Daemon lifecycle (launchd/systemd) |

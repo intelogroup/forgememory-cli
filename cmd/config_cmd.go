@@ -17,7 +17,7 @@ import (
 func runConfig(args []string) {
 	fs := flag.NewFlagSet("config", flag.ContinueOnError)
 	showFlag := fs.Bool("show", false, "Show current config")
-	providerFlag := fs.String("provider", "", "Provider: forgememo/anthropic/openai/ollama")
+	providerFlag := fs.String("provider", "", "Provider: forgememo/anthropic/openai/groq/nvidia/ollama")
 	apiKeyFlag := fs.String("api-key", "", "API key for provider")
 	modelFlag := fs.String("model", "", "Model name (optional, defaults vary by provider)")
 	baseURLFlag := fs.String("base-url", "", "Base URL for API (optional)")
@@ -99,7 +99,7 @@ func runConfig(args []string) {
 		fmt.Println("")
 		fmt.Println("Options:")
 		fmt.Println("  --show           Show current configuration")
-		fmt.Println("  --provider       Provider: forgememo, anthropic, openai, groq, ollama, codex")
+		fmt.Println("  --provider       Provider: forgememo, anthropic, openai, groq, nvidia, ollama, codex")
 		fmt.Println("  --api-key        API key for the provider")
 		fmt.Println("  --model          Model name (optional)")
 		fmt.Println("  --base-url       Base URL for API (optional)")
@@ -119,12 +119,14 @@ func runConfig(args []string) {
 		fmt.Println("  anthropic: claude-haiku-4-5-20251001")
 		fmt.Println("  openai:    gpt-4o")
 		fmt.Println("  groq:      llama-3.3-70b-versatile (uses GROQ_API_KEY env or --api-key)")
+		fmt.Println("  nvidia:    meta/llama-3.3-70b-instruct (uses NVIDIA_API_KEY env or --api-key)")
 		fmt.Println("  ollama:    llama3:latest")
 		fmt.Println("")
 		fmt.Println("Examples:")
 		fmt.Println("  forge config --show")
 		fmt.Println("  forge config --provider forgememo")
 		fmt.Println("  forge config --provider openai --api-key sk-...")
+		fmt.Println("  forge config --provider nvidia --api-key nvapi-...")
 		fmt.Println("  forge config --provider anthropic --api-key sk-ant-...")
 		fmt.Println("  forge config --provider groq --api-key gsk-...")
 		fmt.Println("  forge config --provider ollama --model llama3:latest")
@@ -133,9 +135,9 @@ func runConfig(args []string) {
 		os.Exit(0)
 	}
 
-	validProviders := map[string]bool{"forgememo": true, "forge": true, "anthropic": true, "openai": true, "ollama": true, "groq": true, "codex": true}
+	validProviders := map[string]bool{"forgememo": true, "forge": true, "anthropic": true, "openai": true, "ollama": true, "groq": true, "nvidia": true, "codex": true}
 	if !validProviders[*providerFlag] {
-		fmt.Fprintf(os.Stderr, "Error: provider must be one of: forgememo, anthropic, openai, groq, ollama, codex\n")
+		fmt.Fprintf(os.Stderr, "Error: provider must be one of: forgememo, anthropic, openai, groq, nvidia, ollama, codex\n")
 		os.Exit(1)
 	}
 	if *providerFlag == "forge" {
@@ -275,9 +277,9 @@ func runConfigInteractive(providerFlag, apiKeyFlag, modelFlag, timeoutFlag *stri
 	}
 
 	if *providerFlag == "" {
-		*providerFlag = promptChoice(reader, "Select provider", []string{"forgememo", "anthropic", "openai", "groq", "ollama"}, "forgememo")
+		*providerFlag = promptChoice(reader, "Select provider", []string{"forgememo", "anthropic", "openai", "groq", "nvidia", "ollama"}, "forgememo")
 	}
-	if *apiKeyFlag == "" && (*providerFlag == "anthropic" || *providerFlag == "openai" || *providerFlag == "groq") {
+	if *apiKeyFlag == "" && (*providerFlag == "anthropic" || *providerFlag == "openai" || *providerFlag == "groq" || *providerFlag == "nvidia") {
 		*apiKeyFlag = promptInput(reader, "API Key", "")
 	}
 	if *modelFlag == "" {
@@ -341,6 +343,12 @@ func promptModel(reader *bufio.Reader, provider string) string {
 		fmt.Println("  - llama3-8b-8192 (budget: faster, lower TPM cost)")
 		fmt.Println("  - gemma2-9b-it")
 		return promptInput(reader, "Model", "llama-3.3-70b-versatile")
+	case "nvidia":
+		fmt.Println("? Select model:")
+		fmt.Println("  - meta/llama-3.3-70b-instruct (recommended: balanced)")
+		fmt.Println("  - meta/llama-3.1-405b-instruct (most capable, large context)")
+		fmt.Println("  - nvidia/llama-3.1-nemotron-70b-instruct (optimized for accuracy)")
+		return promptInput(reader, "Model", "meta/llama-3.3-70b-instruct")
 	case "forgememo", "forge":
 		return promptInput(reader, "Model", "claude-haiku-4-5-20251001")
 	default:
@@ -358,6 +366,8 @@ func defaultModelForProvider(provider string) string {
 		return "gpt-4o"
 	case "groq":
 		return "llama-3.3-70b-versatile"
+	case "nvidia":
+		return "meta/llama-3.3-70b-instruct"
 	case "ollama":
 		return "llama3:latest"
 	default:
@@ -442,6 +452,14 @@ func checkProviderModelCompat(provider, model, apiKey, baseURL string) error {
 		defaultBase := baseURL == "" || strings.HasPrefix(baseURL, "https://api.groq.com")
 		if defaultBase && model != "" && (strings.HasPrefix(model, "gpt-") || strings.HasPrefix(model, "claude-")) {
 			return fmt.Errorf("model %q does not belong to provider %q — Groq serves open-source models (llama-3.3-70b-versatile, gemma2-9b-it, etc.)\nSee https://console.groq.com/docs/models for the full list", model, provider)
+		}
+	case "nvidia":
+		if apiKey == "" {
+			return fmt.Errorf("provider %q requires an API key (nvapi-...) — get one at build.nvidia.com", provider)
+		}
+		defaultBase := baseURL == "" || strings.HasPrefix(baseURL, "https://integrate.api.nvidia.com")
+		if defaultBase && model != "" && (strings.HasPrefix(model, "gpt-") || strings.HasPrefix(model, "claude-")) {
+			return fmt.Errorf("model %q does not belong to provider %q — NVIDIA serves open-source and proprietary models (llama-3.3-70b-instruct, nemotron-340b, etc.)\nSee https://build.nvidia.com for the full list", model, provider)
 		}
 	case "ollama":
 		if model != "" && (strings.HasPrefix(model, "gpt-") || strings.HasPrefix(model, "claude-")) {

@@ -1,5 +1,14 @@
 # Changelog
 
+## [0.5.3] - 2026-05-29
+
+### Added
+- **NVIDIA Build API support.** NVIDIA is now a first-class provider. Configure with `forge config --provider nvidia --api-key nvapi-...`. Includes native defaults for NVIDIA NIM endpoints and model suggestions (Llama 3.3 70B, Llama 3.1 405B).
+- **Interactive NVIDIA model selection.** The `forge config` interactive mode now provides recommendations for NVIDIA-hosted models.
+
+### Fixed
+- **OpenAI 429 Rate Limit mitigation.** Added support for alternative high-throughput providers (NVIDIA) to resolve persistent distillation failures during peak usage.
+
 ## [0.4.38] - 2026-05-07
 
 ### Fixed (OpenCode compatibility round)

@@ -33,6 +33,7 @@ const (
 	ProviderCodex     Provider = "codex"
 	ProviderForgememo Provider = "forgememo"
 	ProviderGroq      Provider = "groq"
+	ProviderNvidia    Provider = "nvidia"
 )
 
 // UsageStats accumulates token usage across distillation calls.
@@ -53,7 +54,7 @@ var (
 func UserMessage(err error) string {
 	switch {
 	case errors.Is(err, ErrNoProvider):
-		return "No inference provider configured. Set FORGE_PROVIDER (forgememo/anthropic/openai/groq/ollama/codex) and run 'forge config' to configure."
+		return "No inference provider configured. Set FORGE_PROVIDER (forgememo/anthropic/openai/groq/nvidia/ollama/codex) and run 'forge config' to configure."
 	case errors.Is(err, ErrProviderInvalid):
 		return "Invalid provider or credentials. Check your FORGE_PROVIDER setting and any required login or API key."
 	case errors.Is(err, ErrProviderUnreachable):
@@ -84,6 +85,13 @@ func DiagnosticHints(cfg Config, err error) []string {
 			"Check GROQ_API_KEY is set or run: forge config --provider groq --api-key gsk-...",
 			"Groq free tier: 12K tokens/min, 100K tokens/day — if rate limited, wait or upgrade plan",
 			"Try a smaller model: forge config --provider groq --model llama3-8b-8192",
+		}
+	}
+	if cfg.Provider == ProviderNvidia {
+		return []string{
+			"Check your NVIDIA API key (nvapi-...) is valid",
+			"Verify model access at build.nvidia.com",
+			"If using a local NIM, set --base-url to your container address",
 		}
 	}
 	return []string{
@@ -195,6 +203,8 @@ func LoadConfig() Config {
 			cfg.Model = "claude-haiku-4-5-20251001"
 		case ProviderGroq:
 			cfg.Model = "llama-3.3-70b-versatile"
+		case ProviderNvidia:
+			cfg.Model = "meta/llama-3.3-70b-instruct"
 		}
 	}
 	if cfg.BaseURL == "" {
@@ -211,10 +221,15 @@ func LoadConfig() Config {
 			cfg.BaseURL = cfg.PaymentURL + "/api/forge"
 		case ProviderGroq:
 			cfg.BaseURL = "https://api.groq.com/openai"
+		case ProviderNvidia:
+			cfg.BaseURL = "https://integrate.api.nvidia.com/v1"
 		}
 	}
 	if cfg.APIKey == "" && cfg.Provider == ProviderGroq {
 		cfg.APIKey = os.Getenv("GROQ_API_KEY")
+	}
+	if cfg.APIKey == "" && cfg.Provider == ProviderNvidia {
+		cfg.APIKey = os.Getenv("NVIDIA_API_KEY")
 	}
 	if cfg.Timeout <= 0 {
 		cfg.Timeout = 30 * time.Second
@@ -887,9 +902,16 @@ func (d *Distiller) callLLM(prompt string) (string, error) {
 		return d.callForgememo(prompt)
 	case ProviderGroq:
 		return d.callGroq(prompt)
+	case ProviderNvidia:
+		return d.callNvidia(prompt)
 	default:
 		return "", fmt.Errorf("%w: unsupported provider %q", ErrNoProvider, d.config.Provider)
 	}
+}
+
+func (d *Distiller) callNvidia(prompt string) (string, error) {
+	// NVIDIA Build API is OpenAI-compatible.
+	return d.callOpenAI(prompt)
 }
 
 func (d *Distiller) callOllama(prompt string) (string, error) {

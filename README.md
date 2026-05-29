@@ -93,6 +93,7 @@ producing higher-quality output than blind batch processing.
 | OpenAI | Paid | `forgememo config --provider openai --api-key sk-...` |
 | Anthropic | Paid | `forgememo config --provider anthropic --api-key sk-ant-...` |
 | Groq | Free tier | `forgememo config --provider groq --api-key gsk-...` |
+| NVIDIA | Free tier / Paid | `forgememo config --provider nvidia --api-key nvapi-...` |
 
 ## MCP Tools
 
