@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.5.4] - 2026-06-17
+
+### Added
+- Exposed `reconfigure_provider` capability contract over MCP.
+- Added dynamic configuration reloading to the background distillation daemon.
+- Enhanced loop safety bounds and parameter limits.
+
 ## [0.5.3] - 2026-05-29
 
 ### Added
