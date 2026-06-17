@@ -220,6 +220,7 @@ func main() {
 	// Web app endpoints (v1 prefix)
 	http.HandleFunc("/webapp-auth/send-link", handleSendLink)
 	http.HandleFunc("/v1/stats", handleStats)
+	http.HandleFunc("/v1/balance", handleBalance)
 	http.HandleFunc("/v1/activity", handleActivity)
 	http.HandleFunc("/v1/user/settings", handleUserSettings)
 	http.HandleFunc("/v1/user/api-key", handleUserAPIKey)
@@ -413,6 +414,21 @@ func handleStats(w http.ResponseWriter, r *http.Request) {
 		"traces":      nil,
 		"principles":  nil,
 		"projects":    nil,
+	})
+}
+
+// GET /v1/balance
+func handleBalance(w http.ResponseWriter, r *http.Request) {
+	user, ok := requireUser(w, r)
+	if !ok {
+		return
+	}
+
+	balanceUSD := float64(user.Credits) * 0.005
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]any{
+		"balance_usd": balanceUSD,
 	})
 }
 

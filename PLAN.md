@@ -330,17 +330,18 @@ forge/
 | Skill files | ✓ | Claude, Gemini, Codex |
 | Cross-compile | ✓ | `GOOS=windows` just works |
 
-### 🔲 Remaining
+### 🔲 Future Roadmap
 
-| Component | Priority | Notes |
-|-----------|----------|-------|
-| Agent skill installation | High | Copy skills to `~/.claude/skills/`, `~/.gemini/`, `~/.codex/skills/` |
-| Claude Code MCP config | High | Auto-register in `~/.claude/settings.json` |
-| Claude Code hook registration | High | Register PostToolUse, Stop hooks |
-| Distillation engine | High | LLM-powered event → principle summarization |
-| System service | Medium | launchd/systemd/Windows Service |
-| Provider config | Medium | API key management for distillation |
-| Encryption at rest | Low | SQLCipher for DB |
+| Feature / Improvement | Priority | Description |
+|-----------|----------|-------------|
+| Encryption at rest | High | Integrate SQLCipher for secure database storage |
+| Multi-device sync | High | Secure cloud/peer synchronization of local memory data |
+| Serialization hardening | High | Enforce strict schemas (JSON/Protobuf) for memories/state; ban loose engines (msgpack, pickle) |
+| Enclave / Sandbox tool execution | High | Sandbox any future execution tools in isolated microVMs or containers |
+| Structured type-matching boundaries | High | Pass all external code/log payloads through strict schemas to block command-injection |
+| Web dashboard | Medium | Rich frontend dashboard (`forgememory-app`) for analytics and visualization |
+| Rate limiting | Medium | Implement rate limiting on MCP server event loop |
+| Ingestion-time payload sanitization | Medium | Strip sensitive data (e.g. credentials, tokens) before DB entry |
 
 ---
 

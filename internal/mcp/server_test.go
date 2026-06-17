@@ -456,3 +456,97 @@ func mustUpsertAlert(t *testing.T, database *db.DB, alert *db.Alert) {
 		t.Fatalf("upsert alert: %v", err)
 	}
 }
+
+func TestMCPValidationConstraints(t *testing.T) {
+	database := openTestDB(t)
+	server := New(database)
+
+	// 1. Path traversal guard test
+	req := Request{
+		JSONRPC: "2.0",
+		ID:      json.RawMessage("1"),
+		Method:  "tools/call",
+		Params: mustMarshal(t, map[string]any{
+			"name": "get_principles",
+			"arguments": map[string]any{
+				"project_id": "../../../unsafe-project-dir",
+				"limit":      5,
+			},
+		}),
+	}
+	resp := server.handleRequest(req)
+	if resp == nil {
+		t.Fatal("expected response")
+	}
+	// The path ../../../unsafe-project-dir should be sanitized to "unsafe-project-dir"
+	// Since no principles exist for "unsafe-project-dir", it should return a result showing that.
+	result, ok := resp.Result.(ToolResult)
+	if !ok {
+		t.Fatalf("expected ToolResult, got %T", resp.Result)
+	}
+	if !strings.Contains(result.Content[0].Text, "unsafe-project-dir") {
+		t.Errorf("expected clean project id 'unsafe-project-dir' to be used, got: %s", result.Content[0].Text)
+	}
+
+	// 2. Limit bounds test (limit > 100 should be constrained to 100, limit < 1 to 1)
+	args := map[string]any{"limit": 200.0}
+	if limit := intFromArgs(args, "limit", 10); limit != 100 {
+		t.Errorf("expected limit capped at 100, got %d", limit)
+	}
+	args = map[string]any{"limit": -5.0}
+	if limit := intFromArgs(args, "limit", 10); limit != 1 {
+		t.Errorf("expected limit capped at 1, got %d", limit)
+	}
+
+	// 3. String length caps test for query in search_memories
+	longQuery := strings.Repeat("a", 1001)
+	req = Request{
+		JSONRPC: "2.0",
+		ID:      json.RawMessage("2"),
+		Method:  "tools/call",
+		Params: mustMarshal(t, map[string]any{
+			"name": "search_memories",
+			"arguments": map[string]any{
+				"query":      longQuery,
+				"project_id": "test-proj",
+			},
+		}),
+	}
+	resp = server.handleRequest(req)
+	if resp == nil {
+		t.Fatal("expected response")
+	}
+	result, ok = resp.Result.(ToolResult)
+	if !ok {
+		t.Fatalf("expected ToolResult, got %T", resp.Result)
+	}
+	if !result.IsError || !strings.Contains(result.Content[0].Text, "exceeds maximum length") {
+		t.Errorf("expected tool error for long query, got: %+v", result)
+	}
+
+	// 4. String length caps test for prompt in inject_principles
+	longPrompt := strings.Repeat("b", 100001)
+	req = Request{
+		JSONRPC: "2.0",
+		ID:      json.RawMessage("3"),
+		Method:  "tools/call",
+		Params: mustMarshal(t, map[string]any{
+			"name": "inject_principles",
+			"arguments": map[string]any{
+				"prompt":     longPrompt,
+				"project_id": "test-proj",
+			},
+		}),
+	}
+	resp = server.handleRequest(req)
+	if resp == nil {
+		t.Fatal("expected response")
+	}
+	result, ok = resp.Result.(ToolResult)
+	if !ok {
+		t.Fatalf("expected ToolResult, got %T", resp.Result)
+	}
+	if !result.IsError || !strings.Contains(result.Content[0].Text, "exceeds maximum length") {
+		t.Errorf("expected tool error for long prompt, got: %+v", result)
+	}
+}

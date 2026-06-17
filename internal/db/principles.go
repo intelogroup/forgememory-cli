@@ -40,6 +40,8 @@ type Principle struct {
 	ConflictPeerID string   `json:"conflict_peer_id,omitempty"` // ID of the paired conflicting principle
 	Outcome        string   `json:"outcome,omitempty"`          // "success" | "failure" | "unknown"
 	ImplHint       string   `json:"impl_hint,omitempty"`        // ≤120 chars: exact pattern/call/approach used
+	LastUsedTS     string   `json:"last_used_ts,omitempty"`
+	UseCount       int      `json:"use_count,omitempty"`
 }
 
 // FilterConcepts returns only the concepts that are in AllowedConcepts.
@@ -76,10 +78,10 @@ func (d *DB) InsertPrinciple(p *Principle) (inserted bool, err error) {
 	}
 	result, err := d.conn.Exec(
 		`INSERT OR IGNORE INTO principles
-		 (id, ts, type, title, narrative, impact_score, project_id, source_event, fingerprint, concepts, files_modified, outcome, impl_hint)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		 (id, ts, type, title, narrative, impact_score, project_id, source_event, fingerprint, concepts, files_modified, outcome, impl_hint, last_used_ts, use_count)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		p.ID, p.TS, p.Type, p.Title, p.Narrative, p.ImpactScore,
-		p.ProjectID, p.SourceEvent, p.Fingerprint, conceptsJSON, filesJSON, outcome, p.ImplHint,
+		p.ProjectID, p.SourceEvent, p.Fingerprint, conceptsJSON, filesJSON, outcome, p.ImplHint, p.LastUsedTS, p.UseCount,
 	)
 	if err != nil {
 		return false, err
@@ -95,7 +97,8 @@ func (d *DB) RecentActivePrinciples(limit int) ([]Principle, error) {
 		`SELECT id, ts, type, title, narrative, impact_score, project_id, source_event, fingerprint,
 		        COALESCE(concepts,''), COALESCE(files_modified,''),
 		        COALESCE(status,''), COALESCE(conflict_peer_id,''),
-		        COALESCE(outcome,'unknown'), COALESCE(impl_hint,'')
+		        COALESCE(outcome,'unknown'), COALESCE(impl_hint,''),
+		        COALESCE(last_used_ts,''), COALESCE(use_count,0)
 		 FROM principles
 		 WHERE status = 'active' OR status IS NULL OR status = ''
 		 ORDER BY ts DESC LIMIT ?`, limit,
@@ -112,7 +115,8 @@ func (d *DB) RecentPrinciples(limit int) ([]Principle, error) {
 		`SELECT id, ts, type, title, narrative, impact_score, project_id, source_event, fingerprint,
 		        COALESCE(concepts,''), COALESCE(files_modified,''),
 		        COALESCE(status,''), COALESCE(conflict_peer_id,''),
-		        COALESCE(outcome,'unknown'), COALESCE(impl_hint,'')
+		        COALESCE(outcome,'unknown'), COALESCE(impl_hint,''),
+		        COALESCE(last_used_ts,''), COALESCE(use_count,0)
 		 FROM principles ORDER BY ts DESC LIMIT ?`, limit,
 	)
 	if err != nil {
@@ -131,7 +135,8 @@ func (d *DB) RecentPrinciplesByProject(projectID string, limit int) ([]Principle
 		`SELECT id, ts, type, title, narrative, impact_score, project_id, source_event, fingerprint,
 		        COALESCE(concepts,''), COALESCE(files_modified,''),
 		        COALESCE(status,''), COALESCE(conflict_peer_id,''),
-		        COALESCE(outcome,'unknown'), COALESCE(impl_hint,'')
+		        COALESCE(outcome,'unknown'), COALESCE(impl_hint,''),
+		        COALESCE(last_used_ts,''), COALESCE(use_count,0)
 		 FROM principles
 		 WHERE (project_id = ? OR project_id LIKE ? OR project_id LIKE ?)
 		   AND (status = 'active' OR status IS NULL OR status = '')
@@ -154,7 +159,8 @@ func (d *DB) RecentPrinciplesByProjectAll(projectID string, limit int) ([]Princi
 		`SELECT id, ts, type, title, narrative, impact_score, project_id, source_event, fingerprint,
 		        COALESCE(concepts,''), COALESCE(files_modified,''),
 		        COALESCE(status,''), COALESCE(conflict_peer_id,''),
-		        COALESCE(outcome,'unknown'), COALESCE(impl_hint,'')
+		        COALESCE(outcome,'unknown'), COALESCE(impl_hint,''),
+		        COALESCE(last_used_ts,''), COALESCE(use_count,0)
 		 FROM principles
 		 WHERE project_id = ? OR project_id LIKE ? OR project_id LIKE ?
 		 ORDER BY ts DESC LIMIT ?`, exact, unixLike, windowsLike, limit,
@@ -188,7 +194,7 @@ func scanPrinciples(rows *sql.Rows) ([]Principle, error) {
 		if err := rows.Scan(&p.ID, &p.TS, &p.Type, &p.Title, &p.Narrative,
 			&p.ImpactScore, &p.ProjectID, &p.SourceEvent, &p.Fingerprint,
 			&conceptsJSON, &filesJSON, &p.Status, &p.ConflictPeerID,
-			&p.Outcome, &p.ImplHint); err != nil {
+			&p.Outcome, &p.ImplHint, &p.LastUsedTS, &p.UseCount); err != nil {
 			return nil, err
 		}
 		p.Concepts = decodeStringSlice(conceptsJSON)
@@ -227,7 +233,8 @@ func (d *DB) SearchPrinciplesCrossProject(terms []string, minImpact float64, wit
 	             p.source_event, p.fingerprint,
 	             COALESCE(p.concepts,''), COALESCE(p.files_modified,''),
 	             COALESCE(p.status,''), COALESCE(p.conflict_peer_id,''),
-	             COALESCE(p.outcome,'unknown'), COALESCE(p.impl_hint,'')
+	             COALESCE(p.outcome,'unknown'), COALESCE(p.impl_hint,''),
+	             COALESCE(p.last_used_ts,''), COALESCE(p.use_count,0)
 	      FROM principles p
 	      WHERE p.rowid IN (SELECT rowid FROM principles_fts WHERE principles_fts MATCH ?)
 	        AND p.impact_score >= ?
@@ -270,7 +277,8 @@ func (d *DB) GetPrincipleByID(id string) (*Principle, error) {
 		`SELECT id, ts, type, title, narrative, impact_score, project_id, source_event, fingerprint,
 		        COALESCE(concepts,''), COALESCE(files_modified,''),
 		        COALESCE(status,''), COALESCE(conflict_peer_id,''),
-		        COALESCE(outcome,'unknown'), COALESCE(impl_hint,'')
+		        COALESCE(outcome,'unknown'), COALESCE(impl_hint,''),
+		        COALESCE(last_used_ts,''), COALESCE(use_count,0)
 		 FROM principles WHERE id=? LIMIT 1`, id,
 	)
 	if err != nil {
@@ -289,7 +297,8 @@ func (d *DB) ConflictingPrinciples(limit int) ([]Principle, error) {
 		`SELECT id, ts, type, title, narrative, impact_score, project_id, source_event, fingerprint,
 		        COALESCE(concepts,''), COALESCE(files_modified,''),
 		        COALESCE(status,''), COALESCE(conflict_peer_id,''),
-		        COALESCE(outcome,'unknown'), COALESCE(impl_hint,'')
+		        COALESCE(outcome,'unknown'), COALESCE(impl_hint,''),
+		        COALESCE(last_used_ts,''), COALESCE(use_count,0)
 		 FROM principles WHERE status='conflicting' ORDER BY ts DESC LIMIT ?`, limit,
 	)
 	if err != nil {
@@ -390,3 +399,23 @@ func projectIDSelectors(projectID string) (exact, unixLike, windowsLike string) 
 	}
 	return projectID, "%/" + base, "%\\" + base
 }
+
+// UpdatePrincipleScore updates the impact score of a principle.
+func (d *DB) UpdatePrincipleScore(id string, score float64) error {
+	_, err := d.conn.Exec(
+		`UPDATE principles SET impact_score = ? WHERE id = ?`,
+		score, id,
+	)
+	return err
+}
+
+// IncrementPrincipleUsage updates the last used timestamp and increments use count.
+func (d *DB) IncrementPrincipleUsage(id string) error {
+	now := time.Now().UTC().Format(time.RFC3339)
+	_, err := d.conn.Exec(
+		`UPDATE principles SET last_used_ts = ?, use_count = use_count + 1 WHERE id = ?`,
+		now, id,
+	)
+	return err
+}
+

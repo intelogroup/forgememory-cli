@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 )
 
 // Listen creates a TCP listener on localhost (Windows has no Unix sockets in stdlib).
@@ -24,11 +25,12 @@ func Listen() (net.Listener, string, error) {
 // Send sends a JSON message to the daemon (used by hooks).
 func Send(msg any) error {
 	addr := pipeAddr()
-	conn, err := net.Dial("tcp", addr)
+	conn, err := net.DialTimeout("tcp", addr, 50*time.Millisecond)
 	if err != nil {
 		return err // silent failure — daemon is down
 	}
 	defer conn.Close()
+	conn.SetDeadline(time.Now().Add(50 * time.Millisecond))
 	return json.NewEncoder(conn).Encode(msg)
 }
 

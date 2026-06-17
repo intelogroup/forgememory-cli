@@ -294,3 +294,55 @@ func TestProjectAgents(t *testing.T) {
 		t.Errorf("agents = %v, want [claude gemini]", agents)
 	}
 }
+
+func TestPrincipleScoreAndUsage(t *testing.T) {
+	db := openPrinciplesDB(t)
+
+	p := &Principle{
+		ID:          "p-test-1",
+		TS:          "2026-06-12T10:00:00Z",
+		Type:        "bugfix",
+		Title:       "Test Title",
+		Narrative:   "Test Narrative",
+		ImpactScore: 0.5,
+		ProjectID:   "proj-test",
+		Fingerprint: "fingerprint-1",
+	}
+
+	inserted, err := db.InsertPrinciple(p)
+	if err != nil {
+		t.Fatalf("InsertPrinciple: %v", err)
+	}
+	if !inserted {
+		t.Fatal("expected principle to be inserted")
+	}
+
+	// Test UpdatePrincipleScore
+	if err := db.UpdatePrincipleScore("p-test-1", 0.85); err != nil {
+		t.Fatalf("UpdatePrincipleScore: %v", err)
+	}
+
+	// Test IncrementPrincipleUsage
+	if err := db.IncrementPrincipleUsage("p-test-1"); err != nil {
+		t.Fatalf("IncrementPrincipleUsage: %v", err)
+	}
+
+	fetched, err := db.GetPrincipleByID("p-test-1")
+	if err != nil {
+		t.Fatalf("GetPrincipleByID: %v", err)
+	}
+	if fetched == nil {
+		t.Fatal("expected principle to be found")
+	}
+
+	if fetched.ImpactScore != 0.85 {
+		t.Errorf("expected impact score 0.85, got %v", fetched.ImpactScore)
+	}
+	if fetched.UseCount != 1 {
+		t.Errorf("expected use count 1, got %v", fetched.UseCount)
+	}
+	if fetched.LastUsedTS == "" {
+		t.Error("expected last used ts to be set")
+	}
+}
+

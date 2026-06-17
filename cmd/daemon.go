@@ -364,7 +364,10 @@ func distillLoop(d *distill.Distiller, database *db.DB, interval time.Duration) 
 			projects, pErr := database.ProjectIDsWithEnoughSessions(crossSessionMinSessions)
 			if pErr == nil {
 				for _, proj := range projects {
-					n, err := d.SynthesizeCrossSession(proj, crossSessionMinSessions)
+					// Reload config dynamically for cross-session synthesis to prevent stale caching
+					loopCfg := distill.LoadConfig()
+					loopD := distill.New(database, loopCfg)
+					n, err := loopD.SynthesizeCrossSession(proj, crossSessionMinSessions)
 					if err != nil {
 						log.Printf("Cross-session synthesis for %s: %v", proj, err)
 					} else {

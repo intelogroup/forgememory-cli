@@ -307,6 +307,45 @@ func TestProcessEvent_DoesNotResolveAlertOnUnrelatedSuccess(t *testing.T) {
 	}
 }
 
+func TestProcessEvent_DoesNotAlertOnSourceCodeInPayload(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	t.Setenv("FORGE_EXA_API_KEY", "")
+	t.Setenv("EXA_API_KEY", "")
+	t.Setenv("FORGE_TAVILY_API_KEY", "")
+	t.Setenv("TAVILY_API_KEY", "")
+
+	database, err := db.Open(filepath.Join(t.TempDir(), "test.db"))
+	if err != nil {
+		t.Fatalf("db.Open: %v", err)
+	}
+	defer database.Close()
+
+	// Error-like text appears in file content being edited, not in tool stderr.
+	payload := `{"tool_input":{"file_path":"main.rs","new_string":"fn broken() {\n    // error[E0599]: no method named serve found\n}"},"tool_response":{"type":"result","result":"updated"}}`
+	for i := 0; i < 3; i++ {
+		event := &db.Event{
+			TS:         time.Now().Add(time.Duration(i) * time.Minute).UTC().Format(time.RFC3339),
+			SessionID:  "sess-src",
+			ProjectID:  "api-service",
+			SourceTool: "claude",
+			EventType:  "PostToolUse",
+			ToolName:   "Edit",
+			Payload:    payload,
+		}
+		if err := ProcessEvent(database, event); err != nil {
+			t.Fatalf("ProcessEvent: %v", err)
+		}
+	}
+
+	alerts, err := database.ActiveAlertsByProject("api-service", 5)
+	if err != nil {
+		t.Fatalf("ActiveAlertsByProject: %v", err)
+	}
+	if len(alerts) != 0 {
+		t.Fatalf("expected no repeated_failure alert for source code in payload, got %#v", alerts)
+	}
+}
+
 func TestObserveFailure_IgnoresPythonFunctionSignatureInToolInput(t *testing.T) {
 	// Claude edits a file whose old_string/new_string contain a function with
 	// "errors" and label="error" — must never fire a failure observation.

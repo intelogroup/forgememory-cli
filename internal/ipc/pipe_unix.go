@@ -8,6 +8,7 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"time"
 )
 
 // Listen creates a Unix domain socket for IPC.
@@ -27,11 +28,12 @@ func Listen() (net.Listener, string, error) {
 
 // Send sends a JSON message to the socket (used by hooks).
 func Send(msg any) error {
-	conn, err := net.Dial("unix", socketPath())
+	conn, err := net.DialTimeout("unix", socketPath(), 50*time.Millisecond)
 	if err != nil {
 		return err // silent failure — daemon is down
 	}
 	defer conn.Close()
+	conn.SetDeadline(time.Now().Add(50 * time.Millisecond))
 	return json.NewEncoder(conn).Encode(msg)
 }
 

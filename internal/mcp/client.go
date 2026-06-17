@@ -180,6 +180,28 @@ func (c *Client) CallTool(name string, args map[string]any) (string, error) {
 	return joinStrings(texts, "\n"), nil
 }
 
+// CallToolWithTimeout calls an MCP tool and returns the text content, timing out after the specified duration.
+func (c *Client) CallToolWithTimeout(name string, args map[string]any, timeout time.Duration) (string, error) {
+	type result struct {
+		text string
+		err  error
+	}
+	ch := make(chan result, 1)
+	go func() {
+		text, err := c.CallTool(name, args)
+		ch <- result{text: text, err: err}
+	}()
+
+	select {
+	case r := <-ch:
+		return r.text, r.err
+	case <-time.After(timeout):
+		c.Close()
+		return "", fmt.Errorf("mcp client: CallTool %s timed out after %v", name, timeout)
+	}
+}
+
+
 // Close shuts down the MCP subprocess by closing stdin and waiting for exit.
 func (c *Client) Close() error {
 	var err error

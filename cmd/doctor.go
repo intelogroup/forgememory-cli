@@ -9,6 +9,7 @@ import (
 
 	"github.com/forge/forge/internal/agent"
 	"github.com/forge/forge/internal/db"
+	"github.com/forge/forge/internal/distill"
 )
 
 func runDoctor(args []string) {
@@ -119,7 +120,41 @@ func runDoctor(args []string) {
 		sessions, _ := database.SessionSummaryCount()
 		fmt.Printf("[OK] Database: %d events, %d undistilled, %d principles, %d sessions\n",
 			total, undistilled, principles, sessions)
+
+		// Run SQLite integrity check
+		var integrity string
+		if err := database.Conn().QueryRow("PRAGMA integrity_check").Scan(&integrity); err != nil {
+			fmt.Printf("  [FAIL] Database integrity query: %v\n", err)
+		} else if integrity != "ok" {
+			fmt.Printf("  [FAIL] Database integrity check failed: %s\n", integrity)
+		} else {
+			fmt.Println("  [OK] Database integrity check: ok")
+		}
+
+		// Check database file size
+		if info, err := os.Stat(database.Path); err == nil {
+			fmt.Printf("  [OK] Database file size: %d bytes (%s)\n", info.Size(), database.Path)
+		}
+
 		database.Close()
+	}
+
+	// Check LLM Provider connection
+	fmt.Println("  Checking LLM provider connectivity...")
+	cfg := distill.LoadConfig()
+	if cfg.Provider == "" {
+		fmt.Println("  [FAIL] LLM Provider: no provider configured (run 'forge config' first)")
+	} else {
+		fmt.Printf("  [OK] LLM Provider: %s (model: %s)\n", cfg.Provider, cfg.Model)
+		d := distill.New(nil, cfg)
+		fmt.Print("    Testing connection (sending test token)... ")
+		response, err := d.CallLLM("respond with only the word OK")
+		if err != nil {
+			fmt.Printf("\n    [FAIL] LLM Connection: %v\n", err)
+		} else {
+			fmt.Printf("Success! Response: %q\n", strings.TrimSpace(response))
+			fmt.Println("    [OK] LLM Connection: verified")
+		}
 	}
 
 	// Check daemon

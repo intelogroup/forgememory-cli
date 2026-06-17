@@ -3,7 +3,9 @@ package db
 import (
 	"strings"
 	"time"
+	"unicode/utf8"
 
+	"github.com/forge/forge/internal/sanitize"
 	"github.com/google/uuid"
 )
 
@@ -22,6 +24,22 @@ type Event struct {
 
 // InsertEvent stores a new event.
 func (d *DB) InsertEvent(e *Event) error {
+	e.Payload = sanitize.ScrubSecrets(e.Payload)
+
+	const maxPayloadBytes = 64 * 1024 // 64KB
+	if len(e.Payload) > maxPayloadBytes {
+		suffix := "...[TRUNCATED]"
+		limit := maxPayloadBytes - len(suffix)
+		if limit < 0 {
+			limit = 0
+		}
+		truncated := e.Payload[:limit]
+		for len(truncated) > 0 && !utf8.ValidString(truncated) {
+			truncated = truncated[:len(truncated)-1]
+		}
+		e.Payload = truncated + suffix
+	}
+
 	if e.ID == "" {
 		e.ID = uuid.New().String()
 	}
@@ -218,11 +236,9 @@ func (d *DB) SessionEvents(sessionID string, limit int) ([]Event, error) {
 }
 
 // SessionEventsUpTo returns session events in chronological order, optionally
-// capped at a cutoff timestamp.
+// capped at a cutoff timestamp. limit > 0 applies LIMIT n; limit == 0 returns
+// all matching events (used by distill-agent for large sessions).
 func (d *DB) SessionEventsUpTo(sessionID, cutoffTS string, limit int) ([]Event, error) {
-	if limit <= 0 {
-		limit = 50
-	}
 	query := `SELECT id, ts, session_id, project_id, source_tool, event_type, tool_name, payload, distilled
 		 FROM events WHERE session_id=?`
 	args := []any{sessionID}
@@ -230,8 +246,11 @@ func (d *DB) SessionEventsUpTo(sessionID, cutoffTS string, limit int) ([]Event, 
 		query += ` AND ts <= ?`
 		args = append(args, cutoffTS)
 	}
-	query += ` ORDER BY ts ASC LIMIT ?`
-	args = append(args, limit)
+	query += ` ORDER BY ts ASC`
+	if limit > 0 {
+		query += ` LIMIT ?`
+		args = append(args, limit)
+	}
 
 	rows, err := d.conn.Query(query, args...)
 	if err != nil {

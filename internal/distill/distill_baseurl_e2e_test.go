@@ -117,3 +117,41 @@ func TestOpenAI401SurfacesAsProviderInvalid(t *testing.T) {
 		t.Fatalf("err = %v, want 'Invalid OpenAI API key' — wrong path or wrong status mapping", err)
 	}
 }
+
+func TestCheckCredits(t *testing.T) {
+	cases := []struct {
+		name       string
+		response   string
+		wantResult bool
+	}{
+		{"positive balance", `{"balance_usd": 1.50}`, true},
+		{"zero balance", `{"balance_usd": 0.00}`, false},
+		{"negative balance", `{"balance_usd": -0.50}`, false},
+	}
+
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if r.URL.Path != "/v1/balance" {
+					http.NotFound(w, r)
+					return
+				}
+				w.Header().Set("Content-Type", "application/json")
+				_, _ = w.Write([]byte(c.response))
+			}))
+			defer srv.Close()
+
+			d := New(nil, Config{
+				Provider:   ProviderForgememo,
+				APIKey:     "sk-forgememo-test",
+				PaymentURL: srv.URL,
+				Timeout:    5 * time.Second,
+			})
+
+			got := d.checkCredits()
+			if got != c.wantResult {
+				t.Fatalf("checkCredits() = %v, want %v", got, c.wantResult)
+			}
+		})
+	}
+}

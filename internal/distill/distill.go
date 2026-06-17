@@ -15,6 +15,7 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"sort"
 	"syscall"
 	"time"
 
@@ -839,15 +840,67 @@ func InjectPrinciplesForPrompt(database *db.DB, prompt, projectID string) string
 		return prompt
 	}
 
-	principles, err := database.RecentPrinciplesByProject(projectID, 5)
+	// Fetch up to 15 principles to allow decay/sorting choice
+	principles, err := database.RecentPrinciplesByProject(projectID, 15)
 	if err != nil || len(principles) == 0 {
 		return prompt
 	}
 
+	type decayedPrinciple struct {
+		p     db.Principle
+		score float64
+	}
+
+	decayed := make([]decayedPrinciple, 0, len(principles))
+	for _, p := range principles {
+		refStr := p.LastUsedTS
+		if refStr == "" {
+			refStr = p.TS
+		}
+		refTime, err := time.Parse(time.RFC3339, refStr)
+		score := p.ImpactScore
+		if err == nil {
+			days := time.Since(refTime).Hours() / 24.0
+			if days > 0 {
+				decayFactor := 1.0 - 0.1*(days/30.0)
+				if decayFactor < 0 {
+					decayFactor = 0
+				}
+				score = p.ImpactScore * decayFactor
+			}
+		}
+		// Filter out principles that have decayed below 0.1
+		if score >= 0.1 {
+			decayed = append(decayed, decayedPrinciple{p: p, score: score})
+		}
+	}
+
+	if len(decayed) == 0 {
+		return prompt
+	}
+
+	// Sort by decayed score descending, falling back to TS descending
+	sort.Slice(decayed, func(i, j int) bool {
+		if decayed[i].score != decayed[j].score {
+			return decayed[i].score > decayed[j].score
+		}
+		return decayed[i].p.TS > decayed[j].p.TS
+	})
+
+	// Take top 5
+	limit := 5
+	if len(decayed) < limit {
+		limit = len(decayed)
+	}
+	topDecayed := decayed[:limit]
+
 	var context strings.Builder
 	context.WriteString("\n## RELEVANT LESSONS FROM PREVIOUS WORK\n")
-	for _, p := range principles {
+	for _, dp := range topDecayed {
+		p := dp.p
 		context.WriteString(fmt.Sprintf("- %s: %s\n", p.Title, p.Narrative))
+		// Increment usage count and update last used TS
+		_ = database.IncrementPrincipleUsage(p.ID)
 	}
 	context.WriteString("\n---\n\n")
 

@@ -3,6 +3,7 @@ package config
 import (
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 )
@@ -31,16 +32,34 @@ func Path() string {
 }
 
 func Load() (Config, error) {
-	path := Path()
-	data, err := os.ReadFile(path)
-	if err != nil {
-		if os.IsNotExist(err) {
-			return Config{}, nil
-		}
+	var cfg Config
+
+	// 1. Load global config
+	globalPath := Path()
+	if data, err := os.ReadFile(globalPath); err == nil {
+		parseConfigData(data, &cfg)
+	} else if !os.IsNotExist(err) {
 		return Config{}, err
 	}
 
-	var cfg Config
+	// 2. Load project local config if in a git repo
+	if root := findGitRoot(); root != "" {
+		// Try .forge/config (committed project config)
+		localPath := filepath.Join(root, ".forge", "config")
+		if data, err := os.ReadFile(localPath); err == nil {
+			parseConfigData(data, &cfg)
+		}
+		// Try .forge/config.local (gitignored user overrides)
+		localPrivatePath := filepath.Join(root, ".forge", "config.local")
+		if data, err := os.ReadFile(localPrivatePath); err == nil {
+			parseConfigData(data, &cfg)
+		}
+	}
+
+	return cfg, nil
+}
+
+func parseConfigData(data []byte, cfg *Config) {
 	for _, line := range strings.Split(string(data), "\n") {
 		line = strings.TrimSpace(line)
 		if line == "" || strings.HasPrefix(line, "#") {
@@ -79,8 +98,22 @@ func Load() (Config, error) {
 			cfg.OllamaStartupWait = value
 		}
 	}
-	return cfg, nil
 }
+
+func findGitRoot() string {
+	cwd, err := os.Getwd()
+	if err != nil {
+		return ""
+	}
+	cmd := exec.Command("git", "rev-parse", "--show-toplevel")
+	cmd.Dir = cwd
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		return ""
+	}
+	return strings.TrimSpace(string(out))
+}
+
 
 func Save(cfg Config) error {
 	path := Path()

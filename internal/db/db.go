@@ -241,6 +241,8 @@ func (d *DB) migrate() error {
 		{"principles", "conflict_peer_id", "TEXT DEFAULT ''"},
 		{"principles", "outcome", "TEXT NOT NULL DEFAULT 'unknown'"},
 		{"principles", "impl_hint", "TEXT NOT NULL DEFAULT ''"},
+		{"principles", "last_used_ts", "TEXT DEFAULT ''"},
+		{"principles", "use_count", "INTEGER DEFAULT 0"},
 	}
 	extraMigrations := []string{
 		`CREATE TABLE IF NOT EXISTS cross_session_patterns (

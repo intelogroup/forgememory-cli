@@ -3,6 +3,7 @@ package db
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -56,6 +57,26 @@ func TestInsertEvent(t *testing.T) {
 	if undistilled != 1 {
 		t.Errorf("undistilled = %d, want 1", undistilled)
 	}
+
+	t.Run("Payload Truncation", func(t *testing.T) {
+		largePayload := strings.Repeat("a", 70000)
+		eventLarge := &Event{
+			SessionID:  "test-session",
+			ProjectID:  "test-project",
+			SourceTool: "claude",
+			EventType:  "PostToolUse",
+			Payload:    largePayload,
+		}
+		if err := db.InsertEvent(eventLarge); err != nil {
+			t.Fatalf("InsertEvent failed for large payload: %v", err)
+		}
+		if len(eventLarge.Payload) != 65536 {
+			t.Errorf("expected payload length 65536, got %d", len(eventLarge.Payload))
+		}
+		if !strings.HasSuffix(eventLarge.Payload, "...[TRUNCATED]") {
+			t.Errorf("expected suffix ...[TRUNCATED], got %s", eventLarge.Payload[65520:])
+		}
+	})
 }
 
 func TestMarkDistilled(t *testing.T) {

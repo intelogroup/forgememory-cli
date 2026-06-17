@@ -37,7 +37,7 @@ func TestTopLevelHelpSurfacesProviderSetupCommands(t *testing.T) {
 		"forge config --provider anthropic --api-key sk-ant-...",
 		"forge config --provider groq --api-key gsk-...",
 		"forge config --provider ollama --model llama3:latest",
-		"FORGE_PROVIDER      Inference provider: forgememo/anthropic/openai/groq/ollama/codex",
+		"FORGE_PROVIDER      Inference provider: forgememo/anthropic/openai/groq/nvidia/ollama/codex",
 	} {
 		if !strings.Contains(out, want) {
 			t.Fatalf("top-level help missing %q:\n%s", want, out)

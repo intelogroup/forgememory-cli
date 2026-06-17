@@ -304,11 +304,23 @@ func parseChunkSummaryResponse(response string) (parsedChunkSummary, error) {
 	if start >= 0 && end > start {
 		response = response[start : end+1]
 	}
-	var raw parsedChunkSummary
-	if err := json.Unmarshal([]byte(response), &raw); err != nil {
-		return raw, fmt.Errorf("parse JSON: %w", err)
+	var raw struct {
+		Request       string   `json:"request"`
+		Investigation string   `json:"investigation"`
+		Learnings     string   `json:"learnings"`
+		NextSteps     string   `json:"next_steps"`
+		Keywords      []string `json:"keywords"`
 	}
-	return raw, nil
+	if err := json.Unmarshal([]byte(response), &raw); err != nil {
+		return parsedChunkSummary{}, fmt.Errorf("parse JSON: %w", err)
+	}
+	return parsedChunkSummary{
+		request:       raw.Request,
+		investigation: raw.Investigation,
+		learnings:     raw.Learnings,
+		nextSteps:     raw.NextSteps,
+		keywords:      raw.Keywords,
+	}, nil
 }
 
 
@@ -328,21 +340,21 @@ func gatherMCPContext(projectID string) string {
 	sb.WriteString("[EXISTING KNOWLEDGE — what Forge already knows about this project]\n\n")
 
 	// Gather principles
-	if text, err := client.CallTool("get_principles", mergeArgs(args, map[string]any{"limit": float64(10)})); err == nil && text != "" {
+	if text, err := client.CallToolWithTimeout("get_principles", mergeArgs(args, map[string]any{"limit": float64(10)}), 5*time.Second); err == nil && text != "" {
 		sb.WriteString("Existing principles:\n")
 		sb.WriteString(formatMCPText(text, "  "))
 		sb.WriteString("\n")
 	}
 
 	// Gather session summaries
-	if text, err := client.CallTool("get_session_summaries", mergeArgs(args, map[string]any{"limit": float64(5)})); err == nil && text != "" {
+	if text, err := client.CallToolWithTimeout("get_session_summaries", mergeArgs(args, map[string]any{"limit": float64(5)}), 5*time.Second); err == nil && text != "" {
 		sb.WriteString("Past sessions:\n")
 		sb.WriteString(formatMCPText(text, "  "))
 		sb.WriteString("\n")
 	}
 
 	// Gather cross-session patterns
-	if text, err := client.CallTool("get_cross_session_patterns", mergeArgs(args, map[string]any{"limit": float64(10)})); err == nil && text != "" {
+	if text, err := client.CallToolWithTimeout("get_cross_session_patterns", mergeArgs(args, map[string]any{"limit": float64(10)}), 5*time.Second); err == nil && text != "" {
 		sb.WriteString("Cross-session patterns:\n")
 		sb.WriteString(formatMCPText(text, "  "))
 		sb.WriteString("\n")
@@ -372,6 +384,9 @@ func formatMCPText(text, indent string) string {
 			continue
 		}
 		out = append(out, indent+trimmed)
+	}
+	if len(out) == 0 {
+		return ""
 	}
 	return strings.Join(out, "\n") + "\n"
 }

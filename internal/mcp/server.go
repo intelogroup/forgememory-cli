@@ -364,6 +364,20 @@ func (s *Server) handleToolsList(req Request) *Response {
 				"required": []string{"prompt"},
 			},
 		},
+		{
+			Name:        "reconfigure_provider",
+			Description: "Instructs the user to run 'forge config --interactive' in their terminal to reconfigure the inference provider after upstream failure (e.g. 401, connection refused, or credit exhaustion).",
+			InputSchema: map[string]any{
+				"type": "object",
+				"properties": map[string]any{
+					"reason": map[string]any{
+						"type":        "string",
+						"description": "The specific error or reason forcing a provider switch.",
+					},
+				},
+				"required": []string{"reason"},
+			},
+		},
 	}
 
 	return &Response{
@@ -408,6 +422,8 @@ func (s *Server) handleToolsCall(req Request) *Response {
 		result = s.getForgeStatus(params.Arguments)
 	case "inject_principles":
 		result = s.getInjectPrinciples(params.Arguments)
+	case "reconfigure_provider":
+		result = s.reconfigureProvider(params.Arguments)
 	default:
 		return errorResponse(req.ID, "Unknown tool: "+params.Name)
 	}
@@ -492,6 +508,9 @@ func (s *Server) searchMemories(args map[string]any) ToolResult {
 	query, ok := args["query"].(string)
 	if !ok || query == "" {
 		return toolError("Missing required parameter: query")
+	}
+	if len(query) > 1000 {
+		return toolError("Parameter 'query' exceeds maximum length of 1,000 characters")
 	}
 	limit := intFromArgs(args, "limit", 10)
 	projectID := projectIDFromArgs(args)
@@ -672,15 +691,24 @@ func toolError(msg string) ToolResult {
 }
 
 func intFromArgs(args map[string]any, key string, defaultVal int) int {
+	val := defaultVal
 	if v, ok := args[key]; ok {
 		switch n := v.(type) {
 		case float64:
-			return int(n)
+			val = int(n)
 		case int:
-			return n
+			val = n
 		}
 	}
-	return defaultVal
+	if key == "limit" {
+		if val < 1 {
+			return 1
+		}
+		if val > 100 {
+			return 100
+		}
+	}
+	return val
 }
 
 func (s *Server) getProjectTimeline(args map[string]any) ToolResult {
@@ -912,16 +940,35 @@ func detectProject() string {
 	return filepath.Base(cwd)
 }
 
+func cleanProjectID(id string) string {
+	if id == "" {
+		return ""
+	}
+	if strings.Contains(id, "..") || strings.Contains(id, "/") || strings.Contains(id, "\\") {
+		id = filepath.Base(filepath.Clean(id))
+	}
+	if id == "." || id == ".." || id == "/" {
+		return ""
+	}
+	return id
+}
+
 func projectIDFromArgs(args map[string]any) string {
 	if projectID := stringFromArgs(args, "project_id"); projectID != "" {
-		return projectID
+		if cleaned := cleanProjectID(projectID); cleaned != "" {
+			return cleaned
+		}
 	}
 	return detectProject()
 }
 
 func stringFromArgs(args map[string]any, key string) string {
 	if v, ok := args[key].(string); ok {
-		return strings.TrimSpace(v)
+		trimmed := strings.TrimSpace(v)
+		if len(trimmed) > 1000 {
+			trimmed = trimmed[:1000]
+		}
+		return trimmed
 	}
 	return ""
 }
@@ -1180,6 +1227,9 @@ func (s *Server) getInjectPrinciples(args map[string]any) ToolResult {
 	if !ok || prompt == "" {
 		return toolError("Missing required parameter: prompt")
 	}
+	if len(prompt) > 100000 {
+		return toolError("Parameter 'prompt' exceeds maximum length of 100,000 characters")
+	}
 	projectID := projectIDFromArgs(args)
 
 	enhancedPrompt := distill.InjectPrinciplesForPrompt(s.db, prompt, projectID)
@@ -1220,4 +1270,51 @@ func prefix(s string, n int) string {
 		return s
 	}
 	return s[:n]
+}
+
+func (s *Server) reconfigureProvider(args map[string]any) ToolResult {
+	reason, _ := args["reason"].(string)
+	if reason == "" {
+		reason = "unspecified failure"
+	}
+
+	configPath := filepath.Join(forgeHomeDir(), ".forge", "config")
+	attemptsPath := filepath.Join(forgeHomeDir(), ".forge", "reconfig_attempts")
+
+	// Read attempts count
+	count := 0
+	attemptsData, err := os.ReadFile(attemptsPath)
+	if err == nil {
+		if val, parseErr := strconv.Atoi(strings.TrimSpace(string(attemptsData))); parseErr == nil {
+			count = val
+		}
+	}
+
+	// Check if config has been modified since attempts were logged to reset count
+	if configInfo, statErr := os.Stat(configPath); statErr == nil {
+		if attemptsInfo, attemptsStatErr := os.Stat(attemptsPath); attemptsStatErr == nil {
+			if configInfo.ModTime().After(attemptsInfo.ModTime()) {
+				count = 0
+			}
+		}
+	}
+
+	if count >= 3 {
+		return ToolResult{
+			IsError: true,
+			Content: []ToolContent{{
+				Type: "text",
+				Text: "Error: Reconfiguration attempt limit exceeded (3). Please run 'forge config --interactive' manually in your primary terminal shell to repair the credentials, or run 'forge doctor' to diagnose the system state.",
+			}},
+		}
+	}
+
+	count++
+	_ = os.WriteFile(attemptsPath, []byte(strconv.Itoa(count)), 0o600)
+
+	msg := fmt.Sprintf("### [ForgeMemory Alert]\nThe inference provider encountered a failure:\n> %s\n\nPlease open your primary terminal shell and run the following command to reconfigure your provider:\n```bash\nforge config --interactive\n```\n(Attempt %d of 3. After 3 attempts, this automated action will be blocked until a configuration change is saved).", reason, count)
+
+	return ToolResult{
+		Content: []ToolContent{{Type: "text", Text: msg}},
+	}
 }
