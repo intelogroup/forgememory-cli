@@ -288,13 +288,13 @@ func buildChunkPrinciplesPrompt(final parsedChunkSummary, chunks []parsedChunkSu
 }
 
 type parsedChunkSummary struct {
-	index        int      // position in chunk sequence (not from JSON)
-	events       int      // number of events in this chunk (not from JSON)
-	request      string   `json:"request"`
-	investigation string   `json:"investigation"`
-	learnings    string   `json:"learnings"`
-	nextSteps    string   `json:"next_steps"`
-	keywords     []string `json:"keywords"`
+	index         int      // position in chunk sequence (not from JSON)
+	events        int      // number of events in this chunk (not from JSON)
+	request       string
+	investigation string
+	learnings     string
+	nextSteps     string
+	keywords      []string
 }
 
 func parseChunkSummaryResponse(response string) (parsedChunkSummary, error) {
