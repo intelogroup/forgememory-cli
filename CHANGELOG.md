@@ -1,5 +1,10 @@
 # Changelog
 
+## [0.5.6] - 2026-06-20
+
+### Fixed
+- Fixed Windows compatibility issues including home directory override resolution during test isolation, path normalization, `.exe` extension handling, and increased daemon startup timeouts on slow runners.
+
 ## [0.5.5] - 2026-06-17
 
 ### Fixed
