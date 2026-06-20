@@ -105,3 +105,16 @@ func TestListenAcceptsConnections(t *testing.T) {
 	}
 	conn.Close()
 }
+
+func TestIsDaemonAlive(t *testing.T) {
+	ln, _, err := Listen()
+	if err != nil {
+		t.Fatalf("Listen failed: %v", err)
+	}
+	defer ln.Close()
+
+	if !IsDaemonAlive() {
+		t.Error("IsDaemonAlive should return true when daemon is listening")
+	}
+}
+

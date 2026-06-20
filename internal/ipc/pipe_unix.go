@@ -37,6 +37,16 @@ func Send(msg any) error {
 	return json.NewEncoder(conn).Encode(msg)
 }
 
+// IsDaemonAlive checks if the daemon is currently responding to Unix socket connection.
+func IsDaemonAlive() bool {
+	conn, err := net.DialTimeout("unix", socketPath(), 50*time.Millisecond)
+	if err != nil {
+		return false
+	}
+	conn.Close()
+	return true
+}
+
 func socketPath() string {
 	home, _ := os.UserHomeDir()
 	return filepath.Join(home, ".forge", "forge.sock")

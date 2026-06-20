@@ -18,6 +18,7 @@ import (
 
 	"github.com/forge/forge/internal/db"
 	"github.com/forge/forge/internal/distill"
+	"github.com/forge/forge/internal/ipc"
 )
 
 // MCP Protocol types
@@ -394,6 +395,22 @@ func (s *Server) handleToolsCall(req Request) *Response {
 	}
 	if err := json.Unmarshal(req.Params, &params); err != nil {
 		return errorResponse(req.ID, "Invalid params")
+	}
+
+	// Self-healing: if the daemon is dead, revive it.
+	if !ipc.IsDaemonAlive() {
+		log.Println("Forge daemon is not running. Starting recovery...")
+		if exe, err := os.Executable(); err == nil {
+			cmd := exec.Command(exe, "start")
+			// Run start asynchronously so we do not block the MCP tool response.
+			if err := cmd.Start(); err != nil {
+				log.Printf("Failed to recover daemon: %v\n", err)
+			} else {
+				log.Println("Triggered daemon auto-start.")
+			}
+		} else {
+			log.Printf("Failed to resolve executable: %v\n", err)
+		}
 	}
 
 	var result ToolResult

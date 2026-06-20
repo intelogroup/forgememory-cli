@@ -1629,3 +1629,68 @@ func TestBinary_SingletonDaemon(t *testing.T) {
 		t.Errorf("daemon should be stopped, got: %s", stdout)
 	}
 }
+
+func TestBinary_MCPSelfHealing(t *testing.T) {
+	home := shortHome(t)
+	runForge(t, home, "init")
+
+	// Ensure daemon is initially stopped
+	runForge(t, home, "stop")
+
+	// Start MCP subprocess
+	cmd := exec.Command(forgeBin, "mcp")
+	cmd.Env = append(baseEnv(), "HOME="+home)
+	
+	stdin, err := cmd.StdinPipe()
+	if err != nil {
+		t.Fatalf("stdin pipe: %v", err)
+	}
+	stdout, err := cmd.StdoutPipe()
+	if err != nil {
+		t.Fatalf("stdout pipe: %v", err)
+	}
+	
+	if err := cmd.Start(); err != nil {
+		t.Fatalf("start mcp server: %v", err)
+	}
+	
+	defer func() {
+		_ = stdin.Close()
+		_ = cmd.Process.Kill()
+		_ = cmd.Wait()
+		runForge(t, home, "stop")
+	}()
+
+	// Send get_forge_status tool call which should trigger self-healing
+	req := `{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"get_forge_status","arguments":{}}}` + "\n"
+	if _, err := stdin.Write([]byte(req)); err != nil {
+		t.Fatalf("write request: %v", err)
+	}
+
+	// Read response
+	reader := bufio.NewReader(stdout)
+	line, err := reader.ReadString('\n')
+	if err != nil {
+		t.Fatalf("read response: %v", err)
+	}
+
+	if !strings.Contains(line, `"result"`) {
+		t.Errorf("expected result in response, got: %s", line)
+	}
+
+	// Wait for daemon to recover
+	daemonReady := false
+	for i := 0; i < 20; i++ {
+		time.Sleep(200 * time.Millisecond)
+		status, _, _ := runForge(t, home, "status")
+		if strings.Contains(status, "running") {
+			daemonReady = true
+			break
+		}
+	}
+
+	if !daemonReady {
+		t.Fatal("Daemon failed to recover automatically after MCP tool call")
+	}
+}
+

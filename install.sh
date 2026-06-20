@@ -119,6 +119,10 @@ chmod +x "$INSTALL_DIR/forge" 2>/dev/null || true
 rm -rf "$TMP"
 
 echo ""
+echo "Auto-registering forgememo with AI agents..."
+"$INSTALL_DIR/forgememo" init || echo "Warning: auto-registration failed. You can run 'forgememo init' manually."
+
+echo ""
 echo "Done!"
 echo ""
 if [ "$OS" = "windows" ]; then

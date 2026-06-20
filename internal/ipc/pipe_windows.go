@@ -34,6 +34,16 @@ func Send(msg any) error {
 	return json.NewEncoder(conn).Encode(msg)
 }
 
+// IsDaemonAlive checks if the daemon is currently responding to TCP connection.
+func IsDaemonAlive() bool {
+	conn, err := net.DialTimeout("tcp", pipeAddr(), 50*time.Millisecond)
+	if err != nil {
+		return false
+	}
+	conn.Close()
+	return true
+}
+
 // pipeAddr resolves the daemon TCP address.
 // Priority: FORGE_PIPE_ADDR env var → forge.addr file → fallback.
 func pipeAddr() string {

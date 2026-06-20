@@ -45,6 +45,14 @@ if ($EXE) {
     Copy-Item $FORGE_EXE (Join-Path $SHIM_DIR "forge.exe") -Force
 
     Write-Host ""
+    Write-Host "Auto-registering forgememo with AI agents..."
+    try {
+        & $FORGEMEMO_EXE init
+    } catch {
+        Write-Host "Warning: auto-registration failed. You can run 'forgememo init' manually." -ForegroundColor Yellow
+    }
+
+    Write-Host ""
     Write-Host "Done! Run: forgememo --help"
 } else {
     Write-Host "Error: Binary not found" -ForegroundColor Red

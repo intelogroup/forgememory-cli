@@ -18,11 +18,11 @@ func runMCP(args []string) {
 		fmt.Fprintln(os.Stderr, "  Run 'forge doctor' to diagnose.")
 		os.Exit(1)
 	} else if result.started {
-		fmt.Println("Starting Forge daemon for MCP server...")
+		fmt.Fprintln(os.Stderr, "Starting Forge daemon for MCP server...")
 		for _, item := range result.cleanup {
-			fmt.Printf("  Cleaning stale %s...\n", item)
+			fmt.Fprintf(os.Stderr, "  Cleaning stale %s...\n", item)
 		}
-		fmt.Println("  Daemon started.")
+		fmt.Fprintln(os.Stderr, "  Daemon started.")
 	}
 
 	database, err := db.Open("")
