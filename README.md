@@ -1,132 +1,74 @@
 # Forgememo - Silent Memory Layer for AI Agents
 
-Captures tool usage from Claude Code, Gemini, Codex CLI, and OpenCode — distills
-insights into principles, cross-session patterns, and injects relevant context
-into future sessions automatically.
+Silent background daemon and CLI that captures agent tool usage, distills engineering principles, and automatically injects relevant context into future sessions.
+
+## Codebase Architecture
+
+```
+        ┌────────────────────────────────────────────────────────┐
+        │                 AI Coding Agent (Client)               │
+        │      (Claude Code, Gemini CLI, Codex, OpenCode)       │
+        └───────────────────────────┬────────────────────────────┘
+                                    │
+                  Hook Events       │  MCP StdIO (Tools)
+             (Tool Use, Prompts)    │  (get_principles, search)
+                                    ▼
+        ┌────────────────────────────────────────────────────────┐
+        │                   forgememo CLI / IPC                  │
+        │               (cmd/cli.go, cmd/hook.go)                │
+        └───────────────────────────┬────────────────────────────┘
+                                    │
+                                    │ IPC Socket / Named Pipe
+                                    ▼
+        ┌────────────────────────────────────────────────────────┐
+        │                    forgememo Daemon                    │
+        │                     (cmd/daemon.go)                    │
+        ├───────────────────────────┼────────────────────────────┤
+        │  internal/scanner/        │  internal/distill/         │
+        │  Agent detection          │  Inference engine          │
+        ├───────────────────────────┼────────────────────────────┤
+        │  internal/ipc/            │  internal/mcp/             │
+        │  Connection listener      │  Model Context Protocol    │
+        └───────────────────────────┬────────────────────────────┘
+                                    │
+                                    ▼
+                        ┌───────────────────────┐
+                        │       SQLite DB       │
+                        │  (internal/db/db.go)  │
+                        │  events & principles  │
+                        └───────────────────────┘
+```
+
+## Directory Structure
+
+- `cmd/`: CLI commands, hooks, daemon entrypoints.
+- `internal/`:
+  - `agent/`: Adapters for agent hook and skill configurations.
+  - `config/`: Configuration handling (`~/.forge/config`).
+  - `db/`: SQLite connection, migrations, CRUD logic, FTS5 indexes.
+  - `distill/`: LLM distillation pipeline (mines raw logs to extract principles).
+  - `ipc/`: Unix domain socket (POSIX) and named pipe (Windows) communication.
+  - `mcp/`: MCP server implementation exposing memory tools.
+  - `scanner/`: Auto-detection routines for active agent directories.
+  - `service/`: Service manager (launchd/systemd/Windows scheduled tasks).
+- `skills/`: Prompt and integration files loaded by agents.
+- `npm/`: Node package wrapper.
+- `payment/`: Payment server (auth, Stripe checkout, credits).
 
 ## Quick Install
 
-No npm required.
-
-### macOS / Linux
 ```bash
+# macOS / Linux
 curl -fsSL https://raw.githubusercontent.com/intelogroup/forgememory-cli/main/install.sh | sh
-```
 
-### Windows
-```powershell
+# Windows
 irm https://raw.githubusercontent.com/intelogroup/forgememory-cli/main/install.ps1 | iex
 ```
 
-The installer adds both `forgememo` (primary) and `forge` (alias) commands.
-
-Or download directly:
-- [Windows x64](https://github.com/intelogroup/forgememory-cli/releases/latest/download/forge-windows-amd64.zip)
-- [macOS Intel](https://github.com/intelogroup/forgememory-cli/releases/latest/download/forge-darwin-amd64.tar.gz)
-- [macOS Apple Silicon](https://github.com/intelogroup/forgememory-cli/releases/latest/download/forge-darwin-arm64.tar.gz)
-- [Linux x64](https://github.com/intelogroup/forgememory-cli/releases/latest/download/forge-linux-amd64.tar.gz)
-- [Linux ARM](https://github.com/intelogroup/forgememory-cli/releases/latest/download/forge-linux-arm64.tar.gz)
-
-## Usage
+## Quick Start
 
 ```bash
-# Initialize — detects agents, creates DB, installs hooks + skills
-forgememo init
-
-# Start background daemon
-forgememo start
-
-# Configure inference (optional, Forgememo is default)
-forgememo config --provider forgememo
-forgememo config --provider openai --api-key sk-...
-
-# Check memory
-forgememo status          # events, principles, sessions, patterns
-forgememo health          # distillation status + alerts
-forgememo search "query"  # full-text search on tool-use logs
-
-# Open dashboard
-forgememo ui
+forgememo init    # Detect agents and set up hooks
+forgememo start   # Start background daemon
+forgememo status  # Check daemon and memory health
 ```
-
-## How It Works
-
-```
-Agent works → forge hook captures tool events → daemon stores in SQLite
-                                                         ↓
-                              Session ends? → forge distill-agent:
-                              1. Gathers context via MCP tools
-                                 (existing principles, past sessions, patterns)
-                              2. Context-aware LLM synthesis
-                                 (avoids duplicating what's already known)
-                              3. Stores summary + new principles
-                                                         ↓
-                              Every 30 min → cross-session synthesis:
-                                LLM analyzes recent summaries for
-                                recurring failure modes, preferences, progress
-                                                         ↓
-                              Next session start → context injection:
-                                Relevant past lessons auto-injected
-                                into agent prompts
-```
-
-## Memory Architecture
-
-| Layer | What | How |
-|-------|------|-----|
-| Raw events | Every tool call, prompt, file edit | Stored in SQLite, FTS5-indexed |
-| Session summaries | Per-session narrative (goal, investigation, learnings) | LLM-synthesized on session end, keyword-tagged |
-| Principles | Durable project-specific engineering knowledge | Extracted during synthesis, impact-scored, conflict-detected |
-| Cross-session patterns | Recurring themes across 5+ sessions | Periodically mined from summaries |
-| Context injection | Relevant memories auto-injected into agent prompts | On every UserPromptSubmit via hook + MCP |
-
-The distill process is itself an **agent** — it calls forge's own MCP tools to look
-up what it already knows before extracting new knowledge, avoiding duplicates and
-producing higher-quality output than blind batch processing.
-
-## Providers
-
-| Provider | Cost | Setup |
-|----------|------|-------|
-| Forgememo | Cheapest (free tier) | `forgememo config --provider forgememo` |
-| Ollama | Free | `ollama serve` + `forgememo config --provider ollama` |
-| OpenAI | Paid | `forgememo config --provider openai --api-key sk-...` |
-| Anthropic | Paid | `forgememo config --provider anthropic --api-key sk-ant-...` |
-| Groq | Free tier | `forgememo config --provider groq --api-key gsk-...` |
-| NVIDIA | Free tier / Paid | `forgememo config --provider nvidia --api-key nvapi-...` |
-
-## MCP Tools
-
-Forge exposes 12 tools via MCP (Model Context Protocol), auto-configured for
-Claude Code, Gemini, Codex CLI, and OpenCode:
-
-| Tool | When to call |
-|------|-------------|
-| `get_recent_context` | Session start — prime context |
-| `search_memories` | Before solving errors or re-implementing |
-| `get_principles` | Before architecture/design decisions |
-| `get_session_summaries` | When you need a narrative of recent work |
-| `get_cross_session_patterns` | To see recurring patterns over time |
-| `get_project_timeline` | To orient on cross-agent history |
-| `get_external_context` | To retrieve cached library/API docs |
-| `get_active_failures` | When something is mysteriously broken |
-| `inject_principles` | Before sending a prompt — enhances it with past lessons |
-
-## Commands
-
-- `forge init` — Detect agents, create DB, install hooks + skills
-- `forge start` / `forge stop` — Daemon lifecycle
-- `forge status` — Events, principles, session summaries, cross-session patterns
-- `forge health` — Distillation health and backlog alerts
-- `forge search <query>` — Full-text search on event payloads
-- `forge distill` — Run distillation manually (`--all` drains backlog)
-- `forge scan` — Mine recent git history for learnings
-- `forge ui` — Memory dashboard (localhost:5555)
-- `forge mcp` — Start MCP server (agents spawn this automatically)
-- `forge doctor` — Self-test: DB, daemon, agents, binary
-- `forge config` — Configure inference provider
-- `forge login` — Login to Forgememo cloud
-
-## License
-
-MIT
