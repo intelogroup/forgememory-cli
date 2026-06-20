@@ -1302,9 +1302,13 @@ func (d *Distiller) callForgememo(prompt string) (string, error) {
 }
 
 func (d *Distiller) callAntigravity(prompt string) (string, error) {
-	home, err := os.UserHomeDir()
-	if err != nil {
-		return "", fmt.Errorf("resolve user home: %w", err)
+	home := os.Getenv("HOME")
+	if home == "" {
+		var err error
+		home, err = os.UserHomeDir()
+		if err != nil {
+			return "", fmt.Errorf("resolve user home: %w", err)
+		}
 	}
 	agentAPIPath := filepath.Join(home, ".gemini", "antigravity", "bin", "agentapi")
 	if runtime.GOOS == "windows" {
