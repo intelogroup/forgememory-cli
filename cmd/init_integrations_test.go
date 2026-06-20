@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"strings"
 	"testing"
 )
 
@@ -113,6 +114,43 @@ func TestFindStaleForgePathInHooks_NonForgePath_Ignored(t *testing.T) {
 
 	if got := findStaleForgePathInHooks(settings, current); got != "" {
 		t.Errorf("non-forge command should be ignored; got %q", got)
+	}
+}
+
+func TestCheckAndRepairIntegrationPaths_TriggersOnStale(t *testing.T) {
+	home := t.TempDir()
+
+	// Write a stale settings file for Gemini to trigger repair
+	geminiDir := filepath.Join(home, ".gemini")
+	if err := os.MkdirAll(geminiDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	staleSettings := `{"hooks":{"BeforeAgent":[{"hooks":[{"type":"command","command":"\"/old/path/forge\" hook --source gemini --event UserPromptSubmit"}]}]}}`
+	if err := os.WriteFile(filepath.Join(geminiDir, "settings.json"), []byte(staleSettings), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	// Create stable forge binary in PATH so ForgePath() resolves to it
+	binDir := filepath.Join(home, "bin")
+	if err := os.MkdirAll(binDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	stableForge := filepath.Join(binDir, "forge")
+	if err := os.WriteFile(stableForge, []byte("#!/bin/sh\n"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+
+	// Verify repair runs and updates settings to use the current path
+	checkAndRepairIntegrationPaths(home)
+
+	data, err := os.ReadFile(filepath.Join(geminiDir, "settings.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	content := string(data)
+	if strings.Contains(content, "/old/path/forge") {
+		t.Errorf("repair did not replace stale path: %s", content)
 	}
 }
 

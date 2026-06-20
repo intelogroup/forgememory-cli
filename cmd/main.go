@@ -69,8 +69,6 @@ func main() {
 		runLogin(os.Args[2:])
 	case "synthesize-session":
 		runSynthesizeSession(os.Args[2:]) // internal, not shown in help
-	case "distill-agent":
-		runDistillAgent(os.Args[2:]) // internal, spawned by daemon distill loop
 	case "version":
 		fmt.Printf("forge %s\n", version)
 	case "agent-guide":

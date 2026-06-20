@@ -9,7 +9,6 @@ import (
 	"os/exec"
 	"path/filepath"
 	"regexp"
-	"runtime"
 	"sort"
 	"strconv"
 	"strings"
@@ -502,14 +501,7 @@ func spawnSessionSynthesis(sessionID, projectID, checkpointKind, checkpointKey, 
 }
 
 func readStdin() []byte {
-	if runtime.GOOS == "windows" {
-		data, err := io.ReadAll(os.Stdin)
-		if err != nil {
-			return nil
-		}
-		return data
-	}
-	data, err := os.ReadFile("/dev/stdin")
+	data, err := io.ReadAll(os.Stdin)
 	if err != nil {
 		return nil
 	}

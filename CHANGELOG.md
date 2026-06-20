@@ -1,5 +1,10 @@
 # Changelog
 
+## [0.5.5] - 2026-06-17
+
+### Fixed
+- Resolved Mastra compilation errors and integrated custom provider logic (`forgememo` API endpoint, `antigravity` CLI, and `codex` CLI) in the distillation agent.
+
 ## [0.5.4] - 2026-06-17
 
 ### Added

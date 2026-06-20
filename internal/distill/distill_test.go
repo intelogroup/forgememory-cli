@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -108,6 +109,25 @@ func TestLoadConfigCodex(t *testing.T) {
 	}
 	if cfg.Model != "" {
 		t.Errorf("model = %q, want empty string to use Codex CLI default", cfg.Model)
+	}
+}
+
+func TestLoadConfigAntigravity(t *testing.T) {
+	t.Setenv("HOME", t.TempDir()) // isolate from real ~/.forge/config
+	t.Setenv("FORGE_PROVIDER", "antigravity")
+	t.Setenv("FORGE_API_KEY", "")
+	t.Setenv("FORGE_MODEL", "")
+	t.Setenv("FORGE_BASE_URL", "")
+
+	cfg := LoadConfig()
+	if cfg.Provider != ProviderAntigravity {
+		t.Errorf("provider = %s, want %s", cfg.Provider, ProviderAntigravity)
+	}
+	if cfg.Model != "flash" {
+		t.Errorf("model = %s, want flash", cfg.Model)
+	}
+	if cfg.BaseURL != "" {
+		t.Errorf("base URL = %q, want empty string", cfg.BaseURL)
 	}
 }
 
@@ -985,5 +1005,52 @@ func TestNormalizeOpenAIBase(t *testing.T) {
 		if got != c.want {
 			t.Errorf("normalizeOpenAIBase(%q) = %q, want %q", c.in, got, c.want)
 		}
+	}
+}
+
+func TestCallAntigravity(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+
+	binDir := filepath.Join(home, ".gemini", "antigravity", "bin")
+	if err := os.MkdirAll(binDir, 0o755); err != nil {
+		t.Fatalf("failed to create bin dir: %v", err)
+	}
+
+	mockAPI := filepath.Join(binDir, "agentapi")
+	mockScript := `#!/bin/sh
+echo '{"response": {"newConversation": {"conversationId": "mock-conv-456"}}}'
+`
+	if err := os.WriteFile(mockAPI, []byte(mockScript), 0o755); err != nil {
+		t.Fatalf("failed to write mock script: %v", err)
+	}
+
+	logDir := filepath.Join(home, ".gemini", "antigravity", "brain", "mock-conv-456", ".system_generated", "logs")
+	if err := os.MkdirAll(logDir, 0o755); err != nil {
+		t.Fatalf("failed to create log dir: %v", err)
+	}
+
+	transcriptPath := filepath.Join(logDir, "transcript.jsonl")
+	transcriptContent := `{"step_index":0,"source":"USER_EXPLICIT","type":"USER_INPUT","status":"DONE","content":"hello"}
+{"step_index":1,"source":"MODEL","type":"PLANNER_RESPONSE","status":"DONE","content":"Mock response content"}
+`
+	if err := os.WriteFile(transcriptPath, []byte(transcriptContent), 0o644); err != nil {
+		t.Fatalf("failed to write mock transcript: %v", err)
+	}
+
+	d := &Distiller{
+		config: Config{
+			Provider: ProviderAntigravity,
+			Model:    "flash",
+			Timeout:  2 * time.Second,
+		},
+	}
+
+	res, err := d.callAntigravity("hello")
+	if err != nil {
+		t.Fatalf("callAntigravity failed: %v", err)
+	}
+	if res != "Mock response content" {
+		t.Errorf("got %q, want 'Mock response content'", res)
 	}
 }

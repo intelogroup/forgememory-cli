@@ -17,7 +17,7 @@ import (
 func runConfig(args []string) {
 	fs := flag.NewFlagSet("config", flag.ContinueOnError)
 	showFlag := fs.Bool("show", false, "Show current config")
-	providerFlag := fs.String("provider", "", "Provider: forgememo/anthropic/openai/groq/nvidia/ollama")
+	providerFlag := fs.String("provider", "", "Provider: forgememo/anthropic/openai/groq/nvidia/ollama/antigravity")
 	apiKeyFlag := fs.String("api-key", "", "API key for provider")
 	modelFlag := fs.String("model", "", "Model name (optional, defaults vary by provider)")
 	baseURLFlag := fs.String("base-url", "", "Base URL for API (optional)")
@@ -99,7 +99,7 @@ func runConfig(args []string) {
 		fmt.Println("")
 		fmt.Println("Options:")
 		fmt.Println("  --show           Show current configuration")
-		fmt.Println("  --provider       Provider: forgememo, anthropic, openai, groq, nvidia, ollama, codex")
+		fmt.Println("  --provider       Provider: forgememo, anthropic, openai, groq, nvidia, ollama, codex, antigravity")
 		fmt.Println("  --api-key        API key for the provider")
 		fmt.Println("  --model          Model name (optional)")
 		fmt.Println("  --base-url       Base URL for API (optional)")
@@ -135,9 +135,9 @@ func runConfig(args []string) {
 		os.Exit(0)
 	}
 
-	validProviders := map[string]bool{"forgememo": true, "forge": true, "anthropic": true, "openai": true, "ollama": true, "groq": true, "nvidia": true, "codex": true}
+	validProviders := map[string]bool{"forgememo": true, "forge": true, "anthropic": true, "openai": true, "ollama": true, "groq": true, "nvidia": true, "codex": true, "antigravity": true}
 	if !validProviders[*providerFlag] {
-		fmt.Fprintf(os.Stderr, "Error: provider must be one of: forgememo, anthropic, openai, groq, nvidia, ollama, codex\n")
+		fmt.Fprintf(os.Stderr, "Error: provider must be one of: forgememo, anthropic, openai, groq, nvidia, ollama, codex, antigravity\n")
 		os.Exit(1)
 	}
 	if *providerFlag == "forge" {
@@ -349,6 +349,12 @@ func promptModel(reader *bufio.Reader, provider string) string {
 		fmt.Println("  - meta/llama-3.1-405b-instruct (most capable, large context)")
 		fmt.Println("  - nvidia/llama-3.1-nemotron-70b-instruct (optimized for accuracy)")
 		return promptInput(reader, "Model", "meta/llama-3.3-70b-instruct")
+	case "antigravity":
+		fmt.Println("? Select model:")
+		fmt.Println("  - flash (recommended: fast and balanced)")
+		fmt.Println("  - flash_lite (lightweight and fastest)")
+		fmt.Println("  - pro (most capable, slowest)")
+		return promptInput(reader, "Model", "flash")
 	case "forgememo", "forge":
 		return promptInput(reader, "Model", "claude-haiku-4-5-20251001")
 	default:
@@ -370,6 +376,8 @@ func defaultModelForProvider(provider string) string {
 		return "meta/llama-3.3-70b-instruct"
 	case "ollama":
 		return "llama3:latest"
+	case "antigravity":
+		return "flash"
 	default:
 		return "claude-haiku-4-5-20251001"
 	}
@@ -464,6 +472,10 @@ func checkProviderModelCompat(provider, model, apiKey, baseURL string) error {
 	case "ollama":
 		if model != "" && (strings.HasPrefix(model, "gpt-") || strings.HasPrefix(model, "claude-")) {
 			return fmt.Errorf("model %q is not an Ollama model — Ollama serves locally installed open-source models (e.g. llama3:latest, gemma2:9b)\nRun 'ollama list' to see installed models, or 'ollama pull <name>' to install one", model)
+		}
+	case "antigravity":
+		if model != "" && model != "flash" && model != "flash_lite" && model != "pro" {
+			return fmt.Errorf("model %q does not belong to provider %q — Antigravity only supports: flash, flash_lite, pro", model, provider)
 		}
 	}
 	return nil

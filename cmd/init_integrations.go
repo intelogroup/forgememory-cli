@@ -91,25 +91,196 @@ func runSyncIntegrations(args []string) {
 // silently re-runs sync-integrations to fix them.
 func checkAndRepairIntegrationPaths(home string) {
 	currentPath := agent.ForgePath()
-	settingsPath := filepath.Join(home, ".claude", "settings.json")
-	data, err := os.ReadFile(settingsPath)
-	if err != nil {
-		return // no claude settings, nothing to repair
+	currentReal := resolveRealPath(currentPath)
+	currentHash := fileSHA256(currentPath)
+
+	staleDetected := false
+
+	// Helper to check if a command string is stale
+	checkCommandStale := func(cmd string) bool {
+		trimmed := strings.TrimSpace(cmd)
+		if trimmed == "" {
+			return false
+		}
+		var binaryPart string
+		if strings.HasPrefix(trimmed, `"`) {
+			binaryPart = strings.SplitN(trimmed[1:], `"`, 2)[0]
+		} else {
+			binaryPart = strings.SplitN(trimmed, " ", 2)[0]
+		}
+		if binaryPart == "" || (!strings.Contains(binaryPart, "forge") && !strings.Contains(binaryPart, "forgememo")) {
+			return false
+		}
+		return !isEquivalentBinary(binaryPart, currentPath, currentReal, currentHash)
 	}
 
-	var settings map[string]any
-	if err := json.Unmarshal(data, &settings); err != nil {
+	// 1. Claude settings.json
+	claudePath := filepath.Join(home, ".claude", "settings.json")
+	if data, err := os.ReadFile(claudePath); err == nil {
+		var settings map[string]any
+		if err := json.Unmarshal(data, &settings); err == nil {
+			hooks, _ := settings["hooks"].(map[string]any)
+			for _, arr := range hooks {
+				items, _ := arr.([]any)
+				for _, item := range items {
+					m, _ := item.(map[string]any)
+					inner, _ := m["hooks"].([]any)
+					for _, h := range inner {
+						hm, _ := h.(map[string]any)
+						if cmd, _ := hm["command"].(string); checkCommandStale(cmd) {
+							staleDetected = true
+							break
+						}
+					}
+					if staleDetected {
+						break
+					}
+				}
+				if staleDetected {
+					break
+				}
+			}
+		}
+	}
+
+	// 2. Gemini settings.json
+	geminiPath := filepath.Join(home, ".gemini", "settings.json")
+	if !staleDetected {
+		if data, err := os.ReadFile(geminiPath); err == nil {
+			var settings map[string]any
+			if err := json.Unmarshal(data, &settings); err == nil {
+				hooks, _ := settings["hooks"].(map[string]any)
+				for _, arr := range hooks {
+					items, _ := arr.([]any)
+					for _, item := range items {
+						m, _ := item.(map[string]any)
+						inner, _ := m["hooks"].([]any)
+						for _, h := range inner {
+							hm, _ := h.(map[string]any)
+							if cmd, _ := hm["command"].(string); checkCommandStale(cmd) {
+								staleDetected = true
+								break
+							}
+						}
+						if staleDetected {
+							break
+						}
+					}
+					if staleDetected {
+						break
+					}
+				}
+			}
+		}
+	}
+
+	// 3. Antigravity hooks.json
+	antigravityPath := filepath.Join(home, ".gemini", "config", "hooks.json")
+	if !staleDetected {
+		if data, err := os.ReadFile(antigravityPath); err == nil {
+			var hooksConfig map[string]any
+			if err := json.Unmarshal(data, &hooksConfig); err == nil {
+				if forgeHooks, ok := hooksConfig["forge"].(map[string]any); ok {
+					for _, arr := range forgeHooks {
+						items, _ := arr.([]any)
+						for _, item := range items {
+							m, _ := item.(map[string]any)
+							inner, _ := m["hooks"].([]any)
+							for _, h := range inner {
+								hm, _ := h.(map[string]any)
+								if cmd, _ := hm["command"].(string); checkCommandStale(cmd) {
+									staleDetected = true
+									break
+								}
+							}
+							if staleDetected {
+								break
+							}
+						}
+						if staleDetected {
+							break
+						}
+					}
+				}
+			}
+		}
+	}
+
+	// 4. Codex skill forge.json
+	codexHome := os.Getenv("CODEX_HOME")
+	if codexHome == "" {
+		codexHome = filepath.Join(home, ".codex")
+	}
+	codexPath := filepath.Join(codexHome, "skills", "forge.json")
+	if !staleDetected {
+		if data, err := os.ReadFile(codexPath); err == nil {
+			var skill map[string]any
+			if err := json.Unmarshal(data, &skill); err == nil {
+				if hooks, ok := skill["hooks"].(map[string]any); ok {
+					for _, cmdVal := range hooks {
+						if cmd, ok := cmdVal.(string); ok && checkCommandStale(cmd) {
+							staleDetected = true
+							break
+						}
+					}
+				}
+			}
+		}
+	}
+
+	// 5. OpenCode plugins/forge.js or opencode.json
+	opencodeConfigDir := func() string {
+		if xdg := os.Getenv("XDG_CONFIG_HOME"); xdg != "" {
+			return filepath.Join(xdg, "opencode")
+		}
+		return filepath.Join(home, ".config", "opencode")
+	}()
+	opencodePluginPath := filepath.Join(opencodeConfigDir, "plugins", "forge.js")
+	if !staleDetected {
+		if data, err := os.ReadFile(opencodePluginPath); err == nil {
+			content := string(data)
+			idx := strings.Index(content, "const FORGE_PATH =")
+			if idx >= 0 {
+				sub := content[idx:]
+				firstQuote := strings.Index(sub, `"`)
+				if firstQuote >= 0 {
+					sub2 := sub[firstQuote+1:]
+					secondQuote := strings.Index(sub2, `"`)
+					if secondQuote >= 0 {
+						binaryPart := sub2[:secondQuote]
+						if !isEquivalentBinary(binaryPart, currentPath, currentReal, currentHash) {
+							staleDetected = true
+						}
+					}
+				}
+			}
+		}
+	}
+	opencodeJsonPath := filepath.Join(opencodeConfigDir, "opencode.json")
+	if !staleDetected {
+		if data, err := os.ReadFile(opencodeJsonPath); err == nil {
+			var config map[string]any
+			if err := json.Unmarshal(data, &config); err == nil {
+				if mcp, ok := config["mcp"].(map[string]any); ok {
+					if forge, ok := mcp["forge"].(map[string]any); ok {
+						if cmdArr, ok := forge["command"].([]any); ok && len(cmdArr) > 0 {
+							if cmd, ok := cmdArr[0].(string); ok {
+								if !isEquivalentBinary(cmd, currentPath, currentReal, currentHash) {
+									staleDetected = true
+								}
+							}
+						}
+					}
+				}
+			}
+		}
+	}
+
+	if !staleDetected {
 		return
 	}
 
-	// Scan all hook command strings for a forge binary path that differs from
-	// the current binary.
-	stalePath := findStaleForgePathInHooks(settings, currentPath)
-	if stalePath == "" {
-		return
-	}
-
-	fmt.Printf("  Detected stale hook binary (%s). Refreshing integrations...\n", stalePath)
+	fmt.Println("  Detected stale hook binary in one or more agent settings. Refreshing integrations...")
 	syncIntegrations(home)
 	fmt.Printf("  Integrations updated to use %s.\n", currentPath)
 }

@@ -45,3 +45,21 @@ func TestRunConfig_ShowJSON(t *testing.T) {
 		t.Fatalf("provider = %v, want openai", got["provider"])
 	}
 }
+
+func TestRunConfig_Antigravity(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+
+	runConfig([]string{"--provider", "antigravity", "--no-validate"})
+
+	cfg, err := config.Load()
+	if err != nil {
+		t.Fatalf("config.Load: %v", err)
+	}
+	if cfg.Provider != "antigravity" {
+		t.Fatalf("provider = %q, want antigravity", cfg.Provider)
+	}
+	if cfg.Model != "flash" {
+		t.Fatalf("model = %q, want flash default", cfg.Model)
+	}
+}

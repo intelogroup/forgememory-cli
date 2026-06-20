@@ -340,16 +340,25 @@ func distillLoop(d *distill.Distiller, database *db.DB, interval time.Duration) 
 				continue
 			}
 
-			// Spawn distill-agent subprocess which gathers MCP context and runs
-			// context-aware synthesis. The agent records its own health in the DB.
-			cmd := exec.Command(os.Args[0], "distill-agent",
+			// Spawn TS/Mastra distill-agent subprocess.
+			// FORGE_MASTRA_PATH overrides default path (project root /mastra).
+			mastraPath := os.Getenv("FORGE_MASTRA_PATH")
+			if mastraPath == "" {
+				mastraPath = "."
+			}
+			cmd := exec.Command("npx", "tsx",
+				filepath.Join(mastraPath, "mastra", "src", "distill-agent.ts"),
 				"--session-id", sessionID,
 				"--project-id", proj,
+				"--forge-binary", os.Args[0],
 				"--checkpoint-kind", "daemon",
 				"--checkpoint-key", checkpointKey)
 			cmd.Stdout = os.Stderr
 			cmd.Stderr = os.Stderr
 			cmd.Stdin = nil
+
+			// Inherit env for provider config
+			cmd.Env = os.Environ()
 
 			if err := cmd.Run(); err != nil {
 				log.Printf("Distillation: session %s distill-agent failed: %v", sessionID, err)

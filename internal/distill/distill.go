@@ -12,6 +12,7 @@ import (
 	"net/http"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"regexp"
 	"strconv"
 	"strings"
@@ -28,13 +29,14 @@ import (
 type Provider string
 
 const (
-	ProviderOllama    Provider = "ollama"
-	ProviderOpenAI    Provider = "openai"
-	ProviderAnthropic Provider = "anthropic"
-	ProviderCodex     Provider = "codex"
-	ProviderForgememo Provider = "forgememo"
-	ProviderGroq      Provider = "groq"
-	ProviderNvidia    Provider = "nvidia"
+	ProviderOllama      Provider = "ollama"
+	ProviderOpenAI      Provider = "openai"
+	ProviderAnthropic   Provider = "anthropic"
+	ProviderCodex       Provider = "codex"
+	ProviderForgememo   Provider = "forgememo"
+	ProviderGroq        Provider = "groq"
+	ProviderNvidia      Provider = "nvidia"
+	ProviderAntigravity Provider = "antigravity"
 )
 
 // UsageStats accumulates token usage across distillation calls.
@@ -206,6 +208,8 @@ func LoadConfig() Config {
 			cfg.Model = "llama-3.3-70b-versatile"
 		case ProviderNvidia:
 			cfg.Model = "meta/llama-3.3-70b-instruct"
+		case ProviderAntigravity:
+			cfg.Model = "flash"
 		}
 	}
 	if cfg.BaseURL == "" {
@@ -224,6 +228,8 @@ func LoadConfig() Config {
 			cfg.BaseURL = "https://api.groq.com/openai"
 		case ProviderNvidia:
 			cfg.BaseURL = "https://integrate.api.nvidia.com/v1"
+		case ProviderAntigravity:
+			cfg.BaseURL = ""
 		}
 	}
 	if cfg.APIKey == "" && cfg.Provider == ProviderGroq {
@@ -957,6 +963,8 @@ func (d *Distiller) callLLM(prompt string) (string, error) {
 		return d.callGroq(prompt)
 	case ProviderNvidia:
 		return d.callNvidia(prompt)
+	case ProviderAntigravity:
+		return d.callAntigravity(prompt)
 	default:
 		return "", fmt.Errorf("%w: unsupported provider %q", ErrNoProvider, d.config.Provider)
 	}
@@ -1290,6 +1298,123 @@ func (d *Distiller) callForgememo(prompt string) (string, error) {
 		return result.Text, nil
 	}
 	return "", fmt.Errorf("no response from Forgememo")
+}
+
+func (d *Distiller) callAntigravity(prompt string) (string, error) {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return "", fmt.Errorf("resolve user home: %w", err)
+	}
+	agentAPIPath := filepath.Join(home, ".gemini", "antigravity", "bin", "agentapi")
+
+	if _, err := os.Stat(agentAPIPath); err != nil {
+		return "", fmt.Errorf("Antigravity agentapi binary not found at %s. Please ensure the Antigravity desktop application is installed and running.", agentAPIPath)
+	}
+
+	model := string(d.config.Model)
+	if model == "" {
+		model = "flash"
+	}
+
+	cmd := exec.Command(agentAPIPath, "new-conversation", "--model="+model, prompt)
+	var stdout, stderr bytes.Buffer
+	cmd.Stdout = &stdout
+	cmd.Stderr = &stderr
+
+	if err := cmd.Run(); err != nil {
+		var apiResp struct {
+			Error string `json:"error"`
+		}
+		if json.Unmarshal(stdout.Bytes(), &apiResp) == nil && apiResp.Error != "" {
+			return "", fmt.Errorf("Antigravity agentapi error: %s", apiResp.Error)
+		}
+		return "", fmt.Errorf("failed to run Antigravity agentapi: %w (stderr: %s)", err, stderr.String())
+	}
+
+	var apiResp struct {
+		Response struct {
+			NewConversation struct {
+				ConversationID string `json:"conversationId"`
+			} `json:"newConversation"`
+		} `json:"response"`
+		Error string `json:"error"`
+	}
+
+	if err := json.Unmarshal(stdout.Bytes(), &apiResp); err != nil {
+		return "", fmt.Errorf("failed to parse agentapi response: %w (stdout: %s)", err, stdout.String())
+	}
+
+	if apiResp.Error != "" {
+		return "", fmt.Errorf("Antigravity agentapi error: %s", apiResp.Error)
+	}
+
+	convID := apiResp.Response.NewConversation.ConversationID
+	if convID == "" {
+		return "", fmt.Errorf("Antigravity agentapi returned empty conversation ID (stdout: %s)", stdout.String())
+	}
+
+	return d.pollAntigravityTranscript(convID)
+}
+
+type TranscriptStep struct {
+	StepIndex int    `json:"step_index"`
+	Source    string `json:"source"`
+	Type      string `json:"type"`
+	Status    string `json:"status"`
+	Content   string `json:"content"`
+}
+
+func (d *Distiller) pollAntigravityTranscript(conversationID string) (string, error) {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return "", fmt.Errorf("resolve user home: %w", err)
+	}
+	transcriptPath := filepath.Join(home, ".gemini", "antigravity", "brain", conversationID, ".system_generated", "logs", "transcript.jsonl")
+
+	timeout := d.config.Timeout
+	if timeout <= 0 {
+		timeout = 45 * time.Second
+	}
+	deadline := time.Now().Add(timeout)
+	ticker := time.NewTicker(500 * time.Millisecond)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-ticker.C:
+			if time.Now().After(deadline) {
+				return "", fmt.Errorf("timeout waiting for Antigravity response")
+			}
+
+			data, err := os.ReadFile(transcriptPath)
+			if err != nil {
+				if os.IsNotExist(err) {
+					continue
+				}
+				return "", fmt.Errorf("read transcript: %w", err)
+			}
+
+			lines := strings.Split(string(data), "\n")
+			for _, line := range lines {
+				line = strings.TrimSpace(line)
+				if line == "" {
+					continue
+				}
+				var step TranscriptStep
+				if err := json.Unmarshal([]byte(line), &step); err != nil {
+					continue
+				}
+				if step.Source == "MODEL" && step.Type == "PLANNER_RESPONSE" {
+					if step.Status == "DONE" {
+						return step.Content, nil
+					}
+					if step.Status == "ERROR" {
+						return "", fmt.Errorf("Antigravity agent execution failed: %s", step.Content)
+					}
+				}
+			}
+		}
+	}
 }
 
 func isProviderUnreachableError(err error) bool {
