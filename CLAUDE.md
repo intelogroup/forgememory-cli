@@ -63,3 +63,10 @@ GOOS=linux GOARCH=arm64 go build -o /tmp/forge-linux-arm64 ./cmd/
 limactl copy /tmp/forge-linux-arm64 ubuntu-24:/tmp/forge
 limactl shell ubuntu-24 -- env HOME=/tmp/test-user /tmp/forge init
 ```
+
+## Repomix packing
+
+To pack the codebase into a single XML file in the dedicated `repomix` folder, run:
+```bash
+npx repomix -o /Users/kalinovdameus/Developer/repomix/forgememo-output.xml
+```
