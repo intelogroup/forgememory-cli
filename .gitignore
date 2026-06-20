@@ -27,6 +27,7 @@ forge-*
 .claude/skills/
 skills/
 skills-lock.json
+mastra/node_modules/
 
 # Embedded repos
 forgememory-app/
