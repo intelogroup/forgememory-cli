@@ -1,5 +1,11 @@
 # Changelog
 
+## [0.5.7] - 2026-06-20
+
+### Added
+- Added self-healing MCP daemon recovery. The MCP server now automatically detects if the background daemon is not running and starts it dynamically during tool execution.
+- Added automatic registration in `install.sh` and `install.ps1` scripts by invoking `forgememo init` automatically.
+
 ## [0.5.6] - 2026-06-20
 
 ### Fixed
