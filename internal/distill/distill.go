@@ -14,6 +14,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"regexp"
+	"runtime"
 	"strconv"
 	"strings"
 	"sort"
@@ -1306,6 +1307,9 @@ func (d *Distiller) callAntigravity(prompt string) (string, error) {
 		return "", fmt.Errorf("resolve user home: %w", err)
 	}
 	agentAPIPath := filepath.Join(home, ".gemini", "antigravity", "bin", "agentapi")
+	if runtime.GOOS == "windows" {
+		agentAPIPath += ".exe"
+	}
 
 	if _, err := os.Stat(agentAPIPath); err != nil {
 		return "", fmt.Errorf("Antigravity agentapi binary not found at %s. Please ensure the Antigravity desktop application is installed and running.", agentAPIPath)

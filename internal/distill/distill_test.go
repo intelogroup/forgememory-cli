@@ -6,7 +6,9 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -1018,11 +1020,25 @@ func TestCallAntigravity(t *testing.T) {
 	}
 
 	mockAPI := filepath.Join(binDir, "agentapi")
-	mockScript := `#!/bin/sh
-echo '{"response": {"newConversation": {"conversationId": "mock-conv-456"}}}'
+	if runtime.GOOS == "windows" {
+		mockAPI += ".exe"
+	}
+
+	// Compile a small Go binary to act as the mock agentapi (highly portable and executable on Windows/Unix)
+	srcCode := `package main
+import "fmt"
+func main() {
+	fmt.Println("{\"response\": {\"newConversation\": {\"conversationId\": \"mock-conv-456\"}}}")
+}
 `
-	if err := os.WriteFile(mockAPI, []byte(mockScript), 0o755); err != nil {
-		t.Fatalf("failed to write mock script: %v", err)
+	srcFile := filepath.Join(home, "main.go")
+	if err := os.WriteFile(srcFile, []byte(srcCode), 0o600); err != nil {
+		t.Fatalf("failed to write mock src: %v", err)
+	}
+
+	cmd := exec.Command("go", "build", "-o", mockAPI, srcFile)
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("failed to build mock binary: %v (output: %s)", err, string(out))
 	}
 
 	logDir := filepath.Join(home, ".gemini", "antigravity", "brain", "mock-conv-456", ".system_generated", "logs")

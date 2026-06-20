@@ -328,7 +328,7 @@ func findStaleForgePathInHooks(settings map[string]any, currentPath string) stri
 // isEquivalentBinary reports whether registeredPath and currentPath should be
 // treated as the same forge binary for integration purposes.
 func isEquivalentBinary(registeredPath, currentPath, currentReal, currentHash string) bool {
-	if registeredPath == currentPath {
+	if normalizePath(registeredPath) == normalizePath(currentPath) {
 		return true
 	}
 	// If the registered path no longer exists, it must be refreshed.
@@ -336,7 +336,7 @@ func isEquivalentBinary(registeredPath, currentPath, currentReal, currentHash st
 		return false
 	}
 	if currentReal != "" {
-		if r := resolveRealPath(registeredPath); r != "" && r == currentReal {
+		if r := resolveRealPath(registeredPath); r != "" && normalizePath(r) == normalizePath(currentReal) {
 			return true
 		}
 	}
@@ -349,6 +349,17 @@ func isEquivalentBinary(registeredPath, currentPath, currentReal, currentHash st
 		}
 	}
 	return false
+}
+
+func normalizePath(p string) string {
+	if p == "" {
+		return ""
+	}
+	abs, err := filepath.Abs(p)
+	if err != nil {
+		abs = p
+	}
+	return strings.ToLower(filepath.ToSlash(filepath.Clean(abs)))
 }
 
 func resolveRealPath(path string) string {

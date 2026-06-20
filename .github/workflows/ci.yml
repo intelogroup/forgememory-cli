@@ -176,6 +176,15 @@ jobs:
             if ($statusObj.events.total -ne 2) {
               throw "expected 2 captured events after hook calls"
             }
+          } catch {
+            Write-Host "Integration test failed! Printing daemon log:"
+            $logFile = Join-Path $forgeHome 'daemon.log'
+            if (Test-Path $logFile) {
+              Get-Content $logFile
+            } else {
+              Write-Host "No daemon.log found"
+            }
+            throw
           } finally {
             if ($null -ne $savedSourceTool) {
               $env:FORGE_SOURCE_TOOL = $savedSourceTool

@@ -20,7 +20,7 @@ func ensureDaemonRunning(skipParentMonitor bool) (daemonStartupResult, error) {
 
 	startupLock, err := acquireStartupLock()
 	if err != nil {
-		if waitErr := waitForDaemonReady(3 * time.Second); waitErr == nil {
+		if waitErr := waitForDaemonReady(10 * time.Second); waitErr == nil {
 			return daemonStartupResult{started: false}, nil
 		}
 		return daemonStartupResult{}, err
@@ -43,7 +43,7 @@ func ensureDaemonRunning(skipParentMonitor bool) (daemonStartupResult, error) {
 	if err := startBackground(cmd); err != nil {
 		return daemonStartupResult{logPath: logPath, cleanup: cleanup}, err
 	}
-	if err := waitForDaemonReady(3 * time.Second); err != nil {
+	if err := waitForDaemonReady(10 * time.Second); err != nil {
 		return daemonStartupResult{logPath: logPath, cleanup: cleanup}, err
 	}
 

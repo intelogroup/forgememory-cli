@@ -135,7 +135,11 @@ func TestCheckAndRepairIntegrationPaths_TriggersOnStale(t *testing.T) {
 	if err := os.MkdirAll(binDir, 0o700); err != nil {
 		t.Fatal(err)
 	}
-	stableForge := filepath.Join(binDir, "forge")
+	binaryName := "forge"
+	if runtime.GOOS == "windows" {
+		binaryName = "forge.exe"
+	}
+	stableForge := filepath.Join(binDir, binaryName)
 	if err := os.WriteFile(stableForge, []byte("#!/bin/sh\n"), 0o700); err != nil {
 		t.Fatal(err)
 	}
