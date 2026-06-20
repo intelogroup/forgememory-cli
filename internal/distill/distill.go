@@ -1373,9 +1373,13 @@ type TranscriptStep struct {
 }
 
 func (d *Distiller) pollAntigravityTranscript(conversationID string) (string, error) {
-	home, err := os.UserHomeDir()
-	if err != nil {
-		return "", fmt.Errorf("resolve user home: %w", err)
+	home := os.Getenv("HOME")
+	if home == "" {
+		var err error
+		home, err = os.UserHomeDir()
+		if err != nil {
+			return "", fmt.Errorf("resolve user home: %w", err)
+		}
 	}
 	transcriptPath := filepath.Join(home, ".gemini", "antigravity", "brain", conversationID, ".system_generated", "logs", "transcript.jsonl")
 
