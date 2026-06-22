@@ -1,5 +1,15 @@
 # Changelog
 
+## [0.5.8] - 2026-06-21
+
+### Added
+- Added relevance-based filtering using FTS5 for query hints (`query_hint`) and Jaccard similarity for active/modified files (`active_files`) in the principle injection system.
+- Exposed `query_hint` and `active_files` as optional parameters in the `inject_principles` MCP tool schema and environment variables `FORGE_INJECT_QUERY_HINT` and `FORGE_INJECT_ACTIVE_FILES`.
+
+### Fixed
+- Fixed SQLite database write-lock contention on hook execution by implementing read-only database connections (`db.OpenReadOnly`) and configuring a fast-failing busy timeout.
+- Fixed hardcoded MCP version to dynamically reflect the build version.
+
 ## [0.5.7] - 2026-06-20
 
 ### Added

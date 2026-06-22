@@ -549,4 +549,31 @@ func TestMCPValidationConstraints(t *testing.T) {
 	if !result.IsError || !strings.Contains(result.Content[0].Text, "exceeds maximum length") {
 		t.Errorf("expected tool error for long prompt, got: %+v", result)
 	}
+
+	// 5. Test inject_principles with new params (query_hint, active_files)
+	req = Request{
+		JSONRPC: "2.0",
+		ID:      json.RawMessage("4"),
+		Method:  "tools/call",
+		Params: mustMarshal(t, map[string]any{
+			"name": "inject_principles",
+			"arguments": map[string]any{
+				"prompt":       "test prompt",
+				"project_id":   "test-proj",
+				"query_hint":   "some query hint",
+				"active_files": []any{"src/main.go"},
+			},
+		}),
+	}
+	resp = server.handleRequest(req)
+	if resp == nil {
+		t.Fatal("expected response")
+	}
+	result, ok = resp.Result.(ToolResult)
+	if !ok {
+		t.Fatalf("expected ToolResult, got %T", resp.Result)
+	}
+	if result.IsError {
+		t.Errorf("unexpected error for inject_principles with arguments: %s", result.Content[0].Text)
+	}
 }

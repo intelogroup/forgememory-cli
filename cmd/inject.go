@@ -29,14 +29,31 @@ func runInjectCheck(args []string) {
 		os.Exit(0)
 	}
 
-	// Open DB and get principles
-	database, err := db.Open("")
+	// Open DB and get principles (read-only mode, bypassing migrations)
+	database, err := db.OpenReadOnly("")
 	if err != nil {
 		os.Exit(0)
 	}
 	defer database.Close()
 
-	principles, err := database.RecentPrinciplesByProject(projectID, 5)
+	// Read query hint from environment variable
+	queryHint := os.Getenv("FORGE_INJECT_QUERY_HINT")
+
+	// Read active files from environment variable (comma separated or JSON array)
+	var activeFiles []string
+	if filesEnv := os.Getenv("FORGE_INJECT_ACTIVE_FILES"); filesEnv != "" {
+		if strings.HasPrefix(filesEnv, "[") {
+			_ = json.Unmarshal([]byte(filesEnv), &activeFiles)
+		} else {
+			for _, part := range strings.Split(filesEnv, ",") {
+				if trimmed := strings.TrimSpace(part); trimmed != "" {
+					activeFiles = append(activeFiles, trimmed)
+				}
+			}
+		}
+	}
+
+	principles, err := distill.GetRelevantPrinciples(database, projectID, queryHint, activeFiles)
 	if err != nil || len(principles) == 0 {
 		os.Exit(0)
 	}

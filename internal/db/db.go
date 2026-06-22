@@ -48,6 +48,24 @@ func Open(path string) (*DB, error) {
 	return db, nil
 }
 
+// OpenReadOnly opens the database in read-only mode, bypassing migrations.
+func OpenReadOnly(path string) (*DB, error) {
+	if path == "" {
+		path = defaultPath()
+	}
+	if _, err := os.Stat(path); os.IsNotExist(err) {
+		return nil, fmt.Errorf("db file does not exist: %w", err)
+	}
+
+	conn, err := sql.Open("sqlite", "file:"+path+"?mode=ro&_pragma=journal_mode(wal)&_pragma=synchronous(normal)&_pragma=busy_timeout(500)")
+	if err != nil {
+		return nil, fmt.Errorf("open sqlite read-only: %w", err)
+	}
+	conn.SetMaxOpenConns(1)
+	return &DB{conn: conn, Path: path}, nil
+}
+
+
 func (d *DB) Close() error {
 	return d.conn.Close()
 }

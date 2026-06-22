@@ -20,6 +20,7 @@ import (
 	"sort"
 	"syscall"
 	"time"
+	"unicode"
 
 	"github.com/forge/forge/internal/config"
 	"github.com/forge/forge/internal/db"
@@ -829,10 +830,10 @@ func (d *Distiller) buildCheckpointPrinciplesPrompt(summary db.SessionSummary, e
 	return sb.String()
 }
 
-// InjectPrinciplesForPrompt fetches relevant active principles for projectID,
+// InjectPrinciplesForPrompt fetches relevant active principles for projectID (using queryHint and activeFiles),
 // formats them as a Markdown context block, and prepends them to the given prompt.
 // When database is nil or FORGE_INJECT_PRINCIPLES is set to false, the original prompt is returned unchanged.
-func InjectPrinciplesForPrompt(database *db.DB, prompt, projectID string) string {
+func InjectPrinciplesForPrompt(database *db.DB, prompt, projectID string, queryHint string, activeFiles []string) string {
 	if database == nil {
 		return prompt
 	}
@@ -847,10 +848,62 @@ func InjectPrinciplesForPrompt(database *db.DB, prompt, projectID string) string
 		return prompt
 	}
 
-	// Fetch up to 15 principles to allow decay/sorting choice
-	principles, err := database.RecentPrinciplesByProject(projectID, 15)
+	principles, err := GetRelevantPrinciples(database, projectID, queryHint, activeFiles)
 	if err != nil || len(principles) == 0 {
 		return prompt
+	}
+
+	var context strings.Builder
+	context.WriteString("\n## RELEVANT LESSONS FROM PREVIOUS WORK\n")
+	for _, p := range principles {
+		context.WriteString(fmt.Sprintf("- %s: %s\n", p.Title, p.Narrative))
+		// Increment usage count and update last used TS
+		_ = database.IncrementPrincipleUsage(p.ID)
+	}
+	context.WriteString("\n---\n\n")
+
+	return context.String() + prompt
+}
+
+// GetRelevantPrinciples retrieves active principles for a project, decays and ranks them,
+// and boosts relevance based on queryHint (using FTS5) and activeFiles (using Jaccard intersection on FilesModified).
+func GetRelevantPrinciples(database *db.DB, projectID string, queryHint string, activeFiles []string) ([]db.Principle, error) {
+	if database == nil {
+		return nil, nil
+	}
+	if projectID == "" {
+		projectID = DetectProjectID("")
+	}
+	if projectID == "" {
+		return nil, nil
+	}
+
+	// 1. Fetch up to 15 principles from the current project for recency
+	recencyPrinciples, err := database.RecentPrinciplesByProject(projectID, 15)
+	if err != nil {
+		return nil, err
+	}
+
+	// Keep track of candidates by ID to deduplicate
+	candidates := make(map[string]db.Principle)
+	for _, p := range recencyPrinciples {
+		candidates[p.ID] = p
+	}
+
+	// 2. Fetch up to 30 principles cross-project using FTS5 if queryHint is provided
+	if queryHint != "" {
+		tokens := tokenize(queryHint)
+		if len(tokens) > 0 {
+			// SearchPrinciplesCrossProject(terms, minImpact, withinDays, limit)
+			ftsPrinciples, _ := database.SearchPrinciplesCrossProject(tokens, 0.0, 90, 30)
+			for _, p := range ftsPrinciples {
+				candidates[p.ID] = p
+			}
+		}
+	}
+
+	if len(candidates) == 0 {
+		return nil, nil
 	}
 
 	type decayedPrinciple struct {
@@ -858,8 +911,8 @@ func InjectPrinciplesForPrompt(database *db.DB, prompt, projectID string) string
 		score float64
 	}
 
-	decayed := make([]decayedPrinciple, 0, len(principles))
-	for _, p := range principles {
+	decayed := make([]decayedPrinciple, 0, len(candidates))
+	for _, p := range candidates {
 		refStr := p.LastUsedTS
 		if refStr == "" {
 			refStr = p.TS
@@ -876,6 +929,14 @@ func InjectPrinciplesForPrompt(database *db.DB, prompt, projectID string) string
 				score = p.ImpactScore * decayFactor
 			}
 		}
+
+		// Apply relevance boost from active_files (P2)
+		if len(activeFiles) > 0 && len(p.FilesModified) > 0 {
+			intersection := jaccardIntersection(activeFiles, p.FilesModified)
+			// Boost score by 0.3 * intersectionRatio
+			score += 0.3 * intersection
+		}
+
 		// Filter out principles that have decayed below 0.1
 		if score >= 0.1 {
 			decayed = append(decayed, decayedPrinciple{p: p, score: score})
@@ -883,7 +944,7 @@ func InjectPrinciplesForPrompt(database *db.DB, prompt, projectID string) string
 	}
 
 	if len(decayed) == 0 {
-		return prompt
+		return nil, nil
 	}
 
 	// Sort by decayed score descending, falling back to TS descending
@@ -899,20 +960,90 @@ func InjectPrinciplesForPrompt(database *db.DB, prompt, projectID string) string
 	if len(decayed) < limit {
 		limit = len(decayed)
 	}
-	topDecayed := decayed[:limit]
 
-	var context strings.Builder
-	context.WriteString("\n## RELEVANT LESSONS FROM PREVIOUS WORK\n")
-	for _, dp := range topDecayed {
-		p := dp.p
-		context.WriteString(fmt.Sprintf("- %s: %s\n", p.Title, p.Narrative))
-		// Increment usage count and update last used TS
-		_ = database.IncrementPrincipleUsage(p.ID)
+	result := make([]db.Principle, 0, limit)
+	for i := 0; i < limit; i++ {
+		result = append(result, decayed[i].p)
 	}
-	context.WriteString("\n---\n\n")
 
-	return context.String() + prompt
+	return result, nil
 }
+
+var injectStopWords = map[string]bool{
+	"a": true, "about": true, "after": true, "agent": true, "all": true,
+	"also": true, "and": true, "are": true, "been": true, "before": true,
+	"build": true, "change": true, "claude": true, "codex": true, "create": true,
+	"feature": true, "for": true, "from": true, "gemini": true, "have": true,
+	"implement": true, "into": true, "just": true, "make": true, "need": true,
+	"next": true, "prompt": true, "project": true, "repo": true, "same": true,
+	"session": true, "some": true, "that": true, "the": true, "their": true,
+	"there": true, "they": true, "this": true, "tool": true, "user": true,
+	"using": true, "want": true, "with": true, "work": true, "working": true,
+}
+
+func tokenize(text string) []string {
+	parts := strings.FieldsFunc(strings.ToLower(text), func(r rune) bool {
+		return !unicode.IsLetter(r) && !unicode.IsDigit(r)
+	})
+	set := make(map[string]bool)
+	for _, part := range parts {
+		if len(part) < 3 || injectStopWords[part] {
+			continue
+		}
+		set[part] = true
+	}
+	var keys []string
+	for k := range set {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	if len(keys) > 12 {
+		keys = keys[:12]
+	}
+	return keys
+}
+
+func jaccardIntersection(a, b []string) float64 {
+	if len(a) == 0 || len(b) == 0 {
+		return 0.0
+	}
+	setA := make(map[string]bool)
+	for _, val := range a {
+		cleaned := cleanFilePath(val)
+		if cleaned != "" {
+			setA[cleaned] = true
+		}
+	}
+	intersectCount := 0
+	setB := make(map[string]bool)
+	for _, val := range b {
+		cleaned := cleanFilePath(val)
+		if cleaned != "" {
+			setB[cleaned] = true
+			if setA[cleaned] {
+				intersectCount++
+			}
+		}
+	}
+	unionCount := len(setA)
+	for k := range setB {
+		if !setA[k] {
+			unionCount++
+		}
+	}
+	if unionCount == 0 {
+		return 0.0
+	}
+	return float64(intersectCount) / float64(unionCount)
+}
+
+func cleanFilePath(p string) string {
+	p = strings.ReplaceAll(p, "\\", "/")
+	p = strings.TrimSpace(p)
+	p = strings.TrimPrefix(p, "./")
+	return strings.ToLower(p)
+}
+
 
 // DetectProjectID resolves the project identifier.
 // Priority: hint arg > FORGE_PROJECT_ID env > git repo root > ""

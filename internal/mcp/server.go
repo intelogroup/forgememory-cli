@@ -57,6 +57,9 @@ type ToolContent struct {
 	Text string `json:"text"`
 }
 
+// Version is set at startup by main to match the build version.
+var Version = "0.1.0"
+
 // Server handles MCP protocol over stdio.
 type Server struct {
 	db     *db.DB
@@ -154,7 +157,7 @@ func (s *Server) handleInitialize(req Request) *Response {
 			},
 			"serverInfo": map[string]any{
 				"name":    "forge",
-				"version": "0.1.0",
+				"version": Version,
 			},
 		},
 	}
@@ -360,6 +363,17 @@ func (s *Server) handleToolsList(req Request) *Response {
 					"project_id": map[string]any{
 						"type":        "string",
 						"description": "Optional project identifier. Defaults to the current repo/project.",
+					},
+					"query_hint": map[string]any{
+						"type":        "string",
+						"description": "Optional query terms or hint to prioritize relevance-based filtering.",
+					},
+					"active_files": map[string]any{
+						"type": "array",
+						"items": map[string]any{
+							"type": "string",
+						},
+						"description": "Optional list of active/modified files to prioritize relevant principles.",
 					},
 				},
 				"required": []string{"prompt"},
@@ -1249,7 +1263,23 @@ func (s *Server) getInjectPrinciples(args map[string]any) ToolResult {
 	}
 	projectID := projectIDFromArgs(args)
 
-	enhancedPrompt := distill.InjectPrinciplesForPrompt(s.db, prompt, projectID)
+	queryHint, _ := args["query_hint"].(string)
+	if len(queryHint) > 1000 {
+		return toolError("Parameter 'query_hint' exceeds maximum length of 1,000 characters")
+	}
+
+	var activeFiles []string
+	if afVal, exists := args["active_files"]; exists {
+		if afSlice, ok := afVal.([]any); ok {
+			for _, item := range afSlice {
+				if str, ok := item.(string); ok {
+					activeFiles = append(activeFiles, str)
+				}
+			}
+		}
+	}
+
+	enhancedPrompt := distill.InjectPrinciplesForPrompt(s.db, prompt, projectID, queryHint, activeFiles)
 	if enhancedPrompt == prompt {
 		return ToolResult{
 			Content: []ToolContent{{Type: "text", Text: prompt}},

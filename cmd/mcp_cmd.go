@@ -32,6 +32,7 @@ func runMCP(args []string) {
 	}
 	defer database.Close()
 
+	mcp.Version = version
 	server := mcp.New(database)
 	server.Quiet = true // Suppress startup banner for MCP stdio transport
 	if err := server.Run(); err != nil {
