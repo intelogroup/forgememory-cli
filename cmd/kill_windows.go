@@ -26,16 +26,24 @@ func killProcess(pid int) error {
 
 	cmd := exec.Command("taskkill", "/T", "/F", "/PID", strconv.Itoa(pid))
 	if err := cmd.Run(); err != nil {
+		// Re-check identity: process may have exited and PID been reused since the
+		// initial check above. Only fall back to proc.Kill if it's still our daemon.
+		if id2, idErr := processIdentity(pid); idErr != nil || !isForgeProcessIdentity(id2) {
+			return nil
+		}
 		proc, findErr := os.FindProcess(pid)
 		if findErr != nil {
 			return nil
 		}
-		_ = proc.Kill()
+		if killErr := proc.Kill(); killErr != nil {
+			return fmt.Errorf("taskkill failed: %w; fallback kill failed: %v", err, killErr)
+		}
 	}
 
 	for i := 0; i < 30; i++ {
-		if _, err := processIdentity(pid); err != nil {
-			return nil
+		id, err := processIdentity(pid)
+		if err != nil || !isForgeProcessIdentity(id) {
+			return nil // process gone or PID reused by something else
 		}
 		time.Sleep(100 * time.Millisecond)
 	}

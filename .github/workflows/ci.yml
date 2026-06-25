@@ -68,6 +68,8 @@ jobs:
         run: ls -lh forge-*
 
   test-windows:
+    permissions:
+      contents: read
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v6
