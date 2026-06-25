@@ -39,6 +39,20 @@ func killProcessTree(pid int) {
 	}
 }
 
+// waitOrTimeout calls cmd.Wait with a bounded timeout so test cleanup never
+// hangs if process-tree kill fails to terminate the daemon.
+func waitOrTimeout(cmd *exec.Cmd, timeout time.Duration) {
+	done := make(chan struct{})
+	go func() {
+		cmd.Wait()
+		close(done)
+	}()
+	select {
+	case <-done:
+	case <-time.After(timeout):
+	}
+}
+
 // shortHome creates a short temp dir to avoid Unix socket path length limits
 // (104 bytes on macOS). On Unix we use /tmp; on Windows os.TempDir() is fine
 // because IPC uses TCP (no socket path length constraint).
@@ -156,7 +170,7 @@ func startTestDaemonEnv(t *testing.T, home string, extraEnv []string) *exec.Cmd 
 	}
 	t.Cleanup(func() {
 		killProcessTree(cmd.Process.Pid)
-		cmd.Wait()
+		waitOrTimeout(cmd, 5*time.Second)
 		// Only log daemon stderr on failure to avoid noise in passing tests.
 		if t.Failed() {
 			if s := errBuf.String(); s != "" {
@@ -398,8 +412,8 @@ func TestBinary_DoubleStart(t *testing.T) {
 
 	// First start
 	runForge(t, home, "start")
-	waitForFile(t, addrFile, 3*time.Second)
 	t.Cleanup(func() { runForge(t, home, "stop") })
+	waitForFile(t, addrFile, 3*time.Second)
 
 	// Second start should report already running
 	stdout, _, code := runForge(t, home, "start")
@@ -554,8 +568,8 @@ func TestBinary_RestartCycle(t *testing.T) {
 
 	// Start again — should work even with potentially orphaned daemon from first start
 	runForge(t, home, "start")
-	waitForFile(t, addrFile, 3*time.Second)
 	t.Cleanup(func() { runForge(t, home, "stop") })
+	waitForFile(t, addrFile, 3*time.Second)
 }
 
 // KNOWN GOTCHA: forge stop removes the addr file but does not send SIGTERM to the
@@ -1676,7 +1690,7 @@ func TestBinary_MCPSelfHealing(t *testing.T) {
 	defer func() {
 		_ = stdin.Close()
 		killProcessTree(cmd.Process.Pid)
-		_ = cmd.Wait()
+		waitOrTimeout(cmd, 5*time.Second)
 		runForge(t, home, "stop")
 	}()
 
