@@ -83,15 +83,24 @@ jobs:
       - name: Unit tests
         shell: pwsh
         run: |
-          go test ./... -v -count=1 -timeout 240s 2>&1 | Tee-Object -Variable captured
-          $ec = $LASTEXITCODE
-          # On Windows, go test exits 1 when it cannot delete the test binary after a
-          # successful run (OS file lock) or when orphaned daemon processes hold files.
-          # Only propagate failure for real test failures — lines like "FAIL\tpkg".
-          # The bare "FAIL" at the end of go test output (no package) is not a real
-          # test failure. We match "FAIL\t" to require a package name after FAIL.
-          if (($ec -ne 0) -and ($captured -match "(?m)^FAIL\t")) { exit 1 }
-          exit 0
+          # Write output to a temp file instead of a pipe (Tee-Object). Using a pipe
+          # causes daemon grandchild processes (spawned by integration tests via
+          # "forge start") to inherit the pipe's write handle. Those daemons outlive
+          # "go test" and keep the pipe open, blocking PowerShell indefinitely.
+          # A temp file has no such "all-writers-must-close" semantics.
+          $tmpLog = [System.IO.Path]::GetTempFileName()
+          try {
+            go test ./... -v -count=1 -timeout 240s > $tmpLog 2>&1
+            $ec = $LASTEXITCODE
+            $captured = Get-Content $tmpLog -Raw
+            Write-Host $captured
+            # Only propagate failure for real test failures — lines like "FAIL\tpkg".
+            # The bare "FAIL" at the end of go test output is not a real test failure.
+            if (($ec -ne 0) -and ($captured -match "(?m)^FAIL\t")) { exit 1 }
+            exit 0
+          } finally {
+            Remove-Item $tmpLog -ErrorAction SilentlyContinue
+          }
 
   integration-windows:
     runs-on: windows-latest
