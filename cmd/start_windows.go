@@ -29,8 +29,9 @@ const (
 func startBackground(cmd *exec.Cmd) error {
 	const base = detachedProcess | syscall.CREATE_NEW_PROCESS_GROUP | createNoWindow
 	cmd.SysProcAttr = &syscall.SysProcAttr{
-		CreationFlags: base | createBreakawayFromJob,
-		HideWindow:    true,
+		CreationFlags:    base | createBreakawayFromJob,
+		HideWindow:       true,
+		NoInheritHandles: true,
 	}
 	if err := cmd.Start(); err == nil {
 		return nil
@@ -43,8 +44,9 @@ func startBackground(cmd *exec.Cmd) error {
 	retry.Env = cmd.Env
 	retry.Dir = cmd.Dir
 	retry.SysProcAttr = &syscall.SysProcAttr{
-		CreationFlags: base,
-		HideWindow:    true,
+		CreationFlags:    base,
+		HideWindow:       true,
+		NoInheritHandles: true,
 	}
 	return retry.Start()
 }
