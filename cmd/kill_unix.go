@@ -32,3 +32,30 @@ func killProcess(pid int) error {
 		return nil
 	}
 }
+
+// isProcessAlive checks whether a process with the given PID exists.
+func isProcessAlive(pid int) bool {
+	proc, err := os.FindProcess(pid)
+	if err != nil {
+		return false
+	}
+	// On Unix, FindProcess succeeds even for zombie processes.
+	// We use syscall.Signal(0) to check if the process is actually alive.
+	err = proc.Signal(syscall.Signal(0))
+	if err == nil {
+		return true
+	}
+	_, psErr := processIdentity(pid)
+	return psErr == nil
+}
+
+// isParentAlive checks if the parent process is still alive.
+func isParentAlive(parentPID int) bool {
+	proc, err := os.FindProcess(parentPID)
+	if err != nil {
+		return false
+	}
+	err = proc.Signal(syscall.Signal(0))
+	return err == nil
+}
+

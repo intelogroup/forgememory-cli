@@ -58,14 +58,14 @@ func runInjectCheck(args []string) {
 		os.Exit(0)
 	}
 
-	// Build context text
+	// Build hierarchical overview text (~20 tokens) instead of full narrative dump.
 	var sb strings.Builder
-	sb.WriteString("\n## RELEVANT LESSONS FROM PREVIOUS WORK\n")
-	for _, p := range principles {
-		sb.WriteString(fmt.Sprintf("- %s: %s\n", p.Title, p.Narrative))
-	}
-	sb.WriteString("\n---\n")
+	sb.WriteString("\n## FORGE MEMORY PREVIEW\n")
+	sb.WriteString(fmt.Sprintf("Forge: %d distilled memories exist for project '%s'.\n", len(principles), projectID))
+	sb.WriteString("Use the `search_memories` MCP tool to retrieve detailed architectural guidelines, bugfixes, and past patterns.\n")
+	sb.WriteString("---\n")
 	context := sb.String()
+
 
 	switch sourceAgent {
 	case "gemini":

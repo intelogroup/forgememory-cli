@@ -5,6 +5,7 @@ package main
 import (
 	"fmt"
 	"os"
+	"syscall"
 	"time"
 )
 
@@ -36,3 +37,32 @@ func killProcess(pid int) error {
 	proc2.Kill()
 	return nil
 }
+
+// isProcessAlive checks whether a process with the given PID exists.
+func isProcessAlive(pid int) bool {
+	h, err := syscall.OpenProcess(0x1000, false, uint32(pid)) // PROCESS_QUERY_LIMITED_INFORMATION
+	if err != nil {
+		return false
+	}
+	var code uint32
+	err = syscall.GetExitCodeProcess(h, &code)
+	syscall.CloseHandle(h)
+	if err != nil || code != 259 {
+		return false
+	}
+	_, psErr := processIdentity(pid)
+	return psErr == nil
+}
+
+// isParentAlive checks if the parent process is still alive.
+func isParentAlive(parentPID int) bool {
+	h, err := syscall.OpenProcess(0x1000, false, uint32(parentPID)) // PROCESS_QUERY_LIMITED_INFORMATION
+	if err != nil {
+		return false
+	}
+	var code uint32
+	err = syscall.GetExitCodeProcess(h, &code)
+	syscall.CloseHandle(h)
+	return err == nil && code == 259
+}
+
