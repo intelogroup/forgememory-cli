@@ -86,10 +86,11 @@ jobs:
           go test ./... -v -count=1 -timeout 240s 2>&1 | Tee-Object -Variable captured
           $ec = $LASTEXITCODE
           # On Windows, go test exits 1 when it cannot delete the test binary after a
-          # successful run (OS file lock). Propagate failure only for real test failures
-          # (lines starting with "FAIL "). Must explicit exit 0 so pwsh doesn't
-          # propagate go test's $LASTEXITCODE as the step exit code.
-          if (($ec -ne 0) -and ($captured -match "(?m)^FAIL\s")) { exit 1 }
+          # successful run (OS file lock) or when orphaned daemon processes hold files.
+          # Only propagate failure for real test failures — lines like "FAIL\tpkg".
+          # The bare "FAIL" at the end of go test output (no package) is not a real
+          # test failure. We match "FAIL\t" to require a package name after FAIL.
+          if (($ec -ne 0) -and ($captured -match "(?m)^FAIL\t")) { exit 1 }
           exit 0
 
   integration-windows:
