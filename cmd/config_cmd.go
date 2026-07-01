@@ -178,17 +178,30 @@ func runConfig(args []string) {
 
 	existing, _ := config.Load()
 	cfg := existing
-	cfg.Provider = *providerFlag
+	providerChanged := false
+	if *providerFlag != "" && *providerFlag != existing.Provider {
+		cfg.Provider = *providerFlag
+		providerChanged = true
+		// Reset provider-specific fields if the provider changes
+		cfg.APIKey = ""
+		cfg.Model = ""
+		cfg.BaseURL = ""
+	} else if *providerFlag != "" {
+		cfg.Provider = *providerFlag
+	}
+
 	if *apiKeyFlag != "" {
 		cfg.APIKey = *apiKeyFlag
 	}
 	if *modelFlag != "" {
 		cfg.Model = *modelFlag
-	} else if cfg.Model == "" || cfg.Provider != existing.Provider {
+	} else if cfg.Model == "" || providerChanged {
 		cfg.Model = defaultModelForProvider(cfg.Provider)
 	}
 	if *baseURLFlag != "" {
 		cfg.BaseURL = *baseURLFlag
+	} else if cfg.BaseURL == "" || providerChanged {
+		cfg.BaseURL = defaultBaseURLForProvider(cfg.Provider)
 	}
 	if *context7APIKeyFlag != "" {
 		cfg.Context7APIKey = *context7APIKeyFlag
@@ -424,6 +437,29 @@ func maskKey(key string) string {
 		return "***"
 	}
 	return key[:4] + "****" + key[len(key)-4:]
+}
+
+func defaultBaseURLForProvider(provider string) string {
+	switch provider {
+	case "forgememo", "forge":
+		return "https://forgememo-server.onrender.com/api/forge"
+	case "anthropic":
+		return "https://api.anthropic.com"
+	case "openai":
+		return "https://api.openai.com"
+	case "groq":
+		return "https://api.groq.com/openai"
+	case "nvidia":
+		return "https://integrate.api.nvidia.com/v1"
+	case "ollama":
+		return "http://localhost:11434"
+	case "antigravity":
+		return ""
+	case "openrouter":
+		return "https://openrouter.ai/api/v1"
+	default:
+		return ""
+	}
 }
 
 
