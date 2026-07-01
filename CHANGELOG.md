@@ -1,5 +1,10 @@
 # Changelog
 
+## [0.5.9] - 2026-06-30
+
+### Removed
+- Removed the `compact-check` rewake hook for Claude Code.
+
 ## [0.5.8] - 2026-06-21
 
 ### Added

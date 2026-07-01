@@ -23,8 +23,6 @@ func main() {
 	switch os.Args[1] {
 	case "hook":
 		runHook(os.Args[2:])
-	case "compact-check":
-		runCompactCheck(os.Args[2:]) // internal, not shown in help
 	case "daemon":
 		runDaemon(os.Args[2:])
 	case "init":

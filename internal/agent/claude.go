@@ -103,9 +103,7 @@ func setupClaude(home string) (string, error) {
 		hooks = make(map[string]any)
 	}
 
-	// Both hooks share one PostToolUse entry so upsertHookArray dedup works correctly.
-	// The asyncRewake compact-check hook exits 2 at every 30th event, waking the
-	// model and injecting the rewakeMessage to trigger /compact.
+	// Hook configuration for PostToolUse.
 	postToolUseEntry := map[string]any{
 		"matcher": "*",
 		"hooks": []any{
@@ -117,13 +115,6 @@ func setupClaude(home string) (string, error) {
 					"FORGE_SOURCE_TOOL": "claude",
 					"FORGE_EVENT_TYPE":  "PostToolUse",
 				},
-			},
-			map[string]any{
-				"type":          "command",
-				"command":       fmt.Sprintf(`"%s" compact-check`, forgePath),
-				"asyncRewake":   true,
-				"rewakeMessage": "FORGEMEMO: Session hit 30 tool uses. Run /compact now to compress context and free space.",
-				"rewakeSummary": "Auto-compact: 30 tool uses reached",
 			},
 		},
 	}
