@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.6.0] - 2026-07-01
+
+### Fixed
+- Fixed silent scheduler wedge (#33): the daemon's periodic distillation cycle could wedge forever when the distill lock was held by a leaked/stale external `forge distill` process (e.g. ephemeral npx temp-path installations). Health stayed `SUCCESS` while the undistilled backlog grew unbounded and clean restarts failed to recover.
+- Distill lock now reclaims itself via a 30-minute TTL: any lock older than `distillLockTTL` is treated as stale even when its recorded PID is technically alive (protects against PID reuse and leaked zombies), so a future scheduler cycle auto-clears it.
+- Daemon startup now unconditionally clears any orphaned `forge.distill.lock` — manual distill never spans a daemon restart, so a lingering lock at startup is stale by definition.
+- After 3 consecutive skipped scheduled cycles (locked out), the scheduler now writes a `WEDGED` failure record to the distillation health table and logs a clear `Distillation WEDGED: ...` line, so `forge status` / `forge health` surface the failure instead of falsely reporting `SUCCESS`.
+
 ## [0.5.16] - 2026-07-01
 
 ### Fixed

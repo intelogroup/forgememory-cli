@@ -171,6 +171,17 @@ func runDaemon(args []string) {
 	retrievalWake := make(chan struct{}, 1)
 	retrieve.SetImmediateWakeChannel(retrievalWake)
 	defer retrieve.SetImmediateWakeChannel(nil)
+
+	// Reclaim any orphaned manual-distill lock from a prior daemon run.
+	// Manual distill is on-demand and never spans a daemon restart, so any
+	// lock present at startup is stale by definition — clearing it prevents
+	// the scheduler from wedging behind a lock held by a dead/leaked process
+	// (issue #33).
+	if _, err := os.Stat(distillLockPath()); err == nil {
+		log.Printf("distill lock reclaimed at daemon startup: clearing orphaned lock")
+		_ = os.Remove(distillLockPath())
+	}
+
 	distillCfg := distill.LoadConfig()
 	go distillLoop(distill.New(database, distillCfg), database, distillCfg.DistillInterval)
 	go retrievalLoop(retrieve.NewWorker(database), retrievalWake, stop)
@@ -306,10 +317,12 @@ func distillLoop(d *distill.Distiller, database *db.DB, interval time.Duration) 
 		lock, lockErr := acquireDistillLock()
 		if lockErr != nil {
 			log.Printf("Distillation skipped: could not acquire lock: %v", lockErr)
+			noteDistillSkip()
 			continue
 		}
 		if lock == nil {
 			log.Printf("Distillation skipped: manual distill already in progress")
+			noteDistillSkip()
 			continue
 		}
 
@@ -410,6 +423,8 @@ func distillLoop(d *distill.Distiller, database *db.DB, interval time.Duration) 
 
 		lock.Close()
 		cleanDistillLock()
+		// We acquired the lock and attempted work — cycle ran, not wedged.
+		noteDistillCycleRan()
 
 		if lastErr != nil {
 			log.Printf("Distillation error: %v", lastErr)
@@ -807,6 +822,45 @@ func distillLockPath() string {
 // lock (forge.distill.lock) handles cross-process exclusion.
 var distillInProcess sync.Mutex
 
+// consecutiveDistillSkips counts scheduled distill cycles in a row that bailed
+// without doing any work (usually blocked by a stale distill lock). >3 means
+// the scheduler is wedged — health/status reports WEDGED instead of the
+// database's stale LastStatus so the failure is visible (issue #33).
+var (
+	consecutiveDistillSkips int
+	distillSkipsMu          sync.Mutex
+)
+
+func noteDistillSkip() {
+	distillSkipsMu.Lock()
+	consecutiveDistillSkips++
+	skips := consecutiveDistillSkips
+	distillSkipsMu.Unlock()
+	// Surface wedge to the user: after 3 consecutive skips, write a failure
+	// record to the DB so `forge status`/`health` show LastStatus=FAILURE with
+	// a distinct "wedged" message instead of stale SUCCESS (issue #33).
+	// Announced once per wedge episode (reset by noteDistillCycleRan).
+	if skips == 3 {
+		log.Printf("Distillation WEDGED: blocked by distill lock for %d consecutive cycles — run `forge doctor` or restart the daemon", skips)
+		if database, err := db.Open(""); err == nil {
+			_ = database.RecordDistillationFailure(time.Now(), 0, 0, "scheduler wedged: distill lock held by stale/leaked process for 3+ cycles", time.Now().Add(0))
+			database.Close()
+		}
+	}
+}
+
+func noteDistillCycleRan() {
+	distillSkipsMu.Lock()
+	consecutiveDistillSkips = 0
+	distillSkipsMu.Unlock()
+}
+
+func distillSkipCount() int {
+	distillSkipsMu.Lock()
+	defer distillSkipsMu.Unlock()
+	return consecutiveDistillSkips
+}
+
 // acquireDistillLock acquires an exclusive distillation lock. Returns (lock,
 // nil) on success, (nil, nil) when another distill is already running (caller
 // should exit gracefully), or (nil, err) on unexpected failure.
@@ -857,10 +911,22 @@ func acquireDistillLock() (*os.File, error) {
 	return nil, nil // could not acquire after retries — treat as blocked
 }
 
-// isDistillLockStale reports whether the distill lock is held by a dead process.
-// Unlike the daemon lock, we do not check process identity — any alive PID
-// means the lock is legitimately held.
+// distillLockTTL is the maximum age a distill lock may have before it is
+// considered stale regardless of PID liveness. Protects against leaked
+// `forge distill` processes (e.g. ephemeral npx temp-path installs per
+// issue #29) whose PID may still appear alive while the owner is gone, and
+// against PID reuse by an unrelated process. 30 min is well above any
+// legitimate manual distill runtime; scheduled cycles fire every 10 min.
+const distillLockTTL = 30 * time.Minute
+
+// isDistillLockStale reports whether the distill lock is reclaimable.
+// Stale if: (a) lock age exceeds distillLockTTL, OR (b) PID is dead/garbage.
+// TTL guard runs first so a long-held lock cannot wedge the scheduler
+// even when its PID is technically alive (PID reuse, leaked zombie).
 func isDistillLockStale(lockPath string) bool {
+	if info, err := os.Stat(lockPath); err == nil && time.Since(info.ModTime()) > distillLockTTL {
+		return true
+	}
 	pid := readLockPID(lockPath)
 	if pid <= 0 {
 		// Distinguish two cases:

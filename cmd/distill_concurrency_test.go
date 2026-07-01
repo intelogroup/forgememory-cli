@@ -531,3 +531,108 @@ func TestDistillLock_DoesNotInterfereWithDaemonStartupLock(t *testing.T) {
 	startupLock.Close()
 	cleanStartupLock()
 }
+
+// ---------------------------------------------------------------------------
+// TTL reclaim (#33): a lock older than distillLockTTL must be treated as
+// stale even when its PID is technically alive. Protects against leaked
+// `forge distill` processes whose PID may still appear alive while the
+// owner process is gone (e.g. ephemeral npx temp-path installs) and against
+// PID reuse by an unrelated process.
+// ---------------------------------------------------------------------------
+
+func TestDistillLock_TTLReclaimEvenWithLivePID(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+
+	lockPath := distillLockPath()
+	if err := os.MkdirAll(filepath.Dir(lockPath), 0o700); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+	// Write a PID that is alive (this very test process) but backdate the
+	// file mtime past distillLockTTL — simulating a leaked lock that has
+	// been wedging the scheduler for 30+ minutes.
+	if err := os.WriteFile(lockPath, []byte(fmt.Sprintf("%d", os.Getpid())), 0o600); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+	// Backdate mtime by 35 minutes — beyond distillLockTTL.
+	pastTime := time.Now().Add(-35 * time.Minute)
+	if err := os.Chtimes(lockPath, pastTime, pastTime); err != nil {
+		t.Fatalf("Chtimes: %v", err)
+	}
+
+	if !isDistillLockStale(lockPath) {
+		t.Fatal("lock older than distillLockTTL must be stale even with live PID")
+	}
+
+	// acquireDistillLock must clean it and succeed.
+	lock, err := acquireDistillLock()
+	if err != nil {
+		t.Fatalf("acquireDistillLock after TTL stale: %v", err)
+	}
+	if lock == nil {
+		t.Fatal("expected lock acquired after TTL stale cleanup, got nil")
+	}
+	lock.Close()
+	cleanDistillLock()
+}
+
+func TestDistillLock_FreshLivePIDNotStale(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+
+	lockPath := distillLockPath()
+	if err := os.MkdirAll(filepath.Dir(lockPath), 0o700); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+	// Live current PID + fresh mtime — must NOT be stale.
+	if err := os.WriteFile(lockPath, []byte(fmt.Sprintf("%d", os.Getpid())), 0o600); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	if isDistillLockStale(lockPath) {
+		t.Fatal("fresh lock with live PID must not be stale")
+	}
+
+	// And acquire must refuse (return nil,nil, not steal it).
+	lock, err := acquireDistillLock()
+	if err != nil {
+		t.Errorf("expected nil error, got %v", err)
+	}
+	if lock != nil {
+		lock.Close()
+		cleanDistillLock()
+		t.Fatal("must not acquire when fresh live PID holds lock")
+	}
+	os.Remove(lockPath)
+}
+
+// ---------------------------------------------------------------------------
+// Wedge visibility (#33): noteDistillSkip must flip to a wedged state after
+// 3 consecutive skips; noteDistillCycleRan must reset the counter.
+// ---------------------------------------------------------------------------
+
+func TestDistillSkipCounter_WedgesAfterThreeAndResets(t *testing.T) {
+	// Start from a clean counter (other tests may have mutated it).
+	noteDistillCycleRan()
+	if got := distillSkipCount(); got != 0 {
+		t.Fatalf("expected skip count 0 after reset, got %d", got)
+	}
+
+	noteDistillSkip()
+	noteDistillSkip()
+	if got := distillSkipCount(); got != 2 {
+		t.Fatalf("expected 2 skips, got %d", got)
+	}
+
+	// Third skip crosses the wedge threshold; counter goes to 3.
+	noteDistillSkip()
+	if got := distillSkipCount(); got != 3 {
+		t.Fatalf("expected 3 skips at wedge threshold, got %d", got)
+	}
+
+	// A real cycle running must reset the counter to 0.
+	noteDistillCycleRan()
+	if got := distillSkipCount(); got != 0 {
+		t.Fatalf("expected 0 skips after cycle ran, got %d", got)
+	}
+}
