@@ -219,7 +219,8 @@ func SetEnvFromFile() error {
 // that are never model-catalogue agnostic, so the checks always apply there.
 func CheckProviderModelCompat(provider, model, apiKey, baseURL string) error {
 	if model != "" && strings.Contains(strings.ToLower(model), "gemini") {
-		if provider != "antigravity" && provider != "gemini" {
+		defaultOpenAIBase := baseURL == "" || baseURL == "https://api.openai.com" || baseURL == "https://api.openai.com/"
+		if defaultOpenAIBase && provider != "antigravity" && provider != "gemini" && provider != "openrouter" {
 			return fmt.Errorf("model %q does not belong to provider %q — Gemini models require 'antigravity' or 'gemini' provider", model, provider)
 		}
 	}
@@ -269,6 +270,10 @@ func CheckProviderModelCompat(provider, model, apiKey, baseURL string) error {
 	case "antigravity", "gemini":
 		if model != "" && model != "flash" && model != "flash_lite" && model != "pro" && !strings.Contains(strings.ToLower(model), "gemini") {
 			return fmt.Errorf("model %q does not belong to provider %q — Antigravity only supports: flash, flash_lite, pro, or gemini models", model, provider)
+		}
+	case "openrouter":
+		if apiKey == "" {
+			return fmt.Errorf("provider %q requires an API key (sk-or-v1-...) — get one at openrouter.ai", provider)
 		}
 	}
 	return nil

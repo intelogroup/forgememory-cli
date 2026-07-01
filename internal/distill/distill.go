@@ -39,6 +39,7 @@ const (
 	ProviderGroq        Provider = "groq"
 	ProviderNvidia      Provider = "nvidia"
 	ProviderAntigravity Provider = "antigravity"
+	ProviderOpenrouter  Provider = "openrouter"
 )
 
 // UsageStats accumulates token usage across distillation calls.
@@ -212,6 +213,8 @@ func LoadConfig() Config {
 			cfg.Model = "meta/llama-3.3-70b-instruct"
 		case ProviderAntigravity:
 			cfg.Model = "flash"
+		case ProviderOpenrouter:
+			cfg.Model = "google/gemini-2.5-flash"
 		}
 	}
 	if cfg.BaseURL == "" {
@@ -232,6 +235,8 @@ func LoadConfig() Config {
 			cfg.BaseURL = "https://integrate.api.nvidia.com/v1"
 		case ProviderAntigravity:
 			cfg.BaseURL = ""
+		case ProviderOpenrouter:
+			cfg.BaseURL = "https://openrouter.ai/api/v1"
 		}
 	}
 	if cfg.APIKey == "" && cfg.Provider == ProviderGroq {
@@ -1101,6 +1106,8 @@ func (d *Distiller) callLLM(prompt string) (string, error) {
 		return d.callNvidia(prompt)
 	case ProviderAntigravity:
 		return d.callAntigravity(prompt)
+	case ProviderOpenrouter:
+		return d.callOpenAI(prompt)
 	default:
 		return "", fmt.Errorf("%w: unsupported provider %q", ErrNoProvider, d.config.Provider)
 	}

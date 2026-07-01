@@ -210,7 +210,9 @@ func TestCheckProviderModelCompat(t *testing.T) {
 		{"antigravity gemini model ok", "antigravity", "gemini-2.0-flash", "", ok, false},
 		{"gemini provider ok", "gemini", "gemini-1.5-pro", "", ok, false},
 		{"antigravity wrong model", "antigravity", "gpt-4o", "", ok, true},
-		{"openai gemini model custom base (proxy) rejected", "openai", "gemini-1.5-pro", "sk-abc", customURL, true},
+		{"openai gemini model custom base (proxy) allowed", "openai", "gemini-1.5-pro", "sk-abc", customURL, false},
+		{"openrouter ok gemini", "openrouter", "google/gemini-2.5-pro", "sk-or-v1-abc", "", false},
+		{"openrouter no key", "openrouter", "google/gemini-2.5-pro", "", "", true},
 
 		// codex/forgememo: no constraints checked beyond forgememo model prefix
 		{"codex no constraints", "codex", "any-model", "", ok, false},

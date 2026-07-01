@@ -135,9 +135,9 @@ func runConfig(args []string) {
 		os.Exit(0)
 	}
 
-	validProviders := map[string]bool{"forgememo": true, "forge": true, "anthropic": true, "openai": true, "ollama": true, "groq": true, "nvidia": true, "codex": true, "antigravity": true, "gemini": true}
+	validProviders := map[string]bool{"forgememo": true, "forge": true, "anthropic": true, "openai": true, "ollama": true, "groq": true, "nvidia": true, "codex": true, "antigravity": true, "gemini": true, "openrouter": true}
 	if !validProviders[*providerFlag] {
-		fmt.Fprintf(os.Stderr, "Error: provider must be one of: forgememo, anthropic, openai, groq, nvidia, ollama, codex, antigravity, gemini\n")
+		fmt.Fprintf(os.Stderr, "Error: provider must be one of: forgememo, anthropic, openai, groq, nvidia, ollama, codex, antigravity, gemini, openrouter\n")
 		os.Exit(1)
 	}
 	if *providerFlag == "forge" {
@@ -381,6 +381,8 @@ func defaultModelForProvider(provider string) string {
 		return "llama3:latest"
 	case "antigravity":
 		return "flash"
+	case "openrouter":
+		return "google/gemini-2.5-flash"
 	default:
 		return "claude-haiku-4-5-20251001"
 	}

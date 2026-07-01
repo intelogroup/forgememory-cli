@@ -1,5 +1,11 @@
 # Changelog
 
+## [0.5.12] - 2026-07-01
+
+### Added
+- Added `openrouter` as a first-class supported provider with default model `google/gemini-2.5-flash` and default base URL `https://openrouter.ai/api/v1`.
+- Added automatic verification and bypass of global Gemini constraints for OpenRouter configurations.
+
 ## [0.5.11] - 2026-07-01
 
 ### Added
