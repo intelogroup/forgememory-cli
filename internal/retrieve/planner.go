@@ -271,9 +271,9 @@ func planPrompt(promptText string) []candidate {
 		}
 	}
 
-	if len(plans) == 0 && docsIntent {
+	if len(plans) == 0 && docsIntent && webSource != "" {
 		plans = append(plans, candidate{
-			source:   "exa",
+			source:   webSource,
 			query:    compactQuery(promptText),
 			priority: 40,
 		})

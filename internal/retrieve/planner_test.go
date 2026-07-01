@@ -376,3 +376,32 @@ func TestBuildWebQuery_StripsContext7Boilerplate(t *testing.T) {
 		t.Fatalf("buildWebQuery should strip context7 boilerplate, got %q", q)
 	}
 }
+
+func TestEnqueuePromptRetrieval_DoesNotQueueExaWhenUnconfigured(t *testing.T) {
+	database, err := db.Open(filepath.Join(t.TempDir(), "test.db"))
+	if err != nil {
+		t.Fatalf("db.Open: %v", err)
+	}
+	defer database.Close()
+
+	t.Setenv("FORGE_EXA_API_KEY", "")
+	t.Setenv("EXA_API_KEY", "")
+	t.Setenv("FORGE_TAVILY_API_KEY", "")
+	t.Setenv("TAVILY_API_KEY", "")
+
+	if err := EnqueuePromptRetrieval(database, "api-service", "cargo build fails with rust error E0599, show the official rust docs"); err != nil {
+		t.Fatalf("EnqueuePromptRetrieval: %v", err)
+	}
+
+	jobs, err := database.RetrievalJobsByProject("api-service", 10)
+	if err != nil {
+		t.Fatalf("RetrievalJobsByProject: %v", err)
+	}
+	// It should only queue context7, not exa!
+	if len(jobs) != 1 {
+		t.Fatalf("len(jobs) = %d, want 1 (context7 only)", len(jobs))
+	}
+	if jobs[0].Source != "context7" {
+		t.Fatalf("expected context7 job, got %s", jobs[0].Source)
+	}
+}

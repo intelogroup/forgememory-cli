@@ -67,7 +67,19 @@ func runStart(args []string) {
 func newDaemonCommand(logPath string, skipParentMonitor bool) (*exec.Cmd, func()) {
 	cmd := exec.Command(agent.ForgePath(), "daemon")
 	cmd.Stdin = nil
-	cmd.Env = filteredEnv("FORGE_NO_EXIT_ON_PARENT_EXIT")
+	cmd.Env = filteredEnv(
+		"FORGE_NO_EXIT_ON_PARENT_EXIT",
+		"FORGE_PROVIDER",
+		"FORGE_API_KEY",
+		"FORGE_MODEL",
+		"FORGE_BASE_URL",
+		"FORGE_API_URL",
+		"FORGE_TIMEOUT",
+		"FORGE_RETRIES",
+		"FORGE_DISTILL_INTERVAL",
+		"FORGE_OLLAMA_TIMEOUT",
+		"FORGE_OLLAMA_STARTUP_WAIT",
+	)
 	if skipParentMonitor {
 		cmd.Env = append(cmd.Env, "FORGE_NO_EXIT_ON_PARENT_EXIT=1")
 	}

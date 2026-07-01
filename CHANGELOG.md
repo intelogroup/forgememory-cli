@@ -1,5 +1,11 @@
 # Changelog
 
+## [0.5.15] - 2026-07-01
+
+### Fixed
+- Isolated background daemon process from inherited terminal environment variables (`FORGE_PROVIDER`, `FORGE_API_KEY`, etc.) when spawned via `forge start`.
+- Prevented unconfigured Exa API key errors from looping indefinitely by skipping neural search planning when search keys are missing.
+
 ## [0.5.14] - 2026-07-01
 
 ### Fixed
