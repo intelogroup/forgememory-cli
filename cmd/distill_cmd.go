@@ -115,6 +115,7 @@ func recordHealthResult(database *db.DB, cfg distill.Config, start time.Time, at
 func runDistillDrain(d *distill.Distiller, database *db.DB, cfg distill.Config) {
 	totalPrinciples := 0
 	stalledOnce := false
+	stalled := false
 	for {
 		_, remaining, _ := database.EventCount()
 		if remaining == 0 {
@@ -150,6 +151,7 @@ func runDistillDrain(d *distill.Distiller, database *db.DB, cfg distill.Config) 
 					_ = database.RecordDistillationFailure(start, time.Since(start), remaining,
 						"drain stalled: no events consumed across two consecutive no-op batches",
 						time.Now().Add(cfg.DistillInterval))
+					stalled = true
 					break
 				}
 				stalledOnce = true
@@ -167,6 +169,13 @@ func runDistillDrain(d *distill.Distiller, database *db.DB, cfg distill.Config) 
 		fmt.Printf("Distilled %d principle(s). %d events remaining...\n", count, newRemaining)
 	}
 	_, finalRemaining, _ := database.EventCount()
+	if stalled {
+		// Exit non-zero so callers (e.g. `--wait` flow) can distinguish a real
+		// stall from a successful drain. Mirrors the err != nil path above.
+		fmt.Fprintf(os.Stderr, "Drain stalled. %d total principle(s) distilled. %d events remaining.\n",
+			totalPrinciples, finalRemaining)
+		os.Exit(1)
+	}
 	fmt.Printf("Drain complete. %d total principle(s) distilled. %d events remaining.\n",
 		totalPrinciples, finalRemaining)
 }
