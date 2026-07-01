@@ -114,13 +114,16 @@ func recordHealthResult(database *db.DB, cfg distill.Config, start time.Time, at
 
 func runDistillDrain(d *distill.Distiller, database *db.DB, cfg distill.Config) {
 	totalPrinciples := 0
+	stalledOnce := false
 	for {
 		_, remaining, _ := database.EventCount()
 		if remaining == 0 {
 			break
 		}
 		start := time.Now()
-		count, err := d.DistillBatch(300)
+		// Drain includes session_id='unknown' orphans so the backlog flushes
+		// instead of silently stalling behind them forever (#34).
+		count, err := d.DistillBatchIncludingUnknown(300)
 		recordHealthResult(database, cfg, start, remaining, count, err)
 		if err != nil {
 			if shouldSkipDistillForMissingProvider(cfg, err) {
@@ -136,15 +139,29 @@ func runDistillDrain(d *distill.Distiller, database *db.DB, cfg distill.Config) 
 			// returned empty) or may have been auto-consumed (< 3 boundary).
 			_, newRemaining, _ := database.EventCount()
 			if newRemaining == remaining {
-				// No events were consumed — LLM found nothing actionable.
-				// Stop draining to avoid re-processing the same batch forever.
-				break
+				// No events consumed AND no principles — true no-op. We give the
+				// drain ONE retry (some sessions legitimately start with <3 events
+				// then grow), but if it stalls twice in a row we stop and surface
+				// it as a distinct state instead of pretending "Drain complete".
+				// This prevents the silent-success-while-frozen failure mode (#34).
+				if stalledOnce {
+					fmt.Fprintf(os.Stderr, "Drain stalled: %d events remain undistilled after two consecutive no-op batches.\n", newRemaining)
+					fmt.Fprintf(os.Stderr, "Run `forge doctor` to diagnose. Recent events may lack enough 3+ related-action context for the LLM to extract a principle.\n")
+					_ = database.RecordDistillationFailure(start, time.Since(start), remaining,
+						"drain stalled: no events consumed across two consecutive no-op batches",
+						time.Now().Add(cfg.DistillInterval))
+					break
+				}
+				stalledOnce = true
+				continue
 			}
+			stalledOnce = false
 			if newRemaining < 3 {
 				break
 			}
 			continue
 		}
+		stalledOnce = false
 		totalPrinciples += count
 		_, newRemaining, _ := database.EventCount()
 		fmt.Printf("Distilled %d principle(s). %d events remaining...\n", count, newRemaining)

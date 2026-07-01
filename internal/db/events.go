@@ -59,13 +59,34 @@ func (d *DB) InsertEvent(e *Event) error {
 // It finds the oldest session+project that has undistilled events, and returns
 // undistilled events belonging to that specific session+project up to the limit.
 // This prevents interleaving/fragmentation issues across projects.
+//
+// When includeUnknown is false (default), events with session_id='unknown' are
+// excluded — orphans from hooks that fired without SessionStart context. This
+// matches the v0.5.13 behavior and is what `forge distill` (one-shot) wants.
+// When includeUnknown is true, orphans are included so `forge distill --all`
+// can drain them instead of silently stalling the backlog forever (#34).
 func (d *DB) UndistilledEvents(limit int) ([]Event, error) {
+	return d.UndistilledEventsFiltered(limit, false)
+}
+
+// UndistilledEventsIncludingUnknown drains the next session+project batch
+// regardless of session_id value. Used by `forge distill --all` so the drain
+// loop is not blocked behind a permanently-excluded 'unknown' backlog.
+func (d *DB) UndistilledEventsIncludingUnknown(limit int) ([]Event, error) {
+	return d.UndistilledEventsFiltered(limit, true)
+}
+
+func (d *DB) UndistilledEventsFiltered(limit int, includeUnknown bool) ([]Event, error) {
 	var targetSession, targetProject string
-	err := d.conn.QueryRow(
-		`SELECT session_id, project_id FROM events
+	query := `SELECT session_id, project_id FROM events
 		 WHERE distilled=0 AND session_id != 'unknown'
-		 ORDER BY ts ASC LIMIT 1`,
-	).Scan(&targetSession, &targetProject)
+		 ORDER BY ts ASC LIMIT 1`
+	if includeUnknown {
+		query = `SELECT session_id, project_id FROM events
+		 WHERE distilled=0
+		 ORDER BY ts ASC LIMIT 1`
+	}
+	err := d.conn.QueryRow(query).Scan(&targetSession, &targetProject)
 	if err != nil {
 		if err == sql.ErrNoRows {
 			return nil, nil
