@@ -1,5 +1,15 @@
 # Changelog
 
+## [0.5.11] - 2026-07-01
+
+### Added
+- Implemented native Go distillation in the daemon process, removing dependency on the TS/Mastra distillation agent.
+- Added interactive config diffing and TTY-aware prompting to prevent silent configuration rewrites.
+- Scoped cross-project fallback principles and added failed-distillation health warnings to `<forge-context>`.
+
+### Fixed
+- Silenced unconfigured neural search logs inside the daemon loop.
+
 ## [0.5.10] - 2026-07-01
 
 ### Fixed
