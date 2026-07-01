@@ -3,6 +3,8 @@ package main
 import (
 	"testing"
 	"time"
+
+	"github.com/forge/forge/internal/config"
 )
 
 func TestMin(t *testing.T) {
@@ -183,6 +185,7 @@ func TestCheckProviderModelCompat(t *testing.T) {
 		{"openai no key", "openai", "gpt-4o", "", defaultOpenAI, true},
 		{"openai claude model default base", "openai", "claude-haiku-4-5-20251001", "sk-abc", defaultOpenAI, true},
 		{"openai llama model default base", "openai", "llama3:latest", "sk-abc", defaultOpenAI, true},
+		{"openai gemini model default base", "openai", "gemini-1.5-pro", "sk-abc", defaultOpenAI, true},
 		{"openai claude model custom base (proxy)", "openai", "claude-haiku-4-5-20251001", "sk-abc", customURL, false},
 		{"openai empty model ok", "openai", "", "sk-abc", defaultOpenAI, false},
 
@@ -191,6 +194,7 @@ func TestCheckProviderModelCompat(t *testing.T) {
 		{"groq no key", "groq", "llama-3.3-70b-versatile", "", defaultGroq, true},
 		{"groq gpt model default base", "groq", "gpt-4o", "gsk-abc", defaultGroq, true},
 		{"groq claude model default base", "groq", "claude-haiku-4-5-20251001", "gsk-abc", defaultGroq, true},
+		{"groq gemini model default base", "groq", "gemini-2.0-flash", "gsk-abc", defaultGroq, true},
 		{"groq gpt model custom base (proxy)", "groq", "gpt-4o", "gsk-abc", customURL, false},
 
 		// ollama: gpt-/claude- always rejected regardless of base URL
@@ -198,6 +202,7 @@ func TestCheckProviderModelCompat(t *testing.T) {
 		{"ollama ok custom name", "ollama", "my-fine-tune:v1", "", ok, false},
 		{"ollama gpt model", "ollama", "gpt-4o", "", ok, true},
 		{"ollama claude model", "ollama", "claude-haiku-4-5-20251001", "", ok, true},
+		{"ollama gemini model", "ollama", "gemini-1.5-flash", "", ok, true},
 		{"ollama no key needed", "ollama", "llama3:latest", "", ok, false},
 
 		// codex/forgememo: no constraints checked beyond forgememo model prefix
@@ -206,7 +211,7 @@ func TestCheckProviderModelCompat(t *testing.T) {
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			err := checkProviderModelCompat(tc.provider, tc.model, tc.apiKey, tc.baseURL)
+			err := config.CheckProviderModelCompat(tc.provider, tc.model, tc.apiKey, tc.baseURL)
 			if tc.wantErr && err == nil {
 				t.Errorf("expected error, got nil")
 			}

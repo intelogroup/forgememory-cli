@@ -250,6 +250,10 @@ func LoadConfig() Config {
 		cfg.DistillInterval = 10 * time.Minute
 	}
 
+	if err := config.CheckProviderModelCompat(string(cfg.Provider), cfg.Model, cfg.APIKey, cfg.BaseURL); err != nil {
+		fmt.Fprintf(os.Stderr, "Warning: Distillation configuration mismatch detected: %v\n", err)
+	}
+
 	return cfg
 }
 

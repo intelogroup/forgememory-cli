@@ -210,7 +210,7 @@ func runConfig(args []string) {
 	}
 
 	// Catch obvious provider/model mismatches locally before touching the network.
-	if err := checkProviderModelCompat(cfg.Provider, cfg.Model, cfg.APIKey, cfg.BaseURL); err != nil {
+	if err := config.CheckProviderModelCompat(cfg.Provider, cfg.Model, cfg.APIKey, cfg.BaseURL); err != nil {
 		fmt.Fprintf(os.Stderr, "Error: %s\n", err)
 		os.Exit(1)
 	}
@@ -421,62 +421,4 @@ func maskKey(key string) string {
 	return key[:4] + "****" + key[len(key)-4:]
 }
 
-// checkProviderModelCompat returns a descriptive error when the model or API key
-// obviously don't belong to the chosen provider. It catches typos and common
-// confusion (e.g. using a ChatGPT model name with --provider ollama) before
-// any network round-trip, so the user gets an actionable message immediately.
-//
-// Custom-proxy users who set a non-default --base-url bypass the model-name
-// checks for openai/groq since those APIs are widely cloned with different
-// model catalogues. Anthropic and Ollama have provider-specific API formats
-// that are never model-catalogue agnostic, so the checks always apply there.
-func checkProviderModelCompat(provider, model, apiKey, baseURL string) error {
-	switch provider {
-	case "anthropic":
-		if model != "" && !strings.HasPrefix(model, "claude-") {
-			return fmt.Errorf("model %q does not belong to provider %q — Anthropic only serves Claude models (e.g. claude-haiku-4-5-20251001, claude-sonnet-4-6)", model, provider)
-		}
-		if apiKey == "" {
-			return fmt.Errorf("provider %q requires an API key (sk-ant-...) — get one at console.anthropic.com", provider)
-		}
-	case "forgememo":
-		if model != "" && !strings.HasPrefix(model, "claude-") {
-			return fmt.Errorf("model %q does not belong to provider %q — Forgememo uses Claude models (e.g. claude-haiku-4-5-20251001)", model, provider)
-		}
-	case "openai":
-		if apiKey == "" {
-			return fmt.Errorf("provider %q requires an API key (sk-...) — get one at platform.openai.com\nNote: ChatGPT Plus/Pro subscription does not include API access; API billing is separate", provider)
-		}
-		// Skip model-name check when a custom base URL is set: many OpenAI-compatible
-		// proxies (Azure, Together AI, etc.) serve non-gpt models under this API format.
-		defaultBase := baseURL == "" || baseURL == "https://api.openai.com" || baseURL == "https://api.openai.com/"
-		if defaultBase && model != "" && (strings.HasPrefix(model, "claude-") || strings.HasPrefix(model, "llama")) {
-			return fmt.Errorf("model %q does not belong to provider %q — OpenAI serves gpt-*, o1, o3, and similar models", model, provider)
-		}
-	case "groq":
-		if apiKey == "" {
-			return fmt.Errorf("provider %q requires an API key (gsk-...) — get one at console.groq.com", provider)
-		}
-		defaultBase := baseURL == "" || strings.HasPrefix(baseURL, "https://api.groq.com")
-		if defaultBase && model != "" && (strings.HasPrefix(model, "gpt-") || strings.HasPrefix(model, "claude-")) {
-			return fmt.Errorf("model %q does not belong to provider %q — Groq serves open-source models (llama-3.3-70b-versatile, gemma2-9b-it, etc.)\nSee https://console.groq.com/docs/models for the full list", model, provider)
-		}
-	case "nvidia":
-		if apiKey == "" {
-			return fmt.Errorf("provider %q requires an API key (nvapi-...) — get one at build.nvidia.com", provider)
-		}
-		defaultBase := baseURL == "" || strings.HasPrefix(baseURL, "https://integrate.api.nvidia.com")
-		if defaultBase && model != "" && (strings.HasPrefix(model, "gpt-") || strings.HasPrefix(model, "claude-")) {
-			return fmt.Errorf("model %q does not belong to provider %q — NVIDIA serves open-source and proprietary models (llama-3.3-70b-instruct, nemotron-340b, etc.)\nSee https://build.nvidia.com for the full list", model, provider)
-		}
-	case "ollama":
-		if model != "" && (strings.HasPrefix(model, "gpt-") || strings.HasPrefix(model, "claude-")) {
-			return fmt.Errorf("model %q is not an Ollama model — Ollama serves locally installed open-source models (e.g. llama3:latest, gemma2:9b)\nRun 'ollama list' to see installed models, or 'ollama pull <name>' to install one", model)
-		}
-	case "antigravity":
-		if model != "" && model != "flash" && model != "flash_lite" && model != "pro" {
-			return fmt.Errorf("model %q does not belong to provider %q — Antigravity only supports: flash, flash_lite, pro", model, provider)
-		}
-	}
-	return nil
-}
+
