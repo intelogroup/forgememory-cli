@@ -1,6 +1,7 @@
 package db
 
 import (
+	"database/sql"
 	"strings"
 	"time"
 	"unicode/utf8"
@@ -55,10 +56,28 @@ func (d *DB) InsertEvent(e *Event) error {
 }
 
 // UndistilledEvents returns events that haven't been processed.
+// It finds the oldest session+project that has undistilled events, and returns
+// undistilled events belonging to that specific session+project up to the limit.
+// This prevents interleaving/fragmentation issues across projects.
 func (d *DB) UndistilledEvents(limit int) ([]Event, error) {
+	var targetSession, targetProject string
+	err := d.conn.QueryRow(
+		`SELECT session_id, project_id FROM events
+		 WHERE distilled=0 AND session_id != 'unknown'
+		 ORDER BY ts ASC LIMIT 1`,
+	).Scan(&targetSession, &targetProject)
+	if err != nil {
+		if err == sql.ErrNoRows {
+			return nil, nil
+		}
+		return nil, err
+	}
+
 	rows, err := d.conn.Query(
 		`SELECT id, ts, session_id, project_id, source_tool, event_type, tool_name, payload, distilled
-		 FROM events WHERE distilled=0 AND session_id != 'unknown' ORDER BY ts ASC LIMIT ?`, limit,
+		 FROM events
+		 WHERE distilled=0 AND session_id = ? AND project_id = ?
+		 ORDER BY ts ASC LIMIT ?`, targetSession, targetProject, limit,
 	)
 	if err != nil {
 		return nil, err

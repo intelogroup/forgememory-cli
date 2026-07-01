@@ -1,5 +1,10 @@
 # Changelog
 
+## [0.5.14] - 2026-07-01
+
+### Fixed
+- Fixed distillation queue fragmentation caused by chronological event interleaving. Forge now query-groups by oldest undistilled session ID first, ensuring full session context is preserved during distillation.
+
 ## [0.5.13] - 2026-07-01
 
 ### Fixed
