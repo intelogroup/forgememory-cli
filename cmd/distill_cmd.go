@@ -78,7 +78,9 @@ func runDistill(args []string) {
 	}
 
 	fmt.Printf("Distilling %d events...\n", len(events))
+	start := time.Now()
 	count, err := d.DistillBatch(300)
+	recordHealthResult(database, cfg, start, len(events), count, err)
 	if err != nil {
 		if shouldSkipDistillForMissingProvider(cfg, err) {
 			fmt.Printf("Skipping distillation: %s\n", distill.UserMessage(err))
@@ -99,6 +101,17 @@ func runDistill(args []string) {
 	fmt.Printf("Distilled %d principle(s).\n", count)
 }
 
+func recordHealthResult(database *db.DB, cfg distill.Config, start time.Time, attemptedEvents int, principlesCount int, err error) {
+	duration := time.Since(start)
+	if err != nil {
+		if !shouldSkipDistillForMissingProvider(cfg, err) {
+			_ = database.RecordDistillationFailure(start, duration, attemptedEvents, err.Error(), time.Now().Add(cfg.DistillInterval))
+		}
+	} else {
+		_ = database.RecordDistillationSuccess(start, duration, attemptedEvents, principlesCount, time.Now().Add(cfg.DistillInterval))
+	}
+}
+
 func runDistillDrain(d *distill.Distiller, database *db.DB, cfg distill.Config) {
 	totalPrinciples := 0
 	for {
@@ -106,7 +119,9 @@ func runDistillDrain(d *distill.Distiller, database *db.DB, cfg distill.Config) 
 		if remaining == 0 {
 			break
 		}
+		start := time.Now()
 		count, err := d.DistillBatch(300)
+		recordHealthResult(database, cfg, start, remaining, count, err)
 		if err != nil {
 			if shouldSkipDistillForMissingProvider(cfg, err) {
 				fmt.Printf("Skipping distillation: %s\n", distill.UserMessage(err))

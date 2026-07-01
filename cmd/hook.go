@@ -263,10 +263,10 @@ func handleSessionRecall(projectID, payload string) {
 
 	promptText := extractPromptText(payload)
 	_ = retrieve.EnqueuePromptRetrieval(database, projectID, promptText)
-	principles, summaries, alerts, externalSummaries, promptMatch, distillUnhealthy := loadSessionRecallContext(database, projectID, promptText)
+	principles, summaries, alerts, externalSummaries, promptMatch, distillError := loadSessionRecallContext(database, projectID, promptText)
 	if shouldWaitForOfficialHint(alerts, externalSummaries) && hasPendingFailureRetrieval(database, projectID) {
 		waitForOfficialHint(database, projectID)
-		principles, summaries, alerts, externalSummaries, promptMatch, distillUnhealthy = loadSessionRecallContext(database, projectID, promptText)
+		principles, summaries, alerts, externalSummaries, promptMatch, distillError = loadSessionRecallContext(database, projectID, promptText)
 	}
 
 	// On session start, promote the last session summary to full detail.
@@ -282,7 +282,7 @@ func handleSessionRecall(projectID, payload string) {
 		summaries = nil
 	}
 
-	text := buildSessionRecallOutput(projectID, summaries, principles, alerts, externalSummaries, promptMatch, lastSession, distillUnhealthy)
+	text := buildSessionRecallOutput(projectID, summaries, principles, alerts, externalSummaries, promptMatch, lastSession, distillError)
 	if text == "" {
 		return
 	}
@@ -320,7 +320,7 @@ func loadLastProjectSession(database *db.DB, projectID, currentSessionID string)
 	return nil
 }
 
-func loadSessionRecallContext(database *db.DB, projectID, promptText string) ([]db.Principle, []db.SessionSummary, []db.Alert, []db.ExternalContextSummary, *promptRecallMatch, bool) {
+func loadSessionRecallContext(database *db.DB, projectID, promptText string) ([]db.Principle, []db.SessionSummary, []db.Alert, []db.ExternalContextSummary, *promptRecallMatch, string) {
 	principles, _ := database.RecentPrinciplesByProject(projectID, 2)
 
 	// Load more summaries than needed and score them against the current prompt
@@ -335,12 +335,12 @@ func loadSessionRecallContext(database *db.DB, projectID, promptText string) ([]
 		summaries = loadRankedSummaries(database, "", tokens, 10)
 	}
 
-	distillUnhealthy := false
+	distillError := ""
 	if h, err := database.GetDistillationHealth(); err == nil && h.LastStatus == "failed" {
-		distillUnhealthy = true
+		distillError = h.LastErrorMessage
 	}
 
-	return principles, summaries, alerts, externalSummaries, findBestPromptRecall(database, projectID, promptText), distillUnhealthy
+	return principles, summaries, alerts, externalSummaries, findBestPromptRecall(database, projectID, promptText), distillError
 }
 
 // loadRankedSummaries loads recent session summaries and returns the top n
@@ -561,7 +561,7 @@ func checkpointKey(sessionID, kind, suffix string) string {
 	return sessionID + ":" + kind + ":" + suffix
 }
 
-func buildSessionRecallOutput(projectID string, summaries []db.SessionSummary, principles []db.Principle, alerts []db.Alert, externalSummaries []db.ExternalContextSummary, promptMatch *promptRecallMatch, lastSession *db.SessionSummary, distillUnhealthy bool) string {
+func buildSessionRecallOutput(projectID string, summaries []db.SessionSummary, principles []db.Principle, alerts []db.Alert, externalSummaries []db.ExternalContextSummary, promptMatch *promptRecallMatch, lastSession *db.SessionSummary, distillError string) string {
 	var sentences []string
 
 	matchThreshold := 2.0
@@ -695,8 +695,12 @@ func buildSessionRecallOutput(projectID string, summaries []db.SessionSummary, p
 		}
 	}
 
-	if distillUnhealthy && len(sentences) > 0 {
-		sentences = append([]string{"[Memory layer degraded: background distillation is failing.]"}, sentences...)
+	if distillError != "" && len(sentences) > 0 {
+		errMsg := distillError
+		if len(errMsg) > 80 {
+			errMsg = errMsg[:80] + "..."
+		}
+		sentences = append([]string{fmt.Sprintf("[System: Memory layer degraded. Distillation failing: %s. Run 'forge health' to diagnose.]", errMsg)}, sentences...)
 	}
 
 	if len(sentences) == 0 {
