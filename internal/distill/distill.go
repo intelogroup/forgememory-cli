@@ -124,17 +124,78 @@ type Config struct {
 // LoadConfig loads distillation config from environment.
 // Priority: Forgememo > OpenAI/Anthropic > Ollama (fallback)
 func LoadConfig() Config {
-	timeout := parseDurationOrDefault(os.Getenv("FORGE_TIMEOUT"), 30*time.Second)
-	retries := parseIntOrDefault(os.Getenv("FORGE_RETRIES"), 3)
-	distillInterval := parseDurationOrDefault(os.Getenv("FORGE_DISTILL_INTERVAL"), 10*time.Minute)
-	ollamaTimeout := parseDurationOrDefault(os.Getenv("FORGE_OLLAMA_TIMEOUT"), 120*time.Second)
-	ollamaStartupWait := parseDurationOrDefault(os.Getenv("FORGE_OLLAMA_STARTUP_WAIT"), 0)
+	// 1. Load from file config first
+	var fileCfg config.Config
+	fileLoaded := false
+	if fc, err := config.Load(); err == nil {
+		fileCfg = fc
+		fileLoaded = true
+	}
+
+	// 2. Resolve provider and credentials, prioritizing the config file.
+	// If the config file is successfully loaded and has a provider, use it.
+	// Otherwise, fall back to environment variables.
+	var provider string
+	var apiKey string
+	var model string
+	var baseURL string
+
+	if fileLoaded && fileCfg.Provider != "" {
+		provider = fileCfg.Provider
+		apiKey = fileCfg.APIKey
+		model = fileCfg.Model
+		baseURL = fileCfg.BaseURL
+	} else {
+		provider = os.Getenv("FORGE_PROVIDER")
+		apiKey = os.Getenv("FORGE_API_KEY")
+		model = os.Getenv("FORGE_MODEL")
+		baseURL = os.Getenv("FORGE_BASE_URL")
+		if baseURL == "" {
+			baseURL = os.Getenv("FORGE_API_URL")
+		}
+	}
+
+	// 3. Resolve other configuration parameters (with config file priority)
+	timeout := 30 * time.Second
+	if fileLoaded && fileCfg.Timeout != "" {
+		timeout = parseDurationOrDefault(fileCfg.Timeout, timeout)
+	} else if env := os.Getenv("FORGE_TIMEOUT"); env != "" {
+		timeout = parseDurationOrDefault(env, timeout)
+	}
+
+	retries := 3
+	if fileLoaded && fileCfg.Retries > 0 {
+		retries = fileCfg.Retries
+	} else if env := os.Getenv("FORGE_RETRIES"); env != "" {
+		retries = parseIntOrDefault(env, retries)
+	}
+
+	distillInterval := 10 * time.Minute
+	if fileLoaded && fileCfg.DistillInterval != "" {
+		distillInterval = parseDurationOrDefault(fileCfg.DistillInterval, distillInterval)
+	} else if env := os.Getenv("FORGE_DISTILL_INTERVAL"); env != "" {
+		distillInterval = parseDurationOrDefault(env, distillInterval)
+	}
+
+	ollamaTimeout := 120 * time.Second
+	if fileLoaded && fileCfg.OllamaTimeout != "" {
+		ollamaTimeout = parseDurationOrDefault(fileCfg.OllamaTimeout, ollamaTimeout)
+	} else if env := os.Getenv("FORGE_OLLAMA_TIMEOUT"); env != "" {
+		ollamaTimeout = parseDurationOrDefault(env, ollamaTimeout)
+	}
+
+	var ollamaStartupWait time.Duration
+	if fileLoaded && fileCfg.OllamaStartupWait != "" {
+		ollamaStartupWait = parseDurationOrDefault(fileCfg.OllamaStartupWait, ollamaStartupWait)
+	} else if env := os.Getenv("FORGE_OLLAMA_STARTUP_WAIT"); env != "" {
+		ollamaStartupWait = parseDurationOrDefault(env, ollamaStartupWait)
+	}
 
 	cfg := Config{
-		Provider:          Provider(os.Getenv("FORGE_PROVIDER")),
-		APIKey:            os.Getenv("FORGE_API_KEY"),
-		Model:             os.Getenv("FORGE_MODEL"),
-		BaseURL:           os.Getenv("FORGE_BASE_URL"),
+		Provider:          Provider(provider),
+		APIKey:            apiKey,
+		Model:             model,
+		BaseURL:           baseURL,
 		PaymentURL:        os.Getenv("FORGE_PAYMENT_URL"),
 		Timeout:           timeout,
 		Retries:           retries,
@@ -142,41 +203,9 @@ func LoadConfig() Config {
 		OllamaTimeout:     ollamaTimeout,
 		OllamaStartupWait: ollamaStartupWait,
 	}
+
 	if cfg.BaseURL == "" {
 		cfg.BaseURL = os.Getenv("FORGE_API_URL") // legacy compatibility
-	}
-
-	// If env vars not set, load from config file
-	if cfg.Provider == "" || cfg.APIKey == "" {
-		if fileCfg, err := config.Load(); err == nil {
-			if cfg.Provider == "" && fileCfg.Provider != "" {
-				cfg.Provider = Provider(fileCfg.Provider)
-			}
-			if cfg.APIKey == "" && fileCfg.APIKey != "" {
-				cfg.APIKey = fileCfg.APIKey
-			}
-			if cfg.Model == "" && fileCfg.Model != "" {
-				cfg.Model = fileCfg.Model
-			}
-			if cfg.BaseURL == "" && fileCfg.BaseURL != "" {
-				cfg.BaseURL = fileCfg.BaseURL
-			}
-			if os.Getenv("FORGE_TIMEOUT") == "" && fileCfg.Timeout != "" {
-				cfg.Timeout = parseDurationOrDefault(fileCfg.Timeout, cfg.Timeout)
-			}
-			if os.Getenv("FORGE_RETRIES") == "" && fileCfg.Retries > 0 {
-				cfg.Retries = fileCfg.Retries
-			}
-			if os.Getenv("FORGE_DISTILL_INTERVAL") == "" && fileCfg.DistillInterval != "" {
-				cfg.DistillInterval = parseDurationOrDefault(fileCfg.DistillInterval, cfg.DistillInterval)
-			}
-			if os.Getenv("FORGE_OLLAMA_TIMEOUT") == "" && fileCfg.OllamaTimeout != "" {
-				cfg.OllamaTimeout = parseDurationOrDefault(fileCfg.OllamaTimeout, cfg.OllamaTimeout)
-			}
-			if os.Getenv("FORGE_OLLAMA_STARTUP_WAIT") == "" && fileCfg.OllamaStartupWait != "" {
-				cfg.OllamaStartupWait = parseDurationOrDefault(fileCfg.OllamaStartupWait, cfg.OllamaStartupWait)
-			}
-		}
 	}
 
 	if cfg.PaymentURL == "" {

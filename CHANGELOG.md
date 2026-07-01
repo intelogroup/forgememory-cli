@@ -1,5 +1,10 @@
 # Changelog
 
+## [0.5.16] - 2026-07-01
+
+### Fixed
+- Fixed config resolution precedence in `LoadConfig()` to prioritize `~/.forge/config` file settings over shell environment variables (`FORGE_PROVIDER`, `FORGE_API_KEY`, etc.), preventing stale shell variables from causing configuration bleeding or false positives/failures in `forge doctor` and `forge distill`.
+
 ## [0.5.15] - 2026-07-01
 
 ### Fixed

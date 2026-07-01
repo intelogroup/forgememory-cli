@@ -50,6 +50,7 @@ func TestLoadConfigDefaults(t *testing.T) {
 }
 
 func TestLoadConfigOpenAI(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
 	t.Setenv("FORGE_API_URL", "")
 	t.Setenv("FORGE_PROVIDER", "openai")
 	t.Setenv("FORGE_API_KEY", "sk-test123")
@@ -82,6 +83,7 @@ func TestLoadConfigLegacyAPIURL(t *testing.T) {
 }
 
 func TestLoadConfigAnthropic(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
 	t.Setenv("FORGE_PROVIDER", "anthropic")
 	t.Setenv("FORGE_API_KEY", "sk-ant-test")
 	t.Setenv("FORGE_MODEL", "claude-3-sonnet-20240229")
