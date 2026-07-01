@@ -92,7 +92,7 @@ jobs:
           # A temp file has no such "all-writers-must-close" semantics.
           $tmpLog = [System.IO.Path]::GetTempFileName()
           try {
-            go test ./... -v -count=1 -timeout 240s > $tmpLog 2>&1
+            go test ./... -v -count=1 -p 1 -parallel 1 -timeout 240s > $tmpLog 2>&1
             $ec = $LASTEXITCODE
             $captured = Get-Content $tmpLog -Raw
             Write-Host $captured
