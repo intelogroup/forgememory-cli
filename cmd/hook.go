@@ -275,6 +275,13 @@ func handleSessionRecall(projectID, payload string) {
 		lastSession = loadLastProjectSession(database, projectID, sessionID)
 	}
 
+	// For subsequent prompts, suppress generic/unmatched recent lessons and active principles
+	// to avoid repetitive, unrelated context injection.
+	if !isFirst {
+		principles = nil
+		summaries = nil
+	}
+
 	text := buildSessionRecallOutput(projectID, summaries, principles, alerts, externalSummaries, promptMatch, lastSession)
 	if text == "" {
 		return
@@ -588,7 +595,7 @@ func buildSessionRecallOutput(projectID string, summaries []db.SessionSummary, p
 	hasOfficialHint := false
 	for _, summary := range externalSummaries {
 		label := summary.Source
-		if summary.LibraryName != "" {
+		if summary.LibraryName != "" && summary.LibraryName != summary.Source {
 			label = summary.Source + " " + summary.LibraryName
 		}
 		summaryText := trimSentence(firstNonEmpty(summary.Hint, summary.Narrative, summary.Title))
@@ -666,7 +673,7 @@ func buildSessionRecallOutput(projectID string, summaries []db.SessionSummary, p
 		return ""
 	}
 
-	return "## Forge Context\n" + strings.Join(sentences, " ")
+	return "<forge-context>\n## Forge Context\n" + strings.Join(sentences, " ") + "\n</forge-context>"
 }
 
 func extractPromptText(payload string) string {
