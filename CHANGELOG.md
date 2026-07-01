@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.5.13] - 2026-07-01
+
+### Fixed
+- Fixed distillation queue clogging by unconditionally marking evaluated events as distilled.
+- Fixed config provider changes bleeding settings by resetting provider-specific values on provider update.
+- Fixed stale errors in `forge health` by clearing the error state upon successful distillation.
+- Improved warning banner formatting by namespacing the background distillation failure notice to prevent AI agent prompt-injection confusion.
+- Excluded legacy `session_id = 'unknown'` events from CLI distillation queries.
+
+### Added
+- Documented configuration precedence, background caching rules, and distillation thresholds.
+
 ## [0.5.12] - 2026-07-01
 
 ### Added
