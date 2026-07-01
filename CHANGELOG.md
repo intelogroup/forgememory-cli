@@ -1,5 +1,10 @@
 # Changelog
 
+## [0.5.10] - 2026-07-01
+
+### Fixed
+- Fixed setup deduplication for Claude Code settings by matching `forgememo` in stale hook path checks and clearing the `forgememo` MCP server.
+
 ## [0.5.9] - 2026-06-30
 
 ### Removed

@@ -65,9 +65,9 @@ func isForgeHookItem(item any, forgeEventType string) bool {
 		if v, _ := env["FORGE_EVENT_TYPE"].(string); v == forgeEventType {
 			return true
 		}
-		// Stale format (pre-dedup): command contains "forge hook" with no env key.
+		// Stale format (pre-dedup): command contains "forge hook" or "forgememo hook" with no env key.
 		// Treat as a Forge-owned entry so it gets replaced rather than accumulated.
-		if cmd, _ := hm["command"].(string); strings.Contains(cmd, "forge hook") || strings.Contains(cmd, `forge" hook`) || strings.Contains(cmd, "inject-check") {
+		if cmd, _ := hm["command"].(string); strings.Contains(cmd, "forge hook") || strings.Contains(cmd, `forge" hook`) || strings.Contains(cmd, "forgememo hook") || strings.Contains(cmd, `forgememo" hook`) || strings.Contains(cmd, "inject-check") {
 			return true
 		}
 	}
@@ -91,6 +91,7 @@ func setupClaude(home string) (string, error) {
 	if mcpServers == nil {
 		mcpServers = make(map[string]any)
 	}
+	delete(mcpServers, "forgememo")
 	mcpServers["forge"] = map[string]any{
 		"command": forgePath,
 		"args":    []string{"mcp"},
