@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.6.1] - 2026-07-01
+
+### Fixed
+- Fixed silent distillation no-op (#34): if the entire undistilled backlog had `session_id='unknown'` (orphan hook events captured without SessionStart context), `forge distill --all --wait` returned in 15ms reporting `success` with zero LLM calls and zero events drained — same class of silent-success-while-frozen bug as #33.
+- New `UndistilledEventsIncludingUnknown` / `DistillBatchIncludingUnknown` paths let the `--all` drain flush the orphan backlog so it no longer stalls forever behind permanently-excluded events. The one-shot `forge distill` and `daemon` `distillLoop` keep the v0.5.13 exclude-by-default behavior.
+- `runDistillDrain` now surfaces a true stall as a distinct failure: after two consecutive no-op batches with zero progress AND zero principles, it prints `Drain stalled. ...` to stderr, writes a failure record to `distillation_health`, and exits non-zero instead of pretending `Drain complete`.
+
 ## [0.6.0] - 2026-07-01
 
 ### Fixed
