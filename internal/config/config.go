@@ -218,6 +218,12 @@ func SetEnvFromFile() error {
 // model catalogues. Anthropic and Ollama have provider-specific API formats
 // that are never model-catalogue agnostic, so the checks always apply there.
 func CheckProviderModelCompat(provider, model, apiKey, baseURL string) error {
+	if model != "" && strings.Contains(strings.ToLower(model), "gemini") {
+		if provider != "antigravity" && provider != "gemini" {
+			return fmt.Errorf("model %q does not belong to provider %q — Gemini models require 'antigravity' or 'gemini' provider", model, provider)
+		}
+	}
+
 	switch provider {
 	case "anthropic":
 		if model != "" && !strings.HasPrefix(model, "claude-") {
@@ -260,9 +266,9 @@ func CheckProviderModelCompat(provider, model, apiKey, baseURL string) error {
 		if model != "" && (strings.HasPrefix(model, "gpt-") || strings.HasPrefix(model, "claude-") || strings.Contains(model, "gemini")) {
 			return fmt.Errorf("model %q is not an Ollama model — Ollama serves locally installed open-source models (e.g. llama3:latest, gemma2:9b)\nRun 'ollama list' to see installed models, or 'ollama pull <name>' to install one", model)
 		}
-	case "antigravity":
-		if model != "" && model != "flash" && model != "flash_lite" && model != "pro" {
-			return fmt.Errorf("model %q does not belong to provider %q — Antigravity only supports: flash, flash_lite, pro", model, provider)
+	case "antigravity", "gemini":
+		if model != "" && model != "flash" && model != "flash_lite" && model != "pro" && !strings.Contains(strings.ToLower(model), "gemini") {
+			return fmt.Errorf("model %q does not belong to provider %q — Antigravity only supports: flash, flash_lite, pro, or gemini models", model, provider)
 		}
 	}
 	return nil

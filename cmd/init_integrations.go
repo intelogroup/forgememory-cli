@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 
@@ -19,8 +20,14 @@ import (
 func runInit(args []string) {
 	fs := flag.NewFlagSet("init", flag.ContinueOnError)
 	interactive := fs.Bool("interactive", false, "Interactive provider setup wizard")
+	yes := fs.Bool("yes", false, "Automatically answer yes to all prompts")
+	fs.BoolVar(yes, "y", false, "Automatically answer yes to all prompts")
 	if err := fs.Parse(args); err != nil {
 		os.Exit(1)
+	}
+
+	if !*yes && isTTY() {
+		agent.InteractiveConfirm = confirmWrite
 	}
 
 	fmt.Println("Initializing Forge...")
@@ -75,7 +82,18 @@ func runInit(args []string) {
 }
 
 func runSyncIntegrations(args []string) {
+	fs := flag.NewFlagSet("sync-integrations", flag.ContinueOnError)
+	yes := fs.Bool("yes", false, "Automatically answer yes to all prompts")
+	fs.BoolVar(yes, "y", false, "Automatically answer yes to all prompts")
+	if err := fs.Parse(args); err != nil {
+		os.Exit(1)
+	}
+
 	fmt.Println("Refreshing Forge integrations...")
+	if !*yes && isTTY() {
+		agent.InteractiveConfirm = confirmWrite
+	}
+
 	home, _ := os.UserHomeDir()
 	checkAndRepairIntegrationPaths(home)
 	agents := syncIntegrations(home)
@@ -84,6 +102,59 @@ func runSyncIntegrations(args []string) {
 		return
 	}
 	fmt.Printf("  Refreshed agents: %v\n", agents)
+}
+
+func isTTY() bool {
+	cmd := exec.Command("test", "-t", "0")
+	cmd.Stdin = os.Stdin
+	if err := cmd.Run(); err == nil {
+		return true
+	}
+	return false
+}
+
+func confirmWrite(filePath string, oldContent, newContent []byte) bool {
+	showDiff(filePath, oldContent, newContent)
+
+	fmt.Printf("\nAllow Forge to update %s? [y/N]: ", filePath)
+	var response string
+	_, err := fmt.Scanln(&response)
+	if err != nil {
+		return false
+	}
+	response = strings.ToLower(strings.TrimSpace(response))
+	return response == "y" || response == "yes"
+}
+
+func showDiff(filePath string, oldContent, newContent []byte) {
+	fmt.Printf("\nProposed changes to %s:\n", filePath)
+	if len(oldContent) == 0 {
+		fmt.Println("(New file will be created)")
+		fmt.Println(string(newContent))
+		return
+	}
+
+	tmpOld, err1 := os.CreateTemp("", "forge-old-*.json")
+	tmpNew, err2 := os.CreateTemp("", "forge-new-*.json")
+	if err1 == nil && err2 == nil {
+		defer os.Remove(tmpOld.Name())
+		defer os.Remove(tmpNew.Name())
+		_, _ = tmpOld.Write(oldContent)
+		_, _ = tmpNew.Write(newContent)
+		_ = tmpOld.Close()
+		_ = tmpNew.Close()
+
+		cmd := exec.Command("diff", "-u", tmpOld.Name(), tmpNew.Name())
+		cmd.Stdout = os.Stdout
+		cmd.Stderr = os.Stderr
+		_ = cmd.Run()
+		return
+	}
+
+	fmt.Println("Old content:")
+	fmt.Println(string(oldContent))
+	fmt.Println("New content:")
+	fmt.Println(string(newContent))
 }
 
 // checkAndRepairIntegrationPaths detects when hook/MCP binary paths in agent

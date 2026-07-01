@@ -1,6 +1,7 @@
 package agent
 
 import (
+	"bytes"
 	"fmt"
 	"os"
 	"os/exec"
@@ -8,6 +9,30 @@ import (
 	"runtime"
 	"strings"
 )
+
+// InteractiveConfirm is called before writing changes to agent/system configuration files.
+// If it returns false, the write is aborted. If nil, the write proceeds automatically.
+var InteractiveConfirm func(filePath string, oldContent, newContent []byte) bool
+
+// WriteFileConfirm writes data to path after checking InteractiveConfirm if set.
+func WriteFileConfirm(path string, data []byte, perm os.FileMode) error {
+	if existing, err := os.ReadFile(path); err == nil && bytes.Equal(existing, data) {
+		return nil
+	}
+	if InteractiveConfirm != nil {
+		var existingBytes []byte
+		if data, err := os.ReadFile(path); err == nil {
+			existingBytes = data
+		}
+		if !InteractiveConfirm(path, existingBytes, data) {
+			return nil // declined by user
+		}
+	}
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		return err
+	}
+	return os.WriteFile(path, data, perm)
+}
 
 // ForgePath returns the stable forge binary path to use for persistent
 // integrations and daemon respawn. It intentionally refuses to reuse the

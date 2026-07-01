@@ -1,7 +1,6 @@
 package agent
 
 import (
-	"bytes"
 	"encoding/json"
 	"fmt"
 	"log"
@@ -79,9 +78,7 @@ func setupClaude(home string) (string, error) {
 	forgePath := ForgePath()
 
 	settings := make(map[string]any)
-	var existingBytes []byte
 	if data, err := os.ReadFile(settingsPath); err == nil {
-		existingBytes = data
 		if err := json.Unmarshal(data, &settings); err != nil {
 			log.Printf("Failed to parse Claude settings at %s: %v", settingsPath, err)
 		}
@@ -189,13 +186,8 @@ func setupClaude(home string) (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("marshal settings: %w", err)
 	}
-	if !bytes.Equal(existingBytes, data) {
-		if err := os.MkdirAll(filepath.Dir(settingsPath), 0o700); err != nil {
-			return "", fmt.Errorf("create settings dir: %w", err)
-		}
-		if err := os.WriteFile(settingsPath, data, 0o600); err != nil {
-			return "", fmt.Errorf("write settings: %w", err)
-		}
+	if err := WriteFileConfirm(settingsPath, data, 0o600); err != nil {
+		return "", fmt.Errorf("write settings: %w", err)
 	}
 
 	skillDir := filepath.Join(home, ".claude", "skills")
@@ -220,7 +212,8 @@ func setupClaude(home string) (string, error) {
 		"Full-text search on event payloads.\n\n" +
 		"**When to use:**\n" +
 		"- User asks \"did I fix this before?\"\n" +
-		"- User asks \"what errors have we seen?\"\n\n" +
+		"- User asks \"what errors have we seen?\"\n" +
+		"- User asks about past decisions or patterns\n\n" +
 		"### `get_principles`\n" +
 		"Returns distilled high-level principles (architecture decisions, patterns, preferences).\n\n" +
 		"### `inject_principles`\n" +
@@ -238,7 +231,7 @@ func setupClaude(home string) (string, error) {
 		"## Commands\n\n" +
 		"```\nforge status\nforge search query\nforge distill\n```\n"
 	skillPath := filepath.Join(skillDir, "forge.md")
-	if err := os.WriteFile(skillPath, []byte(skillContent), 0o600); err != nil {
+	if err := WriteFileConfirm(skillPath, []byte(skillContent), 0o600); err != nil {
 		return "", fmt.Errorf("write skill: %w", err)
 	}
 

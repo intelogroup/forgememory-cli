@@ -205,6 +205,13 @@ func TestCheckProviderModelCompat(t *testing.T) {
 		{"ollama gemini model", "ollama", "gemini-1.5-flash", "", ok, true},
 		{"ollama no key needed", "ollama", "llama3:latest", "", ok, false},
 
+		// antigravity/gemini: supports flash, pro, and any gemini model
+		{"antigravity ok", "antigravity", "flash", "", ok, false},
+		{"antigravity gemini model ok", "antigravity", "gemini-2.0-flash", "", ok, false},
+		{"gemini provider ok", "gemini", "gemini-1.5-pro", "", ok, false},
+		{"antigravity wrong model", "antigravity", "gpt-4o", "", ok, true},
+		{"openai gemini model custom base (proxy) rejected", "openai", "gemini-1.5-pro", "sk-abc", customURL, true},
+
 		// codex/forgememo: no constraints checked beyond forgememo model prefix
 		{"codex no constraints", "codex", "any-model", "", ok, false},
 	}

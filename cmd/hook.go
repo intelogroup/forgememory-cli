@@ -263,10 +263,10 @@ func handleSessionRecall(projectID, payload string) {
 
 	promptText := extractPromptText(payload)
 	_ = retrieve.EnqueuePromptRetrieval(database, projectID, promptText)
-	principles, summaries, alerts, externalSummaries, promptMatch := loadSessionRecallContext(database, projectID, promptText)
+	principles, summaries, alerts, externalSummaries, promptMatch, distillUnhealthy := loadSessionRecallContext(database, projectID, promptText)
 	if shouldWaitForOfficialHint(alerts, externalSummaries) && hasPendingFailureRetrieval(database, projectID) {
 		waitForOfficialHint(database, projectID)
-		principles, summaries, alerts, externalSummaries, promptMatch = loadSessionRecallContext(database, projectID, promptText)
+		principles, summaries, alerts, externalSummaries, promptMatch, distillUnhealthy = loadSessionRecallContext(database, projectID, promptText)
 	}
 
 	// On session start, promote the last session summary to full detail.
@@ -282,7 +282,7 @@ func handleSessionRecall(projectID, payload string) {
 		summaries = nil
 	}
 
-	text := buildSessionRecallOutput(projectID, summaries, principles, alerts, externalSummaries, promptMatch, lastSession)
+	text := buildSessionRecallOutput(projectID, summaries, principles, alerts, externalSummaries, promptMatch, lastSession, distillUnhealthy)
 	if text == "" {
 		return
 	}
@@ -320,7 +320,7 @@ func loadLastProjectSession(database *db.DB, projectID, currentSessionID string)
 	return nil
 }
 
-func loadSessionRecallContext(database *db.DB, projectID, promptText string) ([]db.Principle, []db.SessionSummary, []db.Alert, []db.ExternalContextSummary, *promptRecallMatch) {
+func loadSessionRecallContext(database *db.DB, projectID, promptText string) ([]db.Principle, []db.SessionSummary, []db.Alert, []db.ExternalContextSummary, *promptRecallMatch, bool) {
 	principles, _ := database.RecentPrinciplesByProject(projectID, 2)
 
 	// Load more summaries than needed and score them against the current prompt
@@ -334,7 +334,13 @@ func loadSessionRecallContext(database *db.DB, projectID, promptText string) ([]
 		principles, _ = database.RecentPrinciplesByProject("", 2)
 		summaries = loadRankedSummaries(database, "", tokens, 10)
 	}
-	return principles, summaries, alerts, externalSummaries, findBestPromptRecall(database, projectID, promptText)
+
+	distillUnhealthy := false
+	if h, err := database.GetDistillationHealth(); err == nil && h.LastStatus == "failed" {
+		distillUnhealthy = true
+	}
+
+	return principles, summaries, alerts, externalSummaries, findBestPromptRecall(database, projectID, promptText), distillUnhealthy
 }
 
 // loadRankedSummaries loads recent session summaries and returns the top n
@@ -555,7 +561,7 @@ func checkpointKey(sessionID, kind, suffix string) string {
 	return sessionID + ":" + kind + ":" + suffix
 }
 
-func buildSessionRecallOutput(projectID string, summaries []db.SessionSummary, principles []db.Principle, alerts []db.Alert, externalSummaries []db.ExternalContextSummary, promptMatch *promptRecallMatch, lastSession *db.SessionSummary) string {
+func buildSessionRecallOutput(projectID string, summaries []db.SessionSummary, principles []db.Principle, alerts []db.Alert, externalSummaries []db.ExternalContextSummary, promptMatch *promptRecallMatch, lastSession *db.SessionSummary, distillUnhealthy bool) string {
 	var sentences []string
 
 	matchThreshold := 2.0
@@ -592,6 +598,7 @@ func buildSessionRecallOutput(projectID string, summaries []db.SessionSummary, p
 		}
 	}
 
+	// Docs/API insights
 	hasOfficialHint := false
 	for _, summary := range externalSummaries {
 		label := summary.Source
@@ -627,22 +634,41 @@ func buildSessionRecallOutput(projectID string, summaries []db.SessionSummary, p
 	if len(learningBits) > 0 {
 		prefix := "Recent lessons"
 		if projectID != "" {
-			prefix = fmt.Sprintf("Recent lessons for %s", projectID)
+			allCurrent := true
+			for _, summary := range summaries {
+				if !sameProject(projectID, summary.ProjectID) {
+					allCurrent = false
+					break
+				}
+			}
+			if allCurrent {
+				prefix = fmt.Sprintf("Recent lessons for %s", projectID)
+			} else {
+				prefix = "Recent cross-project lessons"
+			}
 		}
 		sentences = append(sentences, fmt.Sprintf("%s: %s.", prefix, strings.Join(learningBits, "; ")))
 	}
 
 	if len(principles) > 0 {
 		p0 := principles[0]
+		isSame := sameProject(projectID, p0.ProjectID)
 		if p0.ImplHint != "" {
 			outcome := p0.Outcome
 			label := "Past " + outcome
 			if outcome == "" || outcome == "unknown" {
 				label = "Prior"
 			}
+			if !isSame {
+				label = "Cross-project " + strings.ToLower(label)
+			}
 			sentences = append(sentences, fmt.Sprintf("%s: %s — %s.", label, p0.Title, p0.ImplHint))
 		} else {
-			sentences = append(sentences, fmt.Sprintf("Active principle: %s.", trimSentence(p0.Narrative)))
+			label := "Active principle"
+			if !isSame {
+				label = "Cross-project active principle"
+			}
+			sentences = append(sentences, fmt.Sprintf("%s: %s.", label, trimSentence(p0.Narrative)))
 		}
 	} else {
 		for _, summary := range summaries {
@@ -667,6 +693,10 @@ func buildSessionRecallOutput(projectID string, summaries []db.SessionSummary, p
 		if len(parts) > 0 {
 			sentences = append(sentences, strings.Join(parts, ". ")+".")
 		}
+	}
+
+	if distillUnhealthy && len(sentences) > 0 {
+		sentences = append([]string{"[Memory layer degraded: background distillation is failing.]"}, sentences...)
 	}
 
 	if len(sentences) == 0 {

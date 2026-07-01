@@ -105,7 +105,7 @@ func setupCodex(home string) (string, error) {
 	}
 
 	skillPath := filepath.Join(skillDir, "forge.json")
-	if err := os.WriteFile(skillPath, data, 0o600); err != nil {
+	if err := WriteFileConfirm(skillPath, data, 0o600); err != nil {
 		fallback := manualCodexFallback(skillPath, data)
 		if os.IsPermission(err) {
 			return "", fmt.Errorf("write skill: permission denied writing %s\n  Manual fallback:\n%s", skillPath, fallback)

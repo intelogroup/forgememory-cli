@@ -60,7 +60,7 @@ func isForgeProcessIdentity(identity string) bool {
 		return false
 	}
 	if strings.HasPrefix(base, "forgememo") {
-		return false
+		return true
 	}
 	return base == "forge" || base == "forge.exe" || strings.HasPrefix(base, "forge-")
 }

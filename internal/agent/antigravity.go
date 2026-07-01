@@ -1,7 +1,6 @@
 package agent
 
 import (
-	"bytes"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -34,9 +33,7 @@ func setupAntigravity(home string) (string, error) {
 	// 1. Setup MCP config inside ~/.gemini/antigravity/mcp_config.json
 	mcpConfigPath := filepath.Join(configDir, "mcp_config.json")
 	mcpConfig := make(map[string]any)
-	var existingMcpBytes []byte
 	if data, err := os.ReadFile(mcpConfigPath); err == nil {
-		existingMcpBytes = data
 		_ = json.Unmarshal(data, &mcpConfig)
 	}
 
@@ -55,22 +52,15 @@ func setupAntigravity(home string) (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("marshal mcp config: %w", err)
 	}
-	if !bytes.Equal(existingMcpBytes, mcpData) {
-		if err := os.MkdirAll(configDir, 0o700); err != nil {
-			return "", fmt.Errorf("create antigravity config dir: %w", err)
-		}
-		if err := os.WriteFile(mcpConfigPath, mcpData, 0o600); err != nil {
-			return "", fmt.Errorf("write mcp config: %w", err)
-		}
+	if err := WriteFileConfirm(mcpConfigPath, mcpData, 0o600); err != nil {
+		return "", fmt.Errorf("write mcp config: %w", err)
 	}
 
 	// 2. Setup hooks.json inside ~/.gemini/config/hooks.json
 	globalConfigDir := filepath.Join(home, ".gemini", "config")
 	hooksPath := filepath.Join(globalConfigDir, "hooks.json")
 	hooksConfig := make(map[string]any)
-	var existingHooksBytes []byte
 	if data, err := os.ReadFile(hooksPath); err == nil {
-		existingHooksBytes = data
 		_ = json.Unmarshal(data, &hooksConfig)
 	}
 
@@ -117,13 +107,8 @@ func setupAntigravity(home string) (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("marshal hooks config: %w", err)
 	}
-	if !bytes.Equal(existingHooksBytes, hooksData) {
-		if err := os.MkdirAll(globalConfigDir, 0o700); err != nil {
-			return "", fmt.Errorf("create config dir: %w", err)
-		}
-		if err := os.WriteFile(hooksPath, hooksData, 0o600); err != nil {
-			return "", fmt.Errorf("write hooks config: %w", err)
-		}
+	if err := WriteFileConfirm(hooksPath, hooksData, 0o600); err != nil {
+		return "", fmt.Errorf("write hooks config: %w", err)
 	}
 
 	return hooksPath, nil

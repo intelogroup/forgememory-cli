@@ -1,7 +1,6 @@
 package agent
 
 import (
-	"bytes"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -97,9 +96,7 @@ func setupGemini(home string) (string, error) {
 	forgePath := ForgePath()
 
 	settings := make(map[string]any)
-	var existingBytes []byte
 	if data, err := os.ReadFile(settingsPath); err == nil {
-		existingBytes = data
 		_ = json.Unmarshal(data, &settings)
 	}
 
@@ -160,13 +157,8 @@ func setupGemini(home string) (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("marshal settings: %w", err)
 	}
-	if !bytes.Equal(existingBytes, data) {
-		if err := os.MkdirAll(filepath.Dir(settingsPath), 0o700); err != nil {
-			return "", fmt.Errorf("create settings dir: %w", err)
-		}
-		if err := os.WriteFile(settingsPath, data, 0o600); err != nil {
-			return "", fmt.Errorf("write settings: %w", err)
-		}
+	if err := WriteFileConfirm(settingsPath, data, 0o600); err != nil {
+		return "", fmt.Errorf("write settings: %w", err)
 	}
 
 	skillDir := filepath.Join(home, ".gemini")
@@ -193,7 +185,7 @@ func setupGemini(home string) (string, error) {
 		"## Commands\n\n" +
 		"```\nforge status\nforge search query\nforge distill\n```\n"
 	skillPath := filepath.Join(skillDir, "forge-skill.md")
-	if err := os.WriteFile(skillPath, []byte(skillContent), 0o600); err != nil {
+	if err := WriteFileConfirm(skillPath, []byte(skillContent), 0o600); err != nil {
 		return "", fmt.Errorf("write skill: %w", err)
 	}
 

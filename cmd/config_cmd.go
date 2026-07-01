@@ -135,13 +135,16 @@ func runConfig(args []string) {
 		os.Exit(0)
 	}
 
-	validProviders := map[string]bool{"forgememo": true, "forge": true, "anthropic": true, "openai": true, "ollama": true, "groq": true, "nvidia": true, "codex": true, "antigravity": true}
+	validProviders := map[string]bool{"forgememo": true, "forge": true, "anthropic": true, "openai": true, "ollama": true, "groq": true, "nvidia": true, "codex": true, "antigravity": true, "gemini": true}
 	if !validProviders[*providerFlag] {
-		fmt.Fprintf(os.Stderr, "Error: provider must be one of: forgememo, anthropic, openai, groq, nvidia, ollama, codex, antigravity\n")
+		fmt.Fprintf(os.Stderr, "Error: provider must be one of: forgememo, anthropic, openai, groq, nvidia, ollama, codex, antigravity, gemini\n")
 		os.Exit(1)
 	}
 	if *providerFlag == "forge" {
 		*providerFlag = "forgememo"
+	}
+	if *providerFlag == "gemini" {
+		*providerFlag = "antigravity"
 	}
 
 	if *timeoutFlag != "" {

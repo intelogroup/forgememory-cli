@@ -1,7 +1,6 @@
 package agent
 
 import (
-	"bytes"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -85,9 +84,7 @@ func setupOpencode(home string) (string, error) {
 	// Upsert <configDir>/opencode.json with the "mcp" section.
 	configPath := filepath.Join(configDir, "opencode.json")
 	config := make(map[string]any)
-	var existingBytes []byte
 	if data, err := os.ReadFile(configPath); err == nil {
-		existingBytes = data
 		_ = json.Unmarshal(data, &config)
 	}
 
@@ -105,13 +102,8 @@ func setupOpencode(home string) (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("marshal opencode config: %w", err)
 	}
-	if !bytes.Equal(existingBytes, data) {
-		if err := os.MkdirAll(configDir, 0o700); err != nil {
-			return "", fmt.Errorf("create opencode config dir: %w", err)
-		}
-		if err := os.WriteFile(configPath, data, 0o600); err != nil {
-			return "", fmt.Errorf("write opencode config: %w", err)
-		}
+	if err := WriteFileConfirm(configPath, data, 0o600); err != nil {
+		return "", fmt.Errorf("write opencode config: %w", err)
 	}
 
 	// Write JS plugin — always overwrite so forgePath stays current after binary moves.
@@ -121,7 +113,7 @@ func setupOpencode(home string) (string, error) {
 	}
 	pluginContent := fmt.Sprintf(opencodePluginTemplate, forgePath)
 	pluginPath := filepath.Join(pluginDir, "forge.js")
-	if err := os.WriteFile(pluginPath, []byte(pluginContent), 0o600); err != nil {
+	if err := WriteFileConfirm(pluginPath, []byte(pluginContent), 0o600); err != nil {
 		return "", fmt.Errorf("write opencode plugin: %w", err)
 	}
 

@@ -8,7 +8,6 @@ import (
 	"math"
 	"net"
 	"os"
-	"os/exec"
 	"os/signal"
 	"path/filepath"
 	"strconv"
@@ -319,37 +318,73 @@ func distillLoop(d *distill.Distiller, database *db.DB, interval time.Duration) 
 			proj := ""
 			checkpointKey := sessionID + ":daemon"
 
-			// Check if already processed (fast path before spawning subprocess)
+			// Check if already processed (fast path)
 			exists, _ := database.HasSessionCheckpoint(checkpointKey)
 			if exists {
 				_ = database.MarkSessionDistilled(sessionID)
 				continue
 			}
 
-			// Spawn TS/Mastra distill-agent subprocess.
-			// FORGE_MASTRA_PATH overrides default path (project root /mastra).
-			mastraPath := os.Getenv("FORGE_MASTRA_PATH")
-			if mastraPath == "" {
-				mastraPath = "."
+			startDistill := time.Now()
+
+			// Load session events
+			events, evErr := database.SessionEventsUpTo(sessionID, "", 0)
+			if evErr != nil {
+				log.Printf("Distillation: failed to fetch events for session %s: %v", sessionID, evErr)
+				lastErr = evErr
+				_ = database.RecordDistillationFailure(startDistill, time.Since(startDistill), 0, evErr.Error(), time.Now().Add(interval))
+				continue
 			}
-			cmd := exec.Command("npx", "tsx",
-				filepath.Join(mastraPath, "mastra", "src", "distill-agent.ts"),
-				"--session-id", sessionID,
-				"--project-id", proj,
-				"--forge-binary", os.Args[0],
-				"--checkpoint-kind", "daemon",
-				"--checkpoint-key", checkpointKey)
-			cmd.Stdout = os.Stderr
-			cmd.Stderr = os.Stderr
-			cmd.Stdin = nil
 
-			// Inherit env for provider config
-			cmd.Env = os.Environ()
+			if len(events) == 0 {
+				_ = database.MarkSessionDistilled(sessionID)
+				continue
+			}
 
-			if err := cmd.Run(); err != nil {
-				log.Printf("Distillation: session %s distill-agent failed: %v", sessionID, err)
+			for _, e := range events {
+				if e.ProjectID != "" {
+					proj = e.ProjectID
+					break
+				}
+			}
+
+			// Load config dynamically
+			loopCfg := distill.LoadConfig()
+
+			// Skip distillation if provider is unconfigured
+			if loopCfg.Provider == "" || loopCfg.APIKey == "" {
+				err := errors.New("no inference provider configured")
+				log.Printf("Distillation skipped: %v", err)
 				lastErr = err
+				_ = database.RecordDistillationFailure(startDistill, time.Since(startDistill), len(events), err.Error(), time.Now().Add(interval))
+				continue
 			}
+
+			loopD := distill.New(database, loopCfg)
+
+			summary, err := loopD.SynthesizeCheckpoint(sessionID, proj, "daemon", checkpointKey, events)
+			if err != nil {
+				log.Printf("Distillation: session %s SynthesizeCheckpoint failed: %v", sessionID, err)
+				lastErr = err
+				_ = database.RecordDistillationFailure(startDistill, time.Since(startDistill), len(events), err.Error(), time.Now().Add(interval))
+				continue
+			}
+
+			distilledPrinciples := 0
+			if summary != nil {
+				dpCount, dpErr := loopD.DistillCheckpointSummary(*summary, events)
+				if dpErr != nil {
+					log.Printf("Distillation: session %s DistillCheckpointSummary failed: %v", sessionID, dpErr)
+					lastErr = dpErr
+					_ = database.RecordDistillationFailure(startDistill, time.Since(startDistill), len(events), dpErr.Error(), time.Now().Add(interval))
+					continue
+				}
+				distilledPrinciples = dpCount
+			}
+
+			// Successfully distilled session!
+			_ = database.RecordDistillationSuccess(startDistill, time.Since(startDistill), len(events), distilledPrinciples, time.Now().Add(interval))
+			_ = database.MarkSessionDistilled(sessionID)
 		}
 
 		// Cross-session synthesis: run periodically (every 30 min) for projects
@@ -391,7 +426,10 @@ func retrievalLoop(worker *retrieve.Worker, wake <-chan struct{}, stop <-chan st
 		for i := 0; i < 3; i++ {
 			count, err := worker.RunOnce()
 			if err != nil {
-				log.Printf("Retrieval error: %v", err)
+				// Suppress spammy log messages for unconfigured features
+				if !strings.Contains(err.Error(), "no API key configured") {
+					log.Printf("Retrieval error: %v", err)
+				}
 				break
 			}
 			if count == 0 {
