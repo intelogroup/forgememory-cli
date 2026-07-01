@@ -374,8 +374,27 @@ func (d *Distiller) checkCredits() bool {
 }
 
 // DistillBatch processes undistilled events into principles.
+// Orphaned events with session_id='unknown' are excluded — they usually
+// have no useful session context for the LLM.
 func (d *Distiller) DistillBatch(limit int) (int, error) {
-	events, err := d.db.UndistilledEvents(limit)
+	return d.distillBatch(limit, false)
+}
+
+// DistillBatchIncludingUnknown behaves like DistillBatch but admits
+// session_id='unknown' events so the `forge distill --all` drain can flush
+// the orphan backlog instead of silently stalling behind it forever (#34).
+func (d *Distiller) DistillBatchIncludingUnknown(limit int) (int, error) {
+	return d.distillBatch(limit, true)
+}
+
+func (d *Distiller) distillBatch(limit int, includeUnknown bool) (int, error) {
+	var events []db.Event
+	var err error
+	if includeUnknown {
+		events, err = d.db.UndistilledEventsIncludingUnknown(limit)
+	} else {
+		events, err = d.db.UndistilledEvents(limit)
+	}
 	if err != nil {
 		return 0, fmt.Errorf("get undistilled events: %w", err)
 	}

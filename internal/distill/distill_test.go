@@ -1072,3 +1072,73 @@ func main() {
 		t.Errorf("got %q, want 'Mock response content'", res)
 	}
 }
+
+// TestDistillBatchIncludingUnknown_DrainsOrphanBacklog reproduces #34: when
+// the entire undistilled backlog has session_id='unknown', DistillBatch
+// (default) returns (0, nil) with no LLM call — silent no-op. The drain-safe
+// DistillBatchIncludingUnknown variant MUST call the LLM on that backlog.
+func TestDistillBatchIncludingUnknown_DrainsOrphanBacklog(t *testing.T) {
+	database, err := db.Open(t.TempDir() + "/test.db")
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	defer database.Close()
+
+	callCount := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		callCount++
+		json.NewEncoder(w).Encode(map[string]any{
+			"choices": []map[string]any{
+				{"message": map[string]string{"content": `[]`}},
+			},
+			"usage": map[string]int{"prompt_tokens": 50, "completion_tokens": 5, "total_tokens": 55},
+		})
+	}))
+	defer server.Close()
+
+	d := &Distiller{
+		db: database,
+		config: Config{
+			Provider: ProviderGroq,
+			Model:    "llama-3.3-70b-versatile",
+			APIKey:   "gsk-test",
+			BaseURL:  server.URL,
+		},
+		client: server.Client(),
+	}
+
+	// Seed 5 orphan events (session_id='unknown').
+	for i := 0; i < 5; i++ {
+		database.InsertEvent(&db.Event{
+			SessionID: "unknown", ProjectID: "proj", SourceTool: "claude",
+			EventType: "PostToolUse", ToolName: "Bash",
+			Payload: `{"command":"ls"}`,
+		})
+	}
+
+	// Default path: 0 events returned, 0 LLM calls, 0 principles — matches #34 repro.
+	count, err := d.DistillBatch(50)
+	if err != nil {
+		t.Fatalf("default DistillBatch: %v", err)
+	}
+	if count != 0 {
+		t.Fatalf("default DistillBatch on unknown-only backlog should return 0 principles, got %d", count)
+	}
+	if callCount != 0 {
+		t.Fatalf("default DistillBatch on unknown-only backlog should not call LLM, got %d calls", callCount)
+	}
+
+	// Drain-safe variant: must reach the LLM (even though it returns []) and
+	// mark events distilled so the backlog actually flushes.
+	count, err = d.DistillBatchIncludingUnknown(50)
+	if err != nil {
+		t.Fatalf("DistillBatchIncludingUnknown: %v", err)
+	}
+	if callCount != 1 {
+		t.Fatalf("DistillBatchIncludingUnknown should call LLM exactly once on orphan backlog, got %d", callCount)
+	}
+	_, undistilled, _ := database.EventCount()
+	if undistilled != 0 {
+		t.Fatalf("DistillBatchIncludingUnknown should drain orphan backlog to 0, got %d undistilled", undistilled)
+	}
+}

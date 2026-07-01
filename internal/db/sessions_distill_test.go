@@ -212,3 +212,55 @@ func TestMarkSessionDistilled_MarksAllSessionEvents(t *testing.T) {
 		}
 	}
 }
+
+// TestUndistilledEvents_ExcludesUnknownByDefault reproduces the original
+// v0.5.13 behavior: the default UndistilledEvents query still excludes
+// session_id='unknown' orphans so one-shot `forge distill` does not pull
+// them into a batch with no session context.
+func TestUndistilledEvents_ExcludesUnknownByDefault(t *testing.T) {
+	database := openTestDB(t)
+	seedSessionEvents(t, database, "unknown", 5, false)
+
+	got, err := database.UndistilledEvents(50)
+	if err != nil {
+		t.Fatalf("UndistilledEvents: %v", err)
+	}
+	if len(got) != 0 {
+		t.Fatalf("UndistilledEvents returned %d events for session_id=unknown backlog; want 0 (excluded by default)", len(got))
+	}
+}
+
+// TestUndistilledEventsIncludingUnknown_DrainsOrphans reproduces the #34
+// no-op: when the entire backlog is session_id='unknown', default
+// UndistilledEvents returns nothing (drain stalls forever reporting success
+// in 15ms), but UndistilledEventsIncludingUnknown MUST drain them so the
+// `forge distill --all` backlog can flush.
+func TestUndistilledEventsIncludingUnknown_DrainsOrphans(t *testing.T) {
+	database := openTestDB(t)
+	// Seed only orphans — simulates the #34 repro exactly: backlog is
+	// 100% session_id='unknown' hook events.
+	seedSessionEvents(t, database, "unknown", 7, false)
+
+	// Default path: returns nothing → drain no-ops.
+	def, err := database.UndistilledEvents(50)
+	if err != nil {
+		t.Fatalf("UndistilledEvents: %v", err)
+	}
+	if len(def) != 0 {
+		t.Fatalf("expected default path to exclude unknowns, got %d", len(def))
+	}
+
+	// New path: drains the unknown backlog.
+	got, err := database.UndistilledEventsIncludingUnknown(50)
+	if err != nil {
+		t.Fatalf("UndistilledEventsIncludingUnknown: %v", err)
+	}
+	if len(got) != 7 {
+		t.Fatalf("expected 7 unknown events drained, got %d", len(got))
+	}
+	for _, e := range got {
+		if e.SessionID != "unknown" {
+			t.Fatalf("event returned with session_id=%q, want 'unknown'", e.SessionID)
+		}
+	}
+}
