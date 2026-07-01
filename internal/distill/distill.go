@@ -405,16 +405,13 @@ func (d *Distiller) DistillBatch(limit int) (int, error) {
 		}
 	}
 
-	// Mark events as distilled only when we extracted principles.
-	// Empty responses mean the events may yield insights when combined
-	// with later events from the same session — keep them in the queue.
-	if len(principles) > 0 {
-		for _, e := range batch {
-			ids = append(ids, e.ID)
-		}
-		if err := d.db.MarkDistilled(ids); err != nil {
-			return 0, fmt.Errorf("mark distilled: %w", err)
-		}
+	// Mark events as distilled unconditionally when processed.
+	// This prevents low-signal or empty batches from clogging the queue.
+	for _, e := range batch {
+		ids = append(ids, e.ID)
+	}
+	if err := d.db.MarkDistilled(ids); err != nil {
+		return len(principles), fmt.Errorf("mark distilled: %w", err)
 	}
 
 	return len(principles), nil

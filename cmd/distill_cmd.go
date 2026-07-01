@@ -66,7 +66,7 @@ func runDistill(args []string) {
 		return
 	}
 
-	events, err := database.UndistilledEvents(50)
+	events, err := database.UndistilledEvents(300)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 		os.Exit(1)

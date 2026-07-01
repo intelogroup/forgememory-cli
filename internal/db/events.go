@@ -58,7 +58,7 @@ func (d *DB) InsertEvent(e *Event) error {
 func (d *DB) UndistilledEvents(limit int) ([]Event, error) {
 	rows, err := d.conn.Query(
 		`SELECT id, ts, session_id, project_id, source_tool, event_type, tool_name, payload, distilled
-		 FROM events WHERE distilled=0 ORDER BY ts ASC LIMIT ?`, limit,
+		 FROM events WHERE distilled=0 AND session_id != 'unknown' ORDER BY ts ASC LIMIT ?`, limit,
 	)
 	if err != nil {
 		return nil, err
