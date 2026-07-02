@@ -8,42 +8,7 @@ import (
 	"github.com/forge/forge/internal/db"
 )
 
-func TestBuildSessionRecallOutput_ProjectSummaryAndPrinciple(t *testing.T) {
-	summaries := []db.SessionSummary{
-		{ProjectID: "forgememory-cli", Learnings: "Codex was only capturing startup and stop hooks.", NextSteps: "Add PostToolUse for Codex."},
-		{ProjectID: "forgememory-cli", Summary: "Prompt recall should be scoped to the current repo."},
-	}
-	principles := []db.Principle{
-		{ProjectID: "forgememory-cli", Narrative: "Normalize project IDs to the repo basename before storing events and principles."},
-	}
 
-	out := buildSessionRecallOutput("forgememory-cli", summaries, principles, nil, nil, nil, nil, "")
-
-	if !strings.Contains(out, "## Forge Context") {
-		t.Fatalf("missing recall heading: %q", out)
-	}
-	if !strings.Contains(out, "Recent lessons for forgememory-cli") {
-		t.Fatalf("missing project-scoped summary: %q", out)
-	}
-	if !strings.Contains(out, "Active principle: Normalize project IDs to the repo basename before storing events and principles.") {
-		t.Fatalf("missing active principle sentence: %q", out)
-	}
-	if strings.Contains(out, "\n-") {
-		t.Fatalf("startup context should be compact prose, got: %q", out)
-	}
-}
-
-func TestBuildSessionRecallOutput_NextStepFallback(t *testing.T) {
-	summaries := []db.SessionSummary{
-		{ProjectID: "forgememory-cli", Learnings: "Session synthesis is landing successfully.", NextSteps: "Verify the next Codex session writes summaries."},
-	}
-
-	out := buildSessionRecallOutput("forgememory-cli", summaries, nil, nil, nil, nil, nil, "")
-
-	if !strings.Contains(out, "Next step: Verify the next Codex session writes summaries.") {
-		t.Fatalf("expected next-step fallback, got: %q", out)
-	}
-}
 
 func TestBuildSessionRecallOutput_IncludesPromptMatchedLesson(t *testing.T) {
 	out := buildSessionRecallOutput(
@@ -135,25 +100,7 @@ func TestBuildSessionRecallOutput_PrefersOfficialDocsHintOverRepeatedFailureAler
 	}
 }
 
-func TestBuildSessionRecallOutput_LastSessionInjectedOnSessionStart(t *testing.T) {
-	last := &db.SessionSummary{
-		SessionID: "prev-session",
-		ProjectID: "forgememory-cli",
-		Request:   "Wire up PostToolUse hook for Codex.",
-		Learnings: "Codex only fires Stop, not PostToolUse.",
-		NextSteps: "Add PostToolUse support to Codex scanner.",
-	}
-	out := buildSessionRecallOutput("forgememory-cli", nil, nil, nil, nil, nil, last, "")
-	if !strings.Contains(out, "Last session worked on: Wire up PostToolUse hook for Codex.") {
-		t.Fatalf("missing last session request: %q", out)
-	}
-	if !strings.Contains(out, "Learnings: Codex only fires Stop, not PostToolUse.") {
-		t.Fatalf("missing last session learnings: %q", out)
-	}
-	if !strings.Contains(out, "Next steps left: Add PostToolUse support to Codex scanner.") {
-		t.Fatalf("missing last session next steps: %q", out)
-	}
-}
+
 
 func TestBuildSessionRecallOutput_LowConfidenceMatchDropped(t *testing.T) {
 	out := buildSessionRecallOutput(
@@ -226,13 +173,7 @@ func TestLoadSessionRecallContext_FallsBackToGlobalRecentContext(t *testing.T) {
 		t.Fatalf("expected fallback summary project_id to be forgememory-cli, got %q", summaries[0].ProjectID)
 	}
 
-	out := buildSessionRecallOutput("proj", summaries, principles, nil, nil, nil, nil, "")
-	if !strings.Contains(out, "Recent cross-project lessons") {
-		t.Fatalf("expected output to reflect cross-project scoping, got %q", out)
-	}
-	if !strings.Contains(out, "Cross-project active principle: Use recent global context when project-specific recall is empty.") {
-		t.Fatalf("expected fallback principle narrative in output, got %q", out)
-	}
+
 }
 
 func TestLoadSessionRecallContext_ReturnsFreshExternalSummary(t *testing.T) {

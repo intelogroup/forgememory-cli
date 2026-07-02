@@ -9,7 +9,7 @@ import (
 	"github.com/forge/forge/internal/db"
 )
 
-func TestProcessEvent_RaisesAlertOnThirdRepeatedFailure(t *testing.T) {
+func TestProcessEvent_RaisesAlertOnSecondRepeatedFailure(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
 	t.Setenv("FORGE_EXA_API_KEY", "")
 	t.Setenv("EXA_API_KEY", "")
@@ -23,7 +23,7 @@ func TestProcessEvent_RaisesAlertOnThirdRepeatedFailure(t *testing.T) {
 	defer database.Close()
 
 	payload := `{"tool_input":{"command":"cargo build"},"tool_response":{"stderr":"error[E0599]: no method named serve found for struct AppState\ncould not compile api-service due to previous error"}}`
-	for i := 0; i < 3; i++ {
+	for i := 0; i < 2; i++ {
 		event := &db.Event{
 			TS:         time.Now().Add(time.Duration(i) * time.Minute).UTC().Format(time.RFC3339),
 			SessionID:  "sess-1",
@@ -70,7 +70,7 @@ func TestProcessEvent_RaisesAlertOnThirdRepeatedFailure(t *testing.T) {
 	}
 }
 
-func TestProcessEvent_DoesNotRaiseAlertBeforeThirdFailure(t *testing.T) {
+func TestProcessEvent_DoesNotRaiseAlertBeforeSecondFailure(t *testing.T) {
 	database, err := db.Open(filepath.Join(t.TempDir(), "test.db"))
 	if err != nil {
 		t.Fatalf("db.Open: %v", err)
@@ -78,7 +78,7 @@ func TestProcessEvent_DoesNotRaiseAlertBeforeThirdFailure(t *testing.T) {
 	defer database.Close()
 
 	payload := `{"tool_input":{"command":"cargo test"},"tool_response":{"stderr":"error[E0432]: unresolved import crate::server"}}`
-	for i := 0; i < 2; i++ {
+	for i := 0; i < 1; i++ {
 		event := &db.Event{
 			TS:         time.Now().Add(time.Duration(i) * time.Minute).UTC().Format(time.RFC3339),
 			SessionID:  "sess-2",
@@ -154,7 +154,7 @@ func TestProcessEvent_SeparatesDifferentFailureFingerprints(t *testing.T) {
 		`{"tool_input":{"command":"cargo build"},"tool_response":{"stderr":"error[E0432]: unresolved import crate::server"}}`,
 	}
 	for _, payload := range payloads {
-		for i := 0; i < 2; i++ {
+		for i := 0; i < 1; i++ {
 			event := &db.Event{
 				TS:         time.Now().Add(time.Duration(i) * time.Minute).UTC().Format(time.RFC3339),
 				SessionID:  "sess-5",
@@ -175,11 +175,11 @@ func TestProcessEvent_SeparatesDifferentFailureFingerprints(t *testing.T) {
 		t.Fatalf("ActiveAlertsByProject: %v", err)
 	}
 	if len(alerts) != 0 {
-		t.Fatalf("expected no alert when two distinct failures repeat only twice each, got %#v", alerts)
+		t.Fatalf("expected no alert when two distinct failures repeat only once each, got %#v", alerts)
 	}
 }
 
-func TestProcessEvent_EscalatesSeverityOnFourthRepeat(t *testing.T) {
+func TestProcessEvent_EscalatesSeverityOnThirdRepeat(t *testing.T) {
 	database, err := db.Open(filepath.Join(t.TempDir(), "test.db"))
 	if err != nil {
 		t.Fatalf("db.Open: %v", err)
@@ -187,7 +187,7 @@ func TestProcessEvent_EscalatesSeverityOnFourthRepeat(t *testing.T) {
 	defer database.Close()
 
 	payload := `{"tool_input":{"command":"npm install"},"tool_response":{"stderr":"npm ERR! code ERESOLVE\nnpm ERR! unable to resolve dependency tree"}}`
-	for i := 0; i < 4; i++ {
+	for i := 0; i < 3; i++ {
 		event := &db.Event{
 			TS:         time.Now().Add(time.Duration(i) * time.Minute).UTC().Format(time.RFC3339),
 			SessionID:  "sess-6",
@@ -212,7 +212,7 @@ func TestProcessEvent_EscalatesSeverityOnFourthRepeat(t *testing.T) {
 	if alerts[0].Severity != "high" {
 		t.Fatalf("Severity = %q, want high", alerts[0].Severity)
 	}
-	if !strings.Contains(alerts[0].Narrative, "4 times") {
+	if !strings.Contains(alerts[0].Narrative, "3 times") {
 		t.Fatalf("expected updated repeat count in narrative, got %q", alerts[0].Narrative)
 	}
 }

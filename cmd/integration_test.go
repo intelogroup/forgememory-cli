@@ -739,7 +739,7 @@ func TestBinary_Hook_RepeatedFailureCreatesAlertAndInjectsRecall(t *testing.T) {
 	startTestDaemon(t, home)
 
 	payload := `{"session_id":"rust-fail-1","cwd":"/tmp/api-service","tool_name":"Bash","hook_event_name":"PostToolUse","tool_input":{"command":"cargo build"},"tool_response":{"stderr":"error[E0599]: no method named serve found for struct AppState\ncould not compile api-service due to previous error"}}`
-	for i := 0; i < 3; i++ {
+	for i := 0; i < 2; i++ {
 		cmd := exec.Command(forgeBin, "hook")
 		cmd.Env = append(baseEnv(),
 			"HOME="+home,
@@ -814,7 +814,7 @@ func TestBinary_Hook_RepeatedFailureClearsAfterSuccess(t *testing.T) {
 	startTestDaemon(t, home)
 
 	failPayload := `{"session_id":"rust-fail-2","cwd":"/tmp/api-service","tool_name":"Bash","hook_event_name":"PostToolUse","tool_input":{"command":"cargo build"},"tool_response":{"stderr":"error[E0599]: no method named serve found for struct AppState\ncould not compile api-service due to previous error"}}`
-	for i := 0; i < 3; i++ {
+	for i := 0; i < 2; i++ {
 		cmd := exec.Command(forgeBin, "hook")
 		cmd.Env = append(baseEnv(),
 			"HOME="+home,
@@ -878,7 +878,7 @@ func TestBinary_Hook_RepeatedFailureInjectsOfficialDocsHintAfterRetrieval(t *tes
 	})
 
 	failPayload := `{"session_id":"rust-fail-3","cwd":"/tmp/api-service","tool_name":"Bash","hook_event_name":"PostToolUse","tool_input":{"command":"cargo build"},"tool_response":{"stderr":"error[E0599]: no method named serve found for struct AppState\ncould not compile api-service due to previous error"}}`
-	for i := 0; i < 3; i++ {
+	for i := 0; i < 2; i++ {
 		cmd := exec.Command(forgeBin, "hook")
 		cmd.Env = append(baseEnv(),
 			"HOME="+home,
@@ -975,7 +975,7 @@ func TestBinary_Hook_RepeatedFailureInjectsAIRefinedOfficialDocsHint(t *testing.
 	})
 
 	failPayload := `{"session_id":"rust-fail-ai","cwd":"/tmp/api-service","tool_name":"Bash","hook_event_name":"PostToolUse","tool_input":{"command":"cargo build"},"tool_response":{"stderr":"error[E0599]: no method named serve found for struct AppState\ncould not compile api-service due to previous error"}}`
-	for i := 0; i < 3; i++ {
+	for i := 0; i < 2; i++ {
 		cmd := exec.Command(forgeBin, "hook")
 		cmd.Env = append(baseEnv(),
 			"HOME="+home,
@@ -1059,7 +1059,7 @@ func TestBinary_Hook_RepeatedFailureWaitsBrieflyForOfficialDocsHint(t *testing.T
 	})
 
 	failPayload := `{"session_id":"rust-fail-wait","cwd":"/tmp/api-service","tool_name":"Bash","hook_event_name":"PostToolUse","tool_input":{"command":"cargo build"},"tool_response":{"stderr":"error[E0599]: no method named serve found for struct AppState\ncould not compile api-service due to previous error"}}`
-	for i := 0; i < 3; i++ {
+	for i := 0; i < 2; i++ {
 		cmd := exec.Command(forgeBin, "hook")
 		cmd.Env = append(baseEnv(),
 			"HOME="+home,

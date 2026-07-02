@@ -625,75 +625,7 @@ func buildSessionRecallOutput(projectID string, summaries []db.SessionSummary, p
 		}
 	}
 
-	var learningBits []string
-	for _, summary := range summaries {
-		if text := firstNonEmpty(summary.Learnings, summary.Summary); text != "" {
-			learningBits = append(learningBits, trimSentence(text))
-		}
-	}
-	if len(learningBits) > 0 {
-		prefix := "Recent lessons"
-		if projectID != "" {
-			allCurrent := true
-			for _, summary := range summaries {
-				if !sameProject(projectID, summary.ProjectID) {
-					allCurrent = false
-					break
-				}
-			}
-			if allCurrent {
-				prefix = fmt.Sprintf("Recent lessons for %s", projectID)
-			} else {
-				prefix = "Recent cross-project lessons"
-			}
-		}
-		sentences = append(sentences, fmt.Sprintf("%s: %s.", prefix, strings.Join(learningBits, "; ")))
-	}
 
-	if len(principles) > 0 {
-		p0 := principles[0]
-		isSame := sameProject(projectID, p0.ProjectID)
-		if p0.ImplHint != "" {
-			outcome := p0.Outcome
-			label := "Past " + outcome
-			if outcome == "" || outcome == "unknown" {
-				label = "Prior"
-			}
-			if !isSame {
-				label = "Cross-project " + strings.ToLower(label)
-			}
-			sentences = append(sentences, fmt.Sprintf("%s: %s — %s.", label, p0.Title, p0.ImplHint))
-		} else {
-			label := "Active principle"
-			if !isSame {
-				label = "Cross-project active principle"
-			}
-			sentences = append(sentences, fmt.Sprintf("%s: %s.", label, trimSentence(p0.Narrative)))
-		}
-	} else {
-		for _, summary := range summaries {
-			if next := trimSentence(summary.NextSteps); next != "" {
-				sentences = append(sentences, fmt.Sprintf("Next step: %s.", next))
-				break
-			}
-		}
-	}
-
-	if lastSession != nil {
-		var parts []string
-		if r := trimSentence(lastSession.Request); r != "" {
-			parts = append(parts, "Last session worked on: "+r)
-		}
-		if l := trimSentence(lastSession.Learnings); l != "" {
-			parts = append(parts, "Learnings: "+l)
-		}
-		if n := trimSentence(lastSession.NextSteps); n != "" {
-			parts = append(parts, "Next steps left: "+n)
-		}
-		if len(parts) > 0 {
-			sentences = append(sentences, strings.Join(parts, ". ")+".")
-		}
-	}
 
 	if distillError != "" && len(sentences) > 0 {
 		errMsg := distillError

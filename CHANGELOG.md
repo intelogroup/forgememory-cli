@@ -1,5 +1,10 @@
 # Changelog
 
+## [0.6.2] - 2026-07-02
+
+### Changed
+- Shifted context injection from broad preview mode to surgical injection that only triggers on repeated failure alerts (second occurrence onward) to minimize token noise and context bloat.
+
 ## [0.6.1] - 2026-07-01
 
 ### Fixed

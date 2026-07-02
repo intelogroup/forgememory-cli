@@ -80,13 +80,13 @@ func ProcessEvent(database *db.DB, event *db.Event) error {
 			return err
 		}
 
-		if sig.RepeatCount < 3 {
+		if sig.RepeatCount < 2 {
 			return nil
 		}
 
 		severity := "medium"
-		score := obs.Score + float64(sig.RepeatCount-3)*0.15
-		if sig.RepeatCount >= 4 {
+		score := obs.Score + float64(sig.RepeatCount-2)*0.15
+		if sig.RepeatCount >= 3 {
 			severity = "high"
 			score += 0.15
 		}
