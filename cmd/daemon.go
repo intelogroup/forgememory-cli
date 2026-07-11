@@ -123,21 +123,33 @@ func runDaemon(args []string) {
 	// Parent process monitor - exit when parent dies to avoid orphaned daemons.
 	// Only monitor if parent is not init (PID 1) - this means we were started
 	// by a specific process (like forge mcp) rather than as a system service.
+	//
+	// Grace period: require 3 consecutive "parent dead" checks (15 s total)
+	// before shutting down. This prevents a short-lived IDE restart or process
+	// respawn from killing the daemon mid-distillation-cycle (issue: flapping).
 	if parentPID > 1 && !skipParentMonitor {
 		go func() {
 			ticker := time.NewTicker(5 * time.Second)
 			defer ticker.Stop()
+			deadStrikes := 0
+			const maxDeadStrikes = 3
 			for {
 				select {
 				case <-stop:
 					return
 				case <-ticker.C:
 					if !isParentAlive(parentPID) {
-						log.Printf("Parent process (pid %d) gone, shutting down", parentPID)
+						deadStrikes++
+						if deadStrikes < maxDeadStrikes {
+							log.Printf("Parent process (pid %d) not responding (%d/%d), waiting before shutdown", parentPID, deadStrikes, maxDeadStrikes)
+							continue
+						}
+						log.Printf("Parent process (pid %d) gone for %d consecutive checks, shutting down", parentPID, deadStrikes)
 						requestStop()
 						_ = ln.Close()
 						return
 					}
+					deadStrikes = 0 // reset on any alive check
 				}
 			}
 		}()
@@ -280,156 +292,199 @@ func distillBackoff(consecutiveFailures int) time.Duration {
 
 const crossSessionMinSessions = 5
 
+// distillSessionBatch distills one batch of sessions and returns (processed, lastErr, hadWork).
+// Extracted so the loop can call it both on tick and in burst-drain mode.
+func distillSessionBatch(database *db.DB, interval time.Duration, lastCrossSessionRun *time.Time) (int, error, bool) {
+	const batchLimit = 20
+
+	// Check for completed sessions — avoids spinning on orphaned events.
+	sessions, sErr := database.UndistilledCompletedSessions(batchLimit)
+	if sErr != nil {
+		log.Printf("Distillation: failed to find completed sessions: %v", sErr)
+		return 0, sErr, false
+	}
+	if len(sessions) == 0 {
+		return 0, nil, false
+	}
+
+	// Apply exponential backoff after consecutive failures so we don't
+	// hammer a misconfigured provider every minute.
+	if h, hErr := database.GetDistillationHealth(); hErr == nil && h.ConsecutiveFailures > 0 {
+		backoff := distillBackoff(h.ConsecutiveFailures)
+		if backoff > 0 {
+			if last, parseErr := time.Parse(time.RFC3339, h.LastErrorAt); parseErr == nil && time.Since(last) < backoff {
+				return 0, nil, false
+			}
+		}
+	}
+
+	// Skip if a manual `forge distill` is already running.
+	lock, lockErr := acquireDistillLock()
+	if lockErr != nil {
+		log.Printf("Distillation skipped: could not acquire lock: %v", lockErr)
+		noteDistillSkip()
+		return 0, nil, false
+	}
+	if lock == nil {
+		log.Printf("Distillation skipped: manual distill already in progress")
+		noteDistillSkip()
+		return 0, nil, false
+	}
+
+	var lastErr error
+	for _, sessionID := range sessions {
+		proj := ""
+		checkpointKey := sessionID + ":daemon"
+
+		// Check if already processed (fast path)
+		exists, _ := database.HasSessionCheckpoint(checkpointKey)
+		if exists {
+			_ = database.MarkSessionDistilled(sessionID)
+			continue
+		}
+
+		startDistill := time.Now()
+
+		// Load session events
+		events, evErr := database.SessionEventsUpTo(sessionID, "", 0)
+		if evErr != nil {
+			log.Printf("Distillation: failed to fetch events for session %s: %v", sessionID, evErr)
+			lastErr = evErr
+			_ = database.RecordDistillationFailure(startDistill, time.Since(startDistill), 0, evErr.Error(), time.Now().Add(interval))
+			continue
+		}
+
+		if len(events) == 0 {
+			_ = database.MarkSessionDistilled(sessionID)
+			continue
+		}
+
+		for _, e := range events {
+			if e.ProjectID != "" {
+				proj = e.ProjectID
+				break
+			}
+		}
+
+		// Load config dynamically
+		loopCfg := distill.LoadConfig()
+
+		// Warn when provider/BaseURL look mismatched (e.g. openrouter key but
+		// OpenAI endpoint) — surface misconfiguration before the first 404.
+		warnProviderURLMismatch(loopCfg)
+
+		// Skip distillation if provider is unconfigured
+		if loopCfg.Provider == "" || loopCfg.APIKey == "" {
+			err := errors.New("no inference provider configured")
+			log.Printf("Distillation skipped: %v", err)
+			lastErr = err
+			_ = database.RecordDistillationFailure(startDistill, time.Since(startDistill), len(events), err.Error(), time.Now().Add(interval))
+			continue
+		}
+
+		loopD := distill.New(database, loopCfg)
+
+		summary, err := loopD.SynthesizeCheckpoint(sessionID, proj, "daemon", checkpointKey, events)
+		if err != nil {
+			log.Printf("Distillation: session %s SynthesizeCheckpoint failed: %v", sessionID, err)
+			lastErr = err
+			_ = database.RecordDistillationFailure(startDistill, time.Since(startDistill), len(events), err.Error(), time.Now().Add(interval))
+			continue
+		}
+
+		distilledPrinciples := 0
+		if summary != nil {
+			dpCount, dpErr := loopD.DistillCheckpointSummary(*summary, events)
+			if dpErr != nil {
+				log.Printf("Distillation: session %s DistillCheckpointSummary failed: %v", sessionID, dpErr)
+				lastErr = dpErr
+				_ = database.RecordDistillationFailure(startDistill, time.Since(startDistill), len(events), dpErr.Error(), time.Now().Add(interval))
+				continue
+			}
+			distilledPrinciples = dpCount
+		}
+
+		// Successfully distilled session!
+		_ = database.RecordDistillationSuccess(startDistill, time.Since(startDistill), len(events), distilledPrinciples, time.Now().Add(interval))
+		_ = database.MarkSessionDistilled(sessionID)
+	}
+
+	// Cross-session synthesis: run periodically (every 30 min).
+	crossSessionCount := 0
+	if time.Since(*lastCrossSessionRun) > 30*time.Minute {
+		projects, pErr := database.ProjectIDsWithEnoughSessions(crossSessionMinSessions)
+		if pErr == nil {
+			for _, proj := range projects {
+				loopCfg := distill.LoadConfig()
+				loopD := distill.New(database, loopCfg)
+				n, err := loopD.SynthesizeCrossSession(proj, crossSessionMinSessions)
+				if err != nil {
+					log.Printf("Cross-session synthesis for %s: %v", proj, err)
+				} else {
+					crossSessionCount += n
+				}
+			}
+		}
+		*lastCrossSessionRun = time.Now()
+	}
+
+	lock.Close()
+	cleanDistillLock()
+	noteDistillCycleRan()
+
+	if lastErr != nil {
+		log.Printf("Distillation error: %v", lastErr)
+	} else {
+		log.Printf("Distillation cycle complete: processed %d session(s)", len(sessions))
+	}
+	_ = crossSessionCount
+	return len(sessions), lastErr, len(sessions) >= batchLimit
+}
+
+// warnProviderURLMismatch logs a one-time warning when provider and BaseURL
+// look inconsistent (e.g. provider=openrouter but BaseURL points at api.openai.com).
+// This surfaces misconfiguration before the first failed LLM call.
+var providerURLWarnOnce sync.Once
+
+func warnProviderURLMismatch(cfg distill.Config) {
+	provider := string(cfg.Provider)
+	baseURL := cfg.BaseURL
+	if provider == "" || baseURL == "" {
+		return
+	}
+	type pair struct{ prov, mustContain string }
+	checks := []pair{
+		{"openrouter", "openrouter"},
+		{"anthropic", "anthropic"},
+		{"groq", "groq"},
+		{"nvidia", "nvidia"},
+	}
+	for _, c := range checks {
+		if provider == c.prov && !strings.Contains(baseURL, c.mustContain) {
+			providerURLWarnOnce.Do(func() {
+				log.Printf("WARNING: provider=%s but base_url=%q does not contain %q — possible misconfiguration; run `forge config --show`", provider, baseURL, c.mustContain)
+			})
+			return
+		}
+	}
+}
+
 func distillLoop(d *distill.Distiller, database *db.DB, interval time.Duration) {
 	pollInterval := 60 * time.Second
 	ticker := time.NewTicker(pollInterval)
 	defer ticker.Stop()
 
-	// Track when we last ran cross-session synthesis per project.
 	lastCrossSessionRun := time.Time{}
 
 	for range ticker.C {
-		// Check for completed sessions first — avoids spinning on orphaned
-		// events (unknown session ID) that can never be distilled.
-		sessions, sErr := database.UndistilledCompletedSessions(5)
-		if sErr != nil {
-			log.Printf("Distillation: failed to find completed sessions: %v", sErr)
-			continue
-		}
-		if len(sessions) == 0 {
-			continue
-		}
-
-		// Apply exponential backoff after consecutive failures so we don't
-		// hammer a misconfigured provider every minute. Without this, a stale
-		// API key produces thousands of consecutive failures before anyone
-		// notices.
-		if h, hErr := database.GetDistillationHealth(); hErr == nil && h.ConsecutiveFailures > 0 {
-			backoff := distillBackoff(h.ConsecutiveFailures)
-			if backoff > 0 {
-				if last, parseErr := time.Parse(time.RFC3339, h.LastErrorAt); parseErr == nil && time.Since(last) < backoff {
-					continue
-				}
+		for {
+			_, _, more := distillSessionBatch(database, interval, &lastCrossSessionRun)
+			if !more {
+				break
 			}
-		}
-
-		// Skip if a manual `forge distill` is already running.
-		lock, lockErr := acquireDistillLock()
-		if lockErr != nil {
-			log.Printf("Distillation skipped: could not acquire lock: %v", lockErr)
-			noteDistillSkip()
-			continue
-		}
-		if lock == nil {
-			log.Printf("Distillation skipped: manual distill already in progress")
-			noteDistillSkip()
-			continue
-		}
-
-		var lastErr error
-		for _, sessionID := range sessions {
-			proj := ""
-			checkpointKey := sessionID + ":daemon"
-
-			// Check if already processed (fast path)
-			exists, _ := database.HasSessionCheckpoint(checkpointKey)
-			if exists {
-				_ = database.MarkSessionDistilled(sessionID)
-				continue
-			}
-
-			startDistill := time.Now()
-
-			// Load session events
-			events, evErr := database.SessionEventsUpTo(sessionID, "", 0)
-			if evErr != nil {
-				log.Printf("Distillation: failed to fetch events for session %s: %v", sessionID, evErr)
-				lastErr = evErr
-				_ = database.RecordDistillationFailure(startDistill, time.Since(startDistill), 0, evErr.Error(), time.Now().Add(interval))
-				continue
-			}
-
-			if len(events) == 0 {
-				_ = database.MarkSessionDistilled(sessionID)
-				continue
-			}
-
-			for _, e := range events {
-				if e.ProjectID != "" {
-					proj = e.ProjectID
-					break
-				}
-			}
-
-			// Load config dynamically
-			loopCfg := distill.LoadConfig()
-
-			// Skip distillation if provider is unconfigured
-			if loopCfg.Provider == "" || loopCfg.APIKey == "" {
-				err := errors.New("no inference provider configured")
-				log.Printf("Distillation skipped: %v", err)
-				lastErr = err
-				_ = database.RecordDistillationFailure(startDistill, time.Since(startDistill), len(events), err.Error(), time.Now().Add(interval))
-				continue
-			}
-
-			loopD := distill.New(database, loopCfg)
-
-			summary, err := loopD.SynthesizeCheckpoint(sessionID, proj, "daemon", checkpointKey, events)
-			if err != nil {
-				log.Printf("Distillation: session %s SynthesizeCheckpoint failed: %v", sessionID, err)
-				lastErr = err
-				_ = database.RecordDistillationFailure(startDistill, time.Since(startDistill), len(events), err.Error(), time.Now().Add(interval))
-				continue
-			}
-
-			distilledPrinciples := 0
-			if summary != nil {
-				dpCount, dpErr := loopD.DistillCheckpointSummary(*summary, events)
-				if dpErr != nil {
-					log.Printf("Distillation: session %s DistillCheckpointSummary failed: %v", sessionID, dpErr)
-					lastErr = dpErr
-					_ = database.RecordDistillationFailure(startDistill, time.Since(startDistill), len(events), dpErr.Error(), time.Now().Add(interval))
-					continue
-				}
-				distilledPrinciples = dpCount
-			}
-
-			// Successfully distilled session!
-			_ = database.RecordDistillationSuccess(startDistill, time.Since(startDistill), len(events), distilledPrinciples, time.Now().Add(interval))
-			_ = database.MarkSessionDistilled(sessionID)
-		}
-
-		// Cross-session synthesis: run periodically (every 30 min) for projects
-		// with enough session summaries to find patterns.
-		crossSessionCount := 0
-		if time.Since(lastCrossSessionRun) > 30*time.Minute {
-			projects, pErr := database.ProjectIDsWithEnoughSessions(crossSessionMinSessions)
-			if pErr == nil {
-				for _, proj := range projects {
-					// Reload config dynamically for cross-session synthesis to prevent stale caching
-					loopCfg := distill.LoadConfig()
-					loopD := distill.New(database, loopCfg)
-					n, err := loopD.SynthesizeCrossSession(proj, crossSessionMinSessions)
-					if err != nil {
-						log.Printf("Cross-session synthesis for %s: %v", proj, err)
-					} else {
-						crossSessionCount += n
-					}
-				}
-			}
-			lastCrossSessionRun = time.Now()
-		}
-
-		lock.Close()
-		cleanDistillLock()
-		// We acquired the lock and attempted work — cycle ran, not wedged.
-		noteDistillCycleRan()
-
-		if lastErr != nil {
-			log.Printf("Distillation error: %v", lastErr)
-		} else {
-			log.Printf("Distillation cycle complete: processed %d session(s)", len(sessions))
+			// Brief pause between burst iterations to keep the goroutine
+			// cooperative and avoid hammering the DB under high backlog.
+			time.Sleep(500 * time.Millisecond)
 		}
 	}
 }
@@ -774,13 +829,6 @@ func acquirePIDLock(lockPath, alreadyRunningMessage string) (*os.File, error) {
 				_ = os.Remove(lockPath)
 				return nil, fmt.Errorf("write lock pid: %w", err)
 			}
-			lockFile.Close()
-
-			// Re-open for holding the lock.
-			lockFile, err = os.OpenFile(lockPath, os.O_WRONLY, 0o600)
-			if err != nil {
-				return nil, fmt.Errorf("reopen lock: %w", err)
-			}
 			return lockFile, nil
 		}
 		if os.IsExist(err) && isPIDLockStale(lockPath) {
@@ -797,7 +845,17 @@ func acquirePIDLock(lockPath, alreadyRunningMessage string) (*os.File, error) {
 
 func isPIDLockStale(lockPath string) bool {
 	pid := readLockPID(lockPath)
-	if pid <= 0 || !isProcessAlive(pid) {
+	if pid <= 0 {
+		// Distinguish two cases:
+		//   size=0, very recent → file created by O_EXCL but PID not yet written
+		//                         (the create→Fprintf window); not stale.
+		//   size>0, pid=0       → garbage/corrupted content → stale.
+		if info, err := os.Stat(lockPath); err == nil && info.Size() == 0 && time.Since(info.ModTime()) < time.Second {
+			return false
+		}
+		return true
+	}
+	if !isProcessAlive(pid) {
 		return true
 	}
 	_, _, foreign := lockOwnerIdentity(lockPath)
@@ -915,9 +973,9 @@ func acquireDistillLock() (*os.File, error) {
 // considered stale regardless of PID liveness. Protects against leaked
 // `forge distill` processes (e.g. ephemeral npx temp-path installs per
 // issue #29) whose PID may still appear alive while the owner is gone, and
-// against PID reuse by an unrelated process. 30 min is well above any
-// legitimate manual distill runtime; scheduled cycles fire every 10 min.
-const distillLockTTL = 30 * time.Minute
+// against PID reuse by an unrelated process. 10 min matches the default
+// distill interval; any legitimate manual distill completes well within that.
+const distillLockTTL = 10 * time.Minute
 
 // isDistillLockStale reports whether the distill lock is reclaimable.
 // Stale if: (a) lock age exceeds distillLockTTL, OR (b) PID is dead/garbage.

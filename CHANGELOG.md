@@ -1,5 +1,16 @@
 # Changelog
 
+## [0.6.3] - 2026-07-10
+
+### Fixed
+- Fixed distillation backlog bottleneck: increased session batch limit to 20 per cycle and added burst-draining to continually process pending sessions without waiting for the next ticker tick.
+- Mitigated daemon flapping by implementing a 3-strike parent PID monitor check, letting brief parent restarts or flaps occur without killing the daemon.
+- Prevented 30-min backoffs on provider URL/model configuration errors by mapping HTTP 404 to `ErrProviderUnreachable` instead of `ErrProviderInvalid`.
+- Improved error messages for OpenAI-compatible client calls by dynamically logging the correct provider name (e.g. OpenRouter) instead of hardcoding "OpenAI".
+- Added one-time mismatch warnings when a provider (e.g. `openrouter`) is configured but its base URL is missing the provider's domain.
+- Reduced `distillLockTTL` to 10 minutes to auto-heal stale lock states faster.
+- Fixed startup lock races by returning the open lock file descriptor directly and adding a size/age guard to `isPIDLockStale`.
+
 ## [0.6.2] - 2026-07-02
 
 ### Changed

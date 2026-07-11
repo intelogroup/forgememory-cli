@@ -1241,14 +1241,37 @@ func (d *Distiller) callOpenAI(prompt string) (string, error) {
 	}
 	defer resp.Body.Close()
 
+	providerName := string(d.config.Provider)
+	if providerName == "" {
+		providerName = "openai"
+	}
+	displayProvider := providerName
+	switch providerName {
+	case "openai":
+		displayProvider = "OpenAI"
+	case "openrouter":
+		displayProvider = "OpenRouter"
+	case "anthropic":
+		displayProvider = "Anthropic"
+	case "groq":
+		displayProvider = "Groq"
+	case "nvidia":
+		displayProvider = "NVIDIA"
+	case "forgememo":
+		displayProvider = "Forgememo"
+	}
+
 	if resp.StatusCode == 401 {
-		return "", fmt.Errorf("%w: Invalid OpenAI API key", ErrProviderInvalid)
+		return "", fmt.Errorf("%w: Invalid %s API key", ErrProviderInvalid, displayProvider)
 	}
 	if resp.StatusCode == 403 {
-		return "", fmt.Errorf("%w: OpenAI access forbidden", ErrProviderInvalid)
+		return "", fmt.Errorf("%w: %s access forbidden", ErrProviderInvalid, displayProvider)
+	}
+	if resp.StatusCode == 404 {
+		return "", fmt.Errorf("%w: %s returned status 404 (model not found or endpoint invalid)", ErrProviderUnreachable, displayProvider)
 	}
 	if resp.StatusCode >= 400 {
-		return "", fmt.Errorf("%w: OpenAI returned status %d", ErrProviderInvalid, resp.StatusCode)
+		return "", fmt.Errorf("%w: %s returned status %d", ErrProviderInvalid, displayProvider, resp.StatusCode)
 	}
 
 	data, _ := io.ReadAll(resp.Body)
@@ -1271,7 +1294,7 @@ func (d *Distiller) callOpenAI(prompt string) (string, error) {
 	if len(result.Choices) > 0 {
 		return result.Choices[0].Message.Content, nil
 	}
-	return "", fmt.Errorf("no response from OpenAI")
+	return "", fmt.Errorf("no response from %s", displayProvider)
 }
 
 func (d *Distiller) callGroq(prompt string) (string, error) {
