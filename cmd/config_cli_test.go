@@ -3,6 +3,7 @@ package main
 import (
 	"encoding/json"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -63,3 +64,38 @@ func TestRunConfig_Antigravity(t *testing.T) {
 		t.Fatalf("model = %q, want flash default", cfg.Model)
 	}
 }
+
+func TestRunConfig_DistillBatchSize(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+
+	runConfig([]string{"--provider", "anthropic", "--api-key", "sk-ant-test", "--distill-batch-size", "500", "--no-validate"})
+
+	cfg, err := config.Load()
+	if err != nil {
+		t.Fatalf("config.Load: %v", err)
+	}
+	if cfg.DistillBatchSize != 500 {
+		t.Fatalf("DistillBatchSize = %d, want 500", cfg.DistillBatchSize)
+	}
+}
+
+func TestRunConfig_DistillBatchSizeBelowMinimum(t *testing.T) {
+	if os.Getenv("FORGE_TEST_SUBPROCESS") == "1" {
+		home := t.TempDir()
+		t.Setenv("HOME", home)
+		runConfig([]string{"--provider", "anthropic", "--api-key", "sk-ant-test", "--distill-batch-size", "150", "--no-validate"})
+		return
+	}
+
+	cmd := exec.Command(os.Args[0], "-test.run", "TestRunConfig_DistillBatchSizeBelowMinimum")
+	cmd.Env = append(os.Environ(), "FORGE_TEST_SUBPROCESS=1")
+	out, err := cmd.CombinedOutput()
+	if err == nil {
+		t.Fatalf("expected non-zero exit for --distill-batch-size below 300, got success: %s", out)
+	}
+	if !strings.Contains(string(out), "must be 0 (default) or >= 300") {
+		t.Fatalf("unexpected error output: %s", out)
+	}
+}
+

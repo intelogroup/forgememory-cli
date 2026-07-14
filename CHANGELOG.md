@@ -1,5 +1,11 @@
 # Changelog
 
+## [0.6.4] - 2026-07-14
+
+### Changed
+- Context is now injected only once, on the first prompt of a session, instead of on every `UserPromptSubmit` — background prompt retrieval still runs so distillation keeps working, but repeated-failure/docs-hint/prompt-match text no longer gets re-injected on later messages.
+- Enforced a 300-event minimum for `distill_batch_size`: `forge config --distill-batch-size` and `forge distill --batch-size` now reject values between 1-299 (0 still means "use default"), and the loaded config floor-clamps any stored/env value below 300 up to 300.
+
 ## [0.6.3] - 2026-07-10
 
 ### Fixed

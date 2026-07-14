@@ -3,6 +3,7 @@ package main
 import (
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -304,3 +305,46 @@ func TestRunDistill_BlockedMessageSuggestsWait(t *testing.T) {
 		t.Errorf("blocked message should suggest --wait, got %q", out)
 	}
 }
+
+func TestRunDistill_BatchSizeFlag(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	seedEvents(t, 20)
+
+	srv, llmCalls := distillServer(t, "Batch size flag principle")
+	t.Setenv("FORGE_PROVIDER", "ollama")
+	t.Setenv("FORGE_BASE_URL", srv.URL)
+	t.Setenv("FORGE_API_KEY", "")
+	t.Setenv("FORGE_MODEL", "")
+
+	// --batch-size only caps the batch; with fewer events available than the
+	// (>=300) minimum, distill still runs against whatever is undistilled.
+	out := captureStdout(func() { runDistill([]string{"--batch-size", "300"}) })
+
+	if llmCalls.Load() == 0 {
+		t.Error("expected at least one LLM call")
+	}
+	if !strings.Contains(out, "Distilling 20 events") {
+		t.Errorf("expected 20 events distilled, got output: %q", out)
+	}
+}
+
+func TestRunDistill_BatchSizeFlagBelowMinimum(t *testing.T) {
+	if os.Getenv("FORGE_TEST_SUBPROCESS") == "1" {
+		home := t.TempDir()
+		os.Setenv("HOME", home)
+		runDistill([]string{"--batch-size", "5"})
+		return
+	}
+
+	cmd := exec.Command(os.Args[0], "-test.run", "TestRunDistill_BatchSizeFlagBelowMinimum")
+	cmd.Env = append(os.Environ(), "FORGE_TEST_SUBPROCESS=1")
+	out, err := cmd.CombinedOutput()
+	if err == nil {
+		t.Fatalf("expected non-zero exit for --batch-size below 300, got success: %s", out)
+	}
+	if !strings.Contains(string(out), "must be 0 (use config default) or >= 300") {
+		t.Fatalf("unexpected error output: %s", out)
+	}
+}
+

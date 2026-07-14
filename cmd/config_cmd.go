@@ -27,6 +27,7 @@ func runConfig(args []string) {
 	intervalFlag := fs.String("interval", "", "Distillation interval (e.g. 10m)")
 	ollamaTimeoutFlag := fs.String("ollama-timeout", "", "Ollama request timeout (e.g. 120s); overrides --timeout for Ollama")
 	ollamaStartupWaitFlag := fs.String("ollama-startup-wait", "", "Grace period before first Ollama distill (e.g. 15s)")
+	distillBatchSizeFlag := fs.Int("distill-batch-size", 0, "Number of events to distill per batch (e.g. 300)")
 	jsonFlag := fs.Bool("json", false, "Machine-readable JSON output")
 	validateFlag := fs.Bool("validate", false, "Validate provider credentials/model access (now default; kept for compatibility)")
 	noValidateFlag := fs.Bool("no-validate", false, "Skip credential validation after saving (offline scripts)")
@@ -47,15 +48,16 @@ func runConfig(args []string) {
 		}
 		if *jsonFlag {
 			out := map[string]any{
-				"schema_version": "1",
-				"provider":       cfg.Provider,
-				"api_key_set":    cfg.APIKey != "",
-				"api_key_masked": maskKey(cfg.APIKey),
-				"model":          cfg.Model,
-				"base_url":       cfg.BaseURL,
-				"timeout":        cfg.Timeout,
-				"retries":        cfg.Retries,
-				"interval":       cfg.DistillInterval,
+				"schema_version":     "1",
+				"provider":           cfg.Provider,
+				"api_key_set":        cfg.APIKey != "",
+				"api_key_masked":     maskKey(cfg.APIKey),
+				"model":              cfg.Model,
+				"base_url":           cfg.BaseURL,
+				"timeout":            cfg.Timeout,
+				"retries":            cfg.Retries,
+				"interval":           cfg.DistillInterval,
+				"distill_batch_size": cfg.DistillBatchSize,
 			}
 			b, _ := json.MarshalIndent(out, "", "  ")
 			fmt.Println(string(b))
@@ -86,6 +88,9 @@ func runConfig(args []string) {
 		if cfg.OllamaStartupWait != "" {
 			fmt.Printf("Ollama startup wait:  %s\n", cfg.OllamaStartupWait)
 		}
+		if cfg.DistillBatchSize > 0 {
+			fmt.Printf("Distill batch size:   %d\n", cfg.DistillBatchSize)
+		}
 		return
 	}
 
@@ -109,6 +114,7 @@ func runConfig(args []string) {
 		fmt.Println("  --interval             Distillation interval (e.g. 10m)")
 		fmt.Println("  --ollama-timeout       Ollama request timeout (e.g. 120s); overrides --timeout for Ollama")
 		fmt.Println("  --ollama-startup-wait  Grace period before first Ollama distill (e.g. 15s)")
+		fmt.Println("  --distill-batch-size   Number of events to distill per batch (e.g. 300)")
 		fmt.Println("  --validate       Force credential validation (default when --provider/--api-key/--model/--base-url changes)")
 		fmt.Println("  --no-validate    Skip credential validation (for offline scripts)")
 		fmt.Println("  --json           JSON output (with --show)")
@@ -171,6 +177,10 @@ func runConfig(args []string) {
 			os.Exit(1)
 		}
 	}
+	if *distillBatchSizeFlag < 0 || (*distillBatchSizeFlag > 0 && *distillBatchSizeFlag < 300) {
+		fmt.Fprintln(os.Stderr, "Error: --distill-batch-size must be 0 (default) or >= 300")
+		os.Exit(1)
+	}
 	if *retriesFlag < -1 {
 		fmt.Fprintln(os.Stderr, "Error: --retries must be >= 0")
 		os.Exit(1)
@@ -220,6 +230,9 @@ func runConfig(args []string) {
 	}
 	if *ollamaStartupWaitFlag != "" {
 		cfg.OllamaStartupWait = *ollamaStartupWaitFlag
+	}
+	if *distillBatchSizeFlag > 0 {
+		cfg.DistillBatchSize = *distillBatchSizeFlag
 	}
 	if cfg.Retries == 0 {
 		cfg.Retries = 3
@@ -277,6 +290,9 @@ func runConfig(args []string) {
 		fmt.Printf("Timeout: %s\n", cfg.Timeout)
 	}
 	fmt.Printf("Retries: %d\n", cfg.Retries)
+	if cfg.DistillBatchSize > 0 {
+		fmt.Printf("Distill Batch Size: %d\n", cfg.DistillBatchSize)
+	}
 	fmt.Println("\nTo apply, either:")
 	fmt.Println("  1. Run: export $(cat ~/.forge/config | xargs)  # in your shell")
 	fmt.Println("  2. Or add to your shell profile (~/.zshrc, ~/.bashrc)")

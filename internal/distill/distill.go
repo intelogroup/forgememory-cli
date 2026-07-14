@@ -119,6 +119,7 @@ type Config struct {
 	DistillInterval   time.Duration
 	OllamaTimeout     time.Duration
 	OllamaStartupWait time.Duration
+	DistillBatchSize  int
 }
 
 // LoadConfig loads distillation config from environment.
@@ -191,6 +192,16 @@ func LoadConfig() Config {
 		ollamaStartupWait = parseDurationOrDefault(env, ollamaStartupWait)
 	}
 
+	distillBatchSize := 300
+	if fileLoaded && fileCfg.DistillBatchSize > 0 {
+		distillBatchSize = fileCfg.DistillBatchSize
+	} else if env := os.Getenv("FORGE_DISTILL_BATCH_SIZE"); env != "" {
+		distillBatchSize = parseIntOrDefault(env, distillBatchSize)
+	}
+	if distillBatchSize < 300 {
+		distillBatchSize = 300
+	}
+
 	cfg := Config{
 		Provider:          Provider(provider),
 		APIKey:            apiKey,
@@ -202,6 +213,7 @@ func LoadConfig() Config {
 		DistillInterval:   distillInterval,
 		OllamaTimeout:     ollamaTimeout,
 		OllamaStartupWait: ollamaStartupWait,
+		DistillBatchSize:  distillBatchSize,
 	}
 
 	if cfg.BaseURL == "" {

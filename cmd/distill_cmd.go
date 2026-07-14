@@ -15,9 +15,14 @@ import (
 
 func runDistill(args []string) {
 	fs := flag.NewFlagSet("distill", flag.ContinueOnError)
-	allFlag := fs.Bool("all", false, "Drain entire undistilled backlog in 50-event batches")
+	allFlag := fs.Bool("all", false, "Drain entire undistilled backlog in batches")
 	waitFlag := fs.Bool("wait", false, "Wait for lock if another distill is running, then run")
+	batchSizeFlag := fs.Int("batch-size", 0, "Number of events to distill per batch, must be >= 300 (overrides config)")
 	if err := fs.Parse(args); err != nil {
+		os.Exit(1)
+	}
+	if *batchSizeFlag > 0 && *batchSizeFlag < 300 {
+		fmt.Fprintln(os.Stderr, "Error: --batch-size must be 0 (use config default) or >= 300")
 		os.Exit(1)
 	}
 
@@ -61,12 +66,19 @@ func runDistill(args []string) {
 	cfg := distill.LoadConfig()
 	d := distill.New(database, cfg)
 
+	limit := 300
+	if *batchSizeFlag > 0 {
+		limit = *batchSizeFlag
+	} else if cfg.DistillBatchSize > 0 {
+		limit = cfg.DistillBatchSize
+	}
+
 	if *allFlag {
-		runDistillDrain(d, database, cfg)
+		runDistillDrain(d, database, cfg, limit)
 		return
 	}
 
-	events, err := database.UndistilledEvents(300)
+	events, err := database.UndistilledEvents(limit)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 		os.Exit(1)
@@ -79,7 +91,7 @@ func runDistill(args []string) {
 
 	fmt.Printf("Distilling %d events...\n", len(events))
 	start := time.Now()
-	count, err := d.DistillBatch(300)
+	count, err := d.DistillBatch(limit)
 	recordHealthResult(database, cfg, start, len(events), count, err)
 	if err != nil {
 		if shouldSkipDistillForMissingProvider(cfg, err) {
@@ -112,7 +124,7 @@ func recordHealthResult(database *db.DB, cfg distill.Config, start time.Time, at
 	}
 }
 
-func runDistillDrain(d *distill.Distiller, database *db.DB, cfg distill.Config) {
+func runDistillDrain(d *distill.Distiller, database *db.DB, cfg distill.Config, limit int) {
 	totalPrinciples := 0
 	stalledOnce := false
 	stalled := false
@@ -124,7 +136,7 @@ func runDistillDrain(d *distill.Distiller, database *db.DB, cfg distill.Config) 
 		start := time.Now()
 		// Drain includes session_id='unknown' orphans so the backlog flushes
 		// instead of silently stalling behind them forever (#34).
-		count, err := d.DistillBatchIncludingUnknown(300)
+		count, err := d.DistillBatchIncludingUnknown(limit)
 		recordHealthResult(database, cfg, start, remaining, count, err)
 		if err != nil {
 			if shouldSkipDistillForMissingProvider(cfg, err) {

@@ -21,6 +21,7 @@ type Config struct {
 	DistillInterval    string
 	OllamaTimeout      string
 	OllamaStartupWait  string
+	DistillBatchSize   int
 }
 
 func Path() string {
@@ -96,6 +97,8 @@ func parseConfigData(data []byte, cfg *Config) {
 			cfg.OllamaTimeout = value
 		case "FORGE_OLLAMA_STARTUP_WAIT":
 			cfg.OllamaStartupWait = value
+		case "FORGE_DISTILL_BATCH_SIZE":
+			fmt.Sscanf(value, "%d", &cfg.DistillBatchSize)
 		}
 	}
 }
@@ -159,6 +162,9 @@ func Save(cfg Config) error {
 	if cfg.OllamaStartupWait != "" {
 		lines = append(lines, fmt.Sprintf("FORGE_OLLAMA_STARTUP_WAIT=%s", cfg.OllamaStartupWait))
 	}
+	if cfg.DistillBatchSize > 0 {
+		lines = append(lines, fmt.Sprintf("FORGE_DISTILL_BATCH_SIZE=%d", cfg.DistillBatchSize))
+	}
 
 	return os.WriteFile(path, []byte(strings.Join(lines, "\n")+"\n"), 0o600)
 }
@@ -204,6 +210,9 @@ func SetEnvFromFile() error {
 	}
 	if cfg.OllamaStartupWait != "" {
 		os.Setenv("FORGE_OLLAMA_STARTUP_WAIT", cfg.OllamaStartupWait)
+	}
+	if cfg.DistillBatchSize > 0 {
+		os.Setenv("FORGE_DISTILL_BATCH_SIZE", fmt.Sprintf("%d", cfg.DistillBatchSize))
 	}
 	return nil
 }

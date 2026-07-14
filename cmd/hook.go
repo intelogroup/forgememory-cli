@@ -263,6 +263,13 @@ func handleSessionRecall(projectID, payload string) {
 
 	promptText := extractPromptText(payload)
 	_ = retrieve.EnqueuePromptRetrieval(database, projectID, promptText)
+
+	// Context is only injected once, on the first prompt of a session — not on
+	// every message — so background retrieval still runs but nothing is printed.
+	if !isFirst {
+		return
+	}
+
 	principles, summaries, alerts, externalSummaries, promptMatch, distillError := loadSessionRecallContext(database, projectID, promptText)
 	if shouldWaitForOfficialHint(alerts, externalSummaries) && hasPendingFailureRetrieval(database, projectID) {
 		waitForOfficialHint(database, projectID)
@@ -271,15 +278,8 @@ func handleSessionRecall(projectID, payload string) {
 
 	// On session start, promote the last session summary to full detail.
 	var lastSession *db.SessionSummary
-	if isFirst && projectID != "" {
+	if projectID != "" {
 		lastSession = loadLastProjectSession(database, projectID, sessionID)
-	}
-
-	// For subsequent prompts, suppress generic/unmatched recent lessons and active principles
-	// to avoid repetitive, unrelated context injection.
-	if !isFirst {
-		principles = nil
-		summaries = nil
 	}
 
 	text := buildSessionRecallOutput(projectID, summaries, principles, alerts, externalSummaries, promptMatch, lastSession, distillError)
