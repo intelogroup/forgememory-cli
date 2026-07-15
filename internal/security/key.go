@@ -1,0 +1,189 @@
+// Package security manages the HMAC key used to sign and verify principles
+// stored in ~/.forge/forge.db. The key is stored in the OS keychain
+// (Keychain on macOS, Credential Manager on Windows, Secret Service on
+// Linux) when available. A local attacker with filesystem write access to
+// forge.db cannot also read the OS keychain without separate authorization,
+// so this is the precondition that makes HMAC signing meaningful — a key
+// stored next to the data it protects gives no security at all.
+package security
+
+import (
+	"crypto/hmac"
+	"crypto/rand"
+	"crypto/sha256"
+	"encoding/hex"
+	"fmt"
+	"os"
+	"path/filepath"
+	"time"
+
+	"github.com/zalando/go-keyring"
+)
+
+// keychainTimeout bounds how long we wait on the OS keychain before falling
+// back to the file-based key. An unsigned/new binary can trigger an
+// interactive "Allow access?" prompt on macOS; a blocked daemon event loop
+// is worse than a session running temporarily unsigned.
+const keychainTimeout = 500 * time.Millisecond
+
+// keyringService/keyringUser identify the real keychain entry and are vars
+// (not consts) only so tests can point RotateKey at a throwaway entry via
+// UseIsolatedKeyForTests — RotateKey overwrites whatever entry these name,
+// and doing that against the real "forge-cli" entry from a test would wipe
+// the signing key of every principle already stored in the user's real
+// ~/.forge/forge.db.
+var (
+	keyringService = "forge-cli"
+	keyringUser    = "forge-hmac-key"
+)
+
+const keyFileName = "forge.key"
+
+// GetOrCreateKey returns the HMAC signing key, creating one on first use.
+// It tries the OS keychain first; if unavailable (headless Linux with no
+// Secret Service, etc.) it falls back to a chmod-600 file under ~/.forge
+// and reports that fallback via usedFallback so callers can warn the user.
+func GetOrCreateKey() (key []byte, usedFallback bool, err error) {
+	if secret, ok := keyringGetWithTimeout(); ok {
+		decoded, decErr := hex.DecodeString(secret)
+		if decErr == nil && len(decoded) == 32 {
+			return decoded, false, nil
+		}
+		// Corrupt entry — regenerate below.
+	}
+
+	newKey := make([]byte, 32)
+	if _, err := rand.Read(newKey); err != nil {
+		return nil, false, fmt.Errorf("generate key: %w", err)
+	}
+
+	if keyringSetWithTimeout(hex.EncodeToString(newKey)) {
+		return newKey, false, nil
+	}
+
+	// Keychain unavailable or too slow to respond (e.g. blocked on an
+	// interactive access prompt) — fall back to a file, but reuse an existing one
+	// instead of overwriting it (would invalidate every prior signature).
+	path, err := keyFilePath()
+	if err != nil {
+		return nil, false, err
+	}
+	if data, err := os.ReadFile(path); err == nil && len(data) == 32 {
+		return data, true, nil
+	}
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		return nil, false, fmt.Errorf("create key dir: %w", err)
+	}
+	if err := os.WriteFile(path, newKey, 0o600); err != nil {
+		return nil, false, fmt.Errorf("write key file: %w", err)
+	}
+	return newKey, true, nil
+}
+
+// keyringGetWithTimeout wraps keyring.Get with a hard deadline. go-keyring's
+// underlying OS calls take no context/cancellation, so a slow or prompting
+// backend is abandoned rather than awaited — the goroutine may leak until
+// the OS call returns, but that's a one-time cost bounded by sync.Once.
+func keyringGetWithTimeout() (string, bool) {
+	type result struct {
+		val string
+		ok  bool
+	}
+	ch := make(chan result, 1)
+	go func() {
+		secret, err := keyring.Get(keyringService, keyringUser)
+		ch <- result{secret, err == nil}
+	}()
+	select {
+	case r := <-ch:
+		return r.val, r.ok
+	case <-time.After(keychainTimeout):
+		return "", false
+	}
+}
+
+func keyringSetWithTimeout(secret string) bool {
+	ch := make(chan bool, 1)
+	go func() {
+		ch <- keyring.Set(keyringService, keyringUser, secret) == nil
+	}()
+	select {
+	case ok := <-ch:
+		return ok
+	case <-time.After(keychainTimeout):
+		return false
+	}
+}
+
+// RotateKey generates a fresh 32-byte key, overwrites the stored key
+// (keychain if available, else the fallback file) unconditionally, and
+// returns it so the caller can re-sign existing data before the old key is
+// gone for good. Unlike GetOrCreateKey this never reuses an existing key.
+func RotateKey() ([]byte, error) {
+	newKey := make([]byte, 32)
+	if _, err := rand.Read(newKey); err != nil {
+		return nil, fmt.Errorf("generate key: %w", err)
+	}
+
+	storedInKeychain := keyringSetWithTimeout(hex.EncodeToString(newKey))
+
+	path, err := keyFilePath()
+	if err != nil {
+		return nil, err
+	}
+	// Always refresh the fallback file too when it exists, so a keychain
+	// that becomes unavailable later doesn't resurrect the pre-rotation key.
+	if _, statErr := os.Stat(path); statErr == nil || !storedInKeychain {
+		if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+			return nil, fmt.Errorf("create key dir: %w", err)
+		}
+		if err := os.WriteFile(path, newKey, 0o600); err != nil {
+			return nil, fmt.Errorf("write key file: %w", err)
+		}
+	}
+
+	return newKey, nil
+}
+
+// testHomeOverride redirects the file-fallback path during tests; see
+// UseIsolatedKeyForTests. Empty in production.
+var testHomeOverride string
+
+func keyFilePath() (string, error) {
+	if testHomeOverride != "" {
+		return filepath.Join(testHomeOverride, ".forge", keyFileName), nil
+	}
+	home := os.Getenv("HOME")
+	if home == "" {
+		var err error
+		home, err = os.UserHomeDir()
+		if err != nil {
+			return "", err
+		}
+	}
+	return filepath.Join(home, ".forge", keyFileName), nil
+}
+
+// Sign computes HMAC-SHA256(data, key) and returns it hex-encoded.
+func Sign(key []byte, data string) string {
+	mac := hmac.New(sha256.New, key)
+	mac.Write([]byte(data))
+	return hex.EncodeToString(mac.Sum(nil))
+}
+
+// Verify reports whether sig is the valid HMAC-SHA256 of data under key.
+// Uses constant-time comparison to avoid timing side channels.
+func Verify(key []byte, data, sig string) bool {
+	if sig == "" {
+		return false
+	}
+	expected, err := hex.DecodeString(Sign(key, data))
+	if err != nil {
+		return false
+	}
+	got, err := hex.DecodeString(sig)
+	if err != nil || len(got) != len(expected) {
+		return false
+	}
+	return hmac.Equal(expected, got)
+}

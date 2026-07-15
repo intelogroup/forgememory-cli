@@ -261,6 +261,7 @@ func (d *DB) migrate() error {
 		{"principles", "impl_hint", "TEXT NOT NULL DEFAULT ''"},
 		{"principles", "last_used_ts", "TEXT DEFAULT ''"},
 		{"principles", "use_count", "INTEGER DEFAULT 0"},
+		{"principles", "signature", "TEXT DEFAULT ''"},
 	}
 	extraMigrations := []string{
 		`CREATE TABLE IF NOT EXISTS cross_session_patterns (

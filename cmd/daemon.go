@@ -81,6 +81,11 @@ func runDaemon(args []string) {
 	}
 	defer database.Close()
 
+	// Pre-fetch the signing/encryption key before the daemon signals it's
+	// ready (writeAddr below) — see WarmSigningKey's doc comment for why
+	// this can't just happen lazily on the first event.
+	db.WarmSigningKey()
+
 	// Get the parent PID before we daemonize (if started via forge start/mcp)
 	// The daemon should exit when its parent dies to avoid orphaned processes.
 	// Skip parent monitoring if FORGE_NO_EXIT_ON_PARENT_EXIT is set - this is

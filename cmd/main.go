@@ -41,6 +41,8 @@ func main() {
 		runDistill(os.Args[2:])
 	case "memory":
 		runMemory(os.Args[2:])
+	case "harden":
+		runHarden(os.Args[2:])
 	case "search":
 		runSearch(os.Args[2:])
 	case "save":
@@ -99,6 +101,7 @@ func printUsage() {
    scan          Mine recent git history for learnings (--dry-run)
    distill       Run distillation manually (--all drains backlog, --wait queues behind running distill)
    memory        Manage distilled principles (list, delete, rate, thumbs-up/down)
+   harden        Key lifecycle: rotate-key, revoke <id>
    search <q>    Full-text search on event payloads
    mcp           Start MCP server (stdio transport, for Claude Code)
    ui            Start memory dashboard web UI (http://localhost:5555)
