@@ -381,7 +381,7 @@ func (s *Server) handleToolsList(req Request) *Response {
 		},
 		{
 			Name:        "reconfigure_provider",
-			Description: "Instructs the user to run 'forge config --interactive' in their terminal to reconfigure the inference provider after upstream failure (e.g. 401, connection refused, or credit exhaustion).",
+			Description: "Instructs the user to run 'forge config --interactive' in their terminal to reconfigure the inference provider after upstream failure (e.g. 401 or connection refused).",
 			InputSchema: map[string]any{
 				"type": "object",
 				"properties": map[string]any{

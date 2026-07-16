@@ -32,14 +32,14 @@ func TestLoadConfigDefaults(t *testing.T) {
 	t.Setenv("FORGE_OLLAMA_STARTUP_WAIT", "")
 
 	cfg := LoadConfig()
-	if cfg.Provider != ProviderForgememo {
-		t.Errorf("default provider = %s, want %s", cfg.Provider, ProviderForgememo)
+	if cfg.Provider != ProviderOllama {
+		t.Errorf("default provider = %s, want %s", cfg.Provider, ProviderOllama)
 	}
-	if cfg.Model != "claude-haiku-4-5-20251001" {
-		t.Errorf("default model = %s, want claude-haiku-4-5-20251001", cfg.Model)
+	if cfg.Model != "llama3:latest" {
+		t.Errorf("default model = %s, want llama3:latest", cfg.Model)
 	}
-	if cfg.BaseURL == "" {
-		t.Errorf("default base URL should be set")
+	if cfg.BaseURL != "http://localhost:11434" {
+		t.Errorf("default base URL = %s, want http://localhost:11434", cfg.BaseURL)
 	}
 	if cfg.Timeout != 30*time.Second {
 		t.Errorf("default timeout = %s, want 30s", cfg.Timeout)

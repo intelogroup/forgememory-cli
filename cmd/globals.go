@@ -45,3 +45,10 @@ func truncate(s string, max int) string {
 	}
 	return s[:max] + "..."
 }
+
+func prefix(s string, n int) string {
+	if len(s) > n {
+		return s[:n]
+	}
+	return s
+}

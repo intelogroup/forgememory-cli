@@ -197,14 +197,11 @@ func shouldSkipDistillForMissingProvider(cfg distill.Config, err error) bool {
 		return false
 	}
 	if cfg.Provider != distill.ProviderOllama {
-		if cfg.Provider != distill.ProviderForgememo {
-			return false
-		}
+		return false
 	}
 	errText := strings.ToLower(err.Error())
 	return errors.Is(err, distill.ErrNoProvider) ||
 		errors.Is(err, distill.ErrProviderUnreachable) ||
-		(cfg.Provider == distill.ProviderForgememo && cfg.APIKey == "" && errors.Is(err, distill.ErrProviderInvalid)) ||
 		strings.Contains(errText, "connection refused") ||
 		strings.Contains(errText, "actively refused")
 }

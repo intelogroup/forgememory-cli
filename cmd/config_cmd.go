@@ -17,7 +17,7 @@ import (
 func runConfig(args []string) {
 	fs := flag.NewFlagSet("config", flag.ContinueOnError)
 	showFlag := fs.Bool("show", false, "Show current config")
-	providerFlag := fs.String("provider", "", "Provider: forgememo/anthropic/openai/groq/nvidia/ollama/antigravity")
+	providerFlag := fs.String("provider", "", "Provider: anthropic/openai/groq/nvidia/ollama/antigravity")
 	apiKeyFlag := fs.String("api-key", "", "API key for provider")
 	modelFlag := fs.String("model", "", "Model name (optional, defaults vary by provider)")
 	baseURLFlag := fs.String("base-url", "", "Base URL for API (optional)")
@@ -43,7 +43,7 @@ func runConfig(args []string) {
 			os.Exit(1)
 		}
 		if cfg.Provider == "" {
-			fmt.Println("No config set. Run 'forge config --provider forgememo' or configure another provider.")
+			fmt.Println("No config set. Run 'forge config --provider openai --api-key sk-...' or configure another provider.")
 			return
 		}
 		if *jsonFlag {
@@ -104,7 +104,7 @@ func runConfig(args []string) {
 		fmt.Println("")
 		fmt.Println("Options:")
 		fmt.Println("  --show           Show current configuration")
-		fmt.Println("  --provider       Provider: forgememo, anthropic, openai, groq, nvidia, ollama, codex, antigravity")
+		fmt.Println("  --provider       Provider: anthropic, openai, groq, nvidia, ollama, codex, antigravity")
 		fmt.Println("  --api-key        API key for the provider")
 		fmt.Println("  --model          Model name (optional)")
 		fmt.Println("  --base-url       Base URL for API (optional)")
@@ -121,7 +121,6 @@ func runConfig(args []string) {
 		fmt.Println("  --interactive    Interactive setup")
 		fmt.Println("")
 		fmt.Println("Defaults by provider:")
-		fmt.Println("  forgememo: claude-haiku-4-5-20251001")
 		fmt.Println("  anthropic: claude-haiku-4-5-20251001")
 		fmt.Println("  openai:    gpt-4o")
 		fmt.Println("  groq:      llama-3.3-70b-versatile (uses GROQ_API_KEY env or --api-key)")
@@ -130,7 +129,6 @@ func runConfig(args []string) {
 		fmt.Println("")
 		fmt.Println("Examples:")
 		fmt.Println("  forge config --show")
-		fmt.Println("  forge config --provider forgememo")
 		fmt.Println("  forge config --provider openai --api-key sk-...")
 		fmt.Println("  forge config --provider nvidia --api-key nvapi-...")
 		fmt.Println("  forge config --provider anthropic --api-key sk-ant-...")
@@ -141,13 +139,10 @@ func runConfig(args []string) {
 		os.Exit(0)
 	}
 
-	validProviders := map[string]bool{"forgememo": true, "forge": true, "anthropic": true, "openai": true, "ollama": true, "groq": true, "nvidia": true, "codex": true, "antigravity": true, "gemini": true, "openrouter": true}
+	validProviders := map[string]bool{"anthropic": true, "openai": true, "ollama": true, "groq": true, "nvidia": true, "codex": true, "antigravity": true, "gemini": true, "openrouter": true}
 	if !validProviders[*providerFlag] {
-		fmt.Fprintf(os.Stderr, "Error: provider must be one of: forgememo, anthropic, openai, groq, nvidia, ollama, codex, antigravity, gemini, openrouter\n")
+		fmt.Fprintf(os.Stderr, "Error: provider must be one of: anthropic, openai, groq, nvidia, ollama, codex, antigravity, gemini, openrouter\n")
 		os.Exit(1)
-	}
-	if *providerFlag == "forge" {
-		*providerFlag = "forgememo"
 	}
 	if *providerFlag == "gemini" {
 		*providerFlag = "antigravity"
@@ -309,7 +304,7 @@ func runConfigInteractive(providerFlag, apiKeyFlag, modelFlag, timeoutFlag *stri
 	}
 
 	if *providerFlag == "" {
-		*providerFlag = promptChoice(reader, "Select provider", []string{"forgememo", "anthropic", "openai", "groq", "nvidia", "ollama"}, "forgememo")
+		*providerFlag = promptChoice(reader, "Select provider", []string{"anthropic", "openai", "groq", "nvidia", "ollama"}, "ollama")
 	}
 	if *apiKeyFlag == "" && (*providerFlag == "anthropic" || *providerFlag == "openai" || *providerFlag == "groq" || *providerFlag == "nvidia") {
 		*apiKeyFlag = promptInput(reader, "API Key", "")
@@ -387,8 +382,6 @@ func promptModel(reader *bufio.Reader, provider string) string {
 		fmt.Println("  - flash_lite (lightweight and fastest)")
 		fmt.Println("  - pro (most capable, slowest)")
 		return promptInput(reader, "Model", "flash")
-	case "forgememo", "forge":
-		return promptInput(reader, "Model", "claude-haiku-4-5-20251001")
 	default:
 		return defaultModelForProvider(provider)
 	}
@@ -396,8 +389,6 @@ func promptModel(reader *bufio.Reader, provider string) string {
 
 func defaultModelForProvider(provider string) string {
 	switch provider {
-	case "forgememo", "forge":
-		return "claude-haiku-4-5-20251001"
 	case "anthropic":
 		return "claude-haiku-4-5-20251001"
 	case "openai":
@@ -420,9 +411,6 @@ func defaultModelForProvider(provider string) string {
 func distillConfigFromUserConfig(cfg config.Config) distill.Config {
 	d := distill.LoadConfig()
 	d.Provider = distill.Provider(cfg.Provider)
-	if d.Provider == "forge" {
-		d.Provider = distill.ProviderForgememo
-	}
 	// For groq, prefer FORGE_API_KEY from config, but fall back to GROQ_API_KEY env
 	// (already populated by distill.LoadConfig via the GROQ_API_KEY fallback).
 	if cfg.APIKey != "" {
@@ -457,8 +445,6 @@ func maskKey(key string) string {
 
 func defaultBaseURLForProvider(provider string) string {
 	switch provider {
-	case "forgememo", "forge":
-		return "https://forgememo-server.onrender.com/api/forge"
 	case "anthropic":
 		return "https://api.anthropic.com"
 	case "openai":

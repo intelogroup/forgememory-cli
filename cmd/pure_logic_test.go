@@ -71,8 +71,6 @@ func TestDefaultModelForProvider(t *testing.T) {
 		provider string
 		want     string
 	}{
-		{"forgememo", "claude-haiku-4-5-20251001"},
-		{"forge", "claude-haiku-4-5-20251001"},
 		{"anthropic", "claude-haiku-4-5-20251001"},
 		{"openai", "gpt-4o"},
 		{"groq", "llama-3.3-70b-versatile"},
@@ -176,10 +174,6 @@ func TestCheckProviderModelCompat(t *testing.T) {
 		{"anthropic no key", "anthropic", "claude-haiku-4-5-20251001", "", ok, true},
 		{"anthropic empty model ok", "anthropic", "", "sk-ant-abc", ok, false},
 
-		// forgememo: must use claude- models; no key required
-		{"forgememo ok", "forgememo", "claude-haiku-4-5-20251001", "", ok, false},
-		{"forgememo wrong model", "forgememo", "gpt-4o", "", ok, true},
-
 		// openai: requires api key; wrong models rejected on default base
 		{"openai ok", "openai", "gpt-4o", "sk-abc", defaultOpenAI, false},
 		{"openai no key", "openai", "gpt-4o", "", defaultOpenAI, true},
@@ -214,7 +208,7 @@ func TestCheckProviderModelCompat(t *testing.T) {
 		{"openrouter ok gemini", "openrouter", "google/gemini-2.5-pro", "sk-or-v1-abc", "", false},
 		{"openrouter no key", "openrouter", "google/gemini-2.5-pro", "", "", true},
 
-		// codex/forgememo: no constraints checked beyond forgememo model prefix
+		// codex: no constraints checked
 		{"codex no constraints", "codex", "any-model", "", ok, false},
 	}
 

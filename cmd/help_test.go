@@ -11,7 +11,7 @@ func TestAgentGuideSurfacesProviderSetupCommands(t *testing.T) {
 	for _, want := range []string{
 		"## Provider Setup",
 		"~/.forge/config",
-		"forge config --provider forgememo",
+		"forge config --provider ollama --model llama3:latest",
 		"forge config --provider openai --api-key sk-...",
 		"forge config --provider anthropic --api-key sk-ant-...",
 		"forge config --provider groq --api-key gsk-...",
@@ -32,12 +32,12 @@ func TestTopLevelHelpSurfacesProviderSetupCommands(t *testing.T) {
 	for _, want := range []string{
 		"Provider setup:",
 		"forge config --show",
-		"forge config --provider forgememo",
+		"forge config --provider ollama --model llama3:latest",
 		"forge config --provider openai --api-key sk-...",
 		"forge config --provider anthropic --api-key sk-ant-...",
 		"forge config --provider groq --api-key gsk-...",
 		"forge config --provider ollama --model llama3:latest",
-		"FORGE_PROVIDER      Inference provider: forgememo/anthropic/openai/groq/nvidia/ollama/codex",
+		"FORGE_PROVIDER      Inference provider: anthropic/openai/groq/nvidia/ollama/codex",
 	} {
 		if !strings.Contains(out, want) {
 			t.Fatalf("top-level help missing %q:\n%s", want, out)

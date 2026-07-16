@@ -52,10 +52,10 @@ func runInit(args []string) {
 
 	// Prompt for provider setup
 	fmt.Println("\n  Configure your AI provider:")
-	fmt.Println("    forge config --provider forgememo   # auto-cheapest, 1000 free runs")
+	fmt.Println("    forge config --provider ollama   # local, free, zero config")
 	fmt.Println("    forge config --provider anthropic --api-key YOUR_KEY")
 	fmt.Println("  Or run 'forge config' for interactive setup.")
-	fmt.Println("  Default provider is forgememo (falls back to ollama if configured).")
+	fmt.Println("  Default provider is ollama (requires ollama serve).")
 
 	if *interactive {
 		fmt.Println("\n  Running interactive setup...")

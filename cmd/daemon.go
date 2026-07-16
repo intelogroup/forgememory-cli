@@ -61,7 +61,7 @@ func runDaemon(args []string) {
 		}
 		log.Printf("Loaded config: provider=%s", cfg.Provider)
 	} else {
-		log.Printf("No config found, using defaults (provider: forgememo)")
+		log.Printf("No config found, using defaults (provider: ollama)")
 	}
 
 	// Acquire exclusive lock to prevent multiple daemons

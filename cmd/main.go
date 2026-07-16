@@ -67,8 +67,6 @@ func main() {
 		runContext(os.Args[2:])
 	case "config":
 		runConfig(os.Args[2:])
-	case "login":
-		runLogin(os.Args[2:])
 	case "synthesize-session":
 		runSynthesizeSession(os.Args[2:]) // internal, not shown in help
 	case "version":
@@ -109,10 +107,9 @@ func printUsage() {
    mcp           Start MCP server (stdio transport, for Claude Code)
    ui            Start memory dashboard web UI (http://localhost:5555)
    doctor        Self-test: check DB, daemon, agents, binary
-    inject-check  Check staged changes against stored principles [--pre-push]
-    config        Configure inference provider (--provider --api-key [--model --timeout --retries])
-    login         Login to Forge (--email --password [--purchase])
-   agent-guide   Print copy-pasteable agent setup guide (CLAUDE.md / system prompt)
+     inject-check  Check staged changes against stored principles [--pre-push]
+     config        Configure inference provider (--provider --api-key [--model --timeout --retries])
+    agent-guide   Print copy-pasteable agent setup guide (CLAUDE.md / system prompt)
    hook          (internal) Hook entrypoint — called by agents
    daemon        (internal) Daemon entrypoint — long-running service
    version       Print version
@@ -128,7 +125,6 @@ func printUsage() {
 
  Provider setup:
    forge config --show
-   forge config --provider forgememo
    forge config --provider openai --api-key sk-...
    forge config --provider anthropic --api-key sk-ant-...
    forge config --provider groq --api-key gsk-...
@@ -140,7 +136,7 @@ func printUsage() {
    FORGE_EVENT_TYPE    Event type: PostToolUse/SessionEnd/UserPromptSubmit (set by hook)
    FORGE_TOOL_NAME     Tool name if applicable (set by hook)
    FORGE_PIPE_ADDR     Daemon IPC address (set by daemon)
-   FORGE_PROVIDER      Inference provider: forgememo/anthropic/openai/groq/nvidia/ollama/codex
+   FORGE_PROVIDER      Inference provider: anthropic/openai/groq/nvidia/ollama/codex
    FORGE_API_KEY       API key for inference provider
    FORGE_MODEL         Model override (provider default if omitted)
    FORGE_TIMEOUT       Inference timeout (e.g. 30s)

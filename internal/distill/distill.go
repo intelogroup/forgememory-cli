@@ -35,7 +35,7 @@ const (
 	ProviderOpenAI      Provider = "openai"
 	ProviderAnthropic   Provider = "anthropic"
 	ProviderCodex       Provider = "codex"
-	ProviderForgememo   Provider = "forgememo"
+
 	ProviderGroq        Provider = "groq"
 	ProviderNvidia      Provider = "nvidia"
 	ProviderAntigravity Provider = "antigravity"
@@ -60,7 +60,7 @@ var (
 func UserMessage(err error) string {
 	switch {
 	case errors.Is(err, ErrNoProvider):
-		return "No inference provider configured. Set FORGE_PROVIDER (forgememo/anthropic/openai/groq/nvidia/ollama/codex) and run 'forge config' to configure."
+		return 		"No inference provider configured. Set FORGE_PROVIDER (anthropic/openai/groq/nvidia/ollama/codex) and run 'forge config' to configure."
 	case errors.Is(err, ErrProviderInvalid):
 		return "Invalid provider or credentials. Check your FORGE_PROVIDER setting and any required login or API key."
 	case errors.Is(err, ErrProviderUnreachable):
@@ -113,7 +113,7 @@ type Config struct {
 	APIKey            string
 	Model             string
 	BaseURL           string
-	PaymentURL        string
+
 	Timeout           time.Duration
 	Retries           int
 	DistillInterval   time.Duration
@@ -123,7 +123,7 @@ type Config struct {
 }
 
 // LoadConfig loads distillation config from environment.
-// Priority: Forgememo > OpenAI/Anthropic > Ollama (fallback)
+// Priority: config file > env vars > Ollama (fallback)
 func LoadConfig() Config {
 	// 1. Load from file config first
 	var fileCfg config.Config
@@ -207,7 +207,6 @@ func LoadConfig() Config {
 		APIKey:            apiKey,
 		Model:             model,
 		BaseURL:           baseURL,
-		PaymentURL:        os.Getenv("FORGE_PAYMENT_URL"),
 		Timeout:           timeout,
 		Retries:           retries,
 		DistillInterval:   distillInterval,
@@ -220,20 +219,8 @@ func LoadConfig() Config {
 		cfg.BaseURL = os.Getenv("FORGE_API_URL") // legacy compatibility
 	}
 
-	if cfg.PaymentURL == "" {
-		// Derive from BaseURL if login saved the server URL there
-		if cfg.BaseURL != "" && (cfg.Provider == ProviderForgememo || cfg.Provider == "") {
-			cfg.PaymentURL = strings.TrimSuffix(cfg.BaseURL, "/api/forge")
-		} else {
-			cfg.PaymentURL = "https://forgememo-server.onrender.com"
-		}
-	}
-
 	if cfg.Provider == "" {
-		cfg.Provider = ProviderForgememo
-	}
-	if cfg.Provider == "forge" {
-		cfg.Provider = ProviderForgememo
+		cfg.Provider = ProviderOllama
 	}
 
 	if cfg.Model == "" {
@@ -246,8 +233,6 @@ func LoadConfig() Config {
 			cfg.Model = "claude-haiku-4-5-20251001"
 		case ProviderCodex:
 			cfg.Model = ""
-		case ProviderForgememo:
-			cfg.Model = "claude-haiku-4-5-20251001"
 		case ProviderGroq:
 			cfg.Model = "llama-3.3-70b-versatile"
 		case ProviderNvidia:
@@ -268,8 +253,6 @@ func LoadConfig() Config {
 			cfg.BaseURL = "https://api.anthropic.com"
 		case ProviderCodex:
 			cfg.BaseURL = ""
-		case ProviderForgememo:
-			cfg.BaseURL = cfg.PaymentURL + "/api/forge"
 		case ProviderGroq:
 			cfg.BaseURL = "https://api.groq.com/openai"
 		case ProviderNvidia:
@@ -368,23 +351,6 @@ func New(database *db.DB, config Config) *Distiller {
 	}
 }
 
-func (d *Distiller) checkCredits() bool {
-	url := d.config.PaymentURL + "/v1/balance"
-	req, _ := http.NewRequest("GET", url, nil)
-	req.Header.Set("Authorization", "Bearer "+d.config.APIKey)
-	resp, err := d.client.Do(req)
-	if err != nil {
-		return true // Allow on error
-	}
-	defer resp.Body.Close()
-
-	var result struct {
-		BalanceUSD float64 `json:"balance_usd"`
-	}
-	json.NewDecoder(resp.Body).Decode(&result)
-	return result.BalanceUSD > 0
-}
-
 // DistillBatch processes undistilled events into principles.
 // Orphaned events with session_id='unknown' are excluded — they usually
 // have no useful session context for the LLM.
@@ -419,14 +385,6 @@ func (d *Distiller) distillBatch(limit int, includeUnknown bool) (int, error) {
 			return 0, markEventsDistilled(d.db, batch)
 		}
 		return 0, nil // Not enough events to distill
-	}
-
-	// Pre-flight credit check (avoids a Groq round-trip if credits are already zero).
-	// Server deducts atomically during inference; no client-side deduction needed.
-	if d.config.Provider == ProviderForgememo && d.config.APIKey != "" {
-		if !d.checkCredits() {
-			return 0, fmt.Errorf("no credits remaining. Run 'forge login --purchase' to buy more")
-		}
 	}
 
 	// Build prompt from events
@@ -1155,8 +1113,6 @@ func (d *Distiller) callLLM(prompt string) (string, error) {
 		return d.callAnthropic(prompt)
 	case ProviderCodex:
 		return d.callCodex(prompt)
-	case ProviderForgememo:
-		return d.callForgememo(prompt)
 	case ProviderGroq:
 		return d.callGroq(prompt)
 	case ProviderNvidia:
@@ -1269,8 +1225,6 @@ func (d *Distiller) callOpenAI(prompt string) (string, error) {
 		displayProvider = "Groq"
 	case "nvidia":
 		displayProvider = "NVIDIA"
-	case "forgememo":
-		displayProvider = "Forgememo"
 	}
 
 	if resp.StatusCode == 401 {
@@ -1474,53 +1428,6 @@ func (d *Distiller) callCodex(prompt string) (string, error) {
 		return "", fmt.Errorf("no response from Codex")
 	}
 	return response, nil
-}
-
-func (d *Distiller) callForgememo(prompt string) (string, error) {
-	url := d.config.PaymentURL + "/v1/inference"
-
-	body := map[string]any{
-		"model":      d.config.Model,
-		"prompt":     prompt,
-		"max_tokens": 300,
-	}
-	jsonBody, _ := json.Marshal(body)
-
-	req, _ := http.NewRequest("POST", url, bytes.NewReader(jsonBody))
-	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("Authorization", "Bearer "+d.config.APIKey)
-
-	resp, err := d.client.Do(req)
-	if err != nil {
-		if isProviderUnreachableError(err) {
-			return "", fmt.Errorf("%w: %v", ErrProviderUnreachable, err)
-		}
-		return "", err
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode == 401 {
-		return "", fmt.Errorf("%w: No credits or invalid API key", ErrProviderInvalid)
-	}
-	if resp.StatusCode == 402 {
-		return "", fmt.Errorf("%w: no credits remaining", ErrProviderInvalid)
-	}
-	if resp.StatusCode == 429 {
-		return "", fmt.Errorf("%w: rate limit exceeded", ErrProviderUnreachable)
-	}
-	if resp.StatusCode >= 400 {
-		return "", fmt.Errorf("%w: Forgememo API returned status %d", ErrProviderInvalid, resp.StatusCode)
-	}
-
-	data, _ := io.ReadAll(resp.Body)
-	var result struct {
-		Text string `json:"text"`
-	}
-	json.Unmarshal(data, &result)
-	if result.Text != "" {
-		return result.Text, nil
-	}
-	return "", fmt.Errorf("no response from Forgememo")
 }
 
 func (d *Distiller) callAntigravity(prompt string) (string, error) {

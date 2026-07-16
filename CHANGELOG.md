@@ -1,5 +1,20 @@
 # Changelog
 
+## [0.7.0] - 2026-07-16
+
+### Changed
+- Forge is now free. Removed payment server, Stripe billing, credit system, and all managed-service code.
+- Default inference provider changed from `forgememo` (managed proxy) to `ollama` (local, free).
+- `forge login` command removed — no server to log in to.
+- `forge config --provider forgememo` now returns unsupported error.
+- Environment: removed `FORGE_PAYMENT_URL` and Supabase/Resend/Stripe env vars from the CLI.
+
+### Removed
+- `payment/` directory entirely (Go HTTP server, Stripe/Supabase/Resend integration, migrations, Dockerfile).
+- `ProviderForgememo` provider type, `callForgememo()`, `checkCredits()` from distillation engine.
+- OAuth login flow and `--purchase` flag.
+- All Supabase and Resend API keys from `.env`.
+
 ## [0.6.6] - 2026-07-16
 
 ### Added

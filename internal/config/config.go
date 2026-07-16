@@ -242,10 +242,6 @@ func CheckProviderModelCompat(provider, model, apiKey, baseURL string) error {
 		if apiKey == "" {
 			return fmt.Errorf("provider %q requires an API key (sk-ant-...) — get one at console.anthropic.com", provider)
 		}
-	case "forgememo":
-		if model != "" && !strings.HasPrefix(model, "claude-") {
-			return fmt.Errorf("model %q does not belong to provider %q — Forgememo uses Claude models (e.g. claude-haiku-4-5-20251001)", model, provider)
-		}
 	case "openai":
 		if apiKey == "" {
 			return fmt.Errorf("provider %q requires an API key (sk-...) — get one at platform.openai.com\nNote: ChatGPT Plus/Pro subscription does not include API access; API billing is separate", provider)
