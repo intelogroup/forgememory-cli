@@ -1,5 +1,16 @@
 # Changelog
 
+## [0.6.6] - 2026-07-16
+
+### Added
+- `forge inject-check --pre-push` — git pre-push hook that blocks pushes touching files with high-impact learned principles
+- `forge context` auto-relevant section — silently detects changed files and shows matching principles and their full narrative
+- `forge context --relevant <query>` now shows full narrative (no 120-char truncation)
+
+### Fixed
+- `detectRecentFiles` and `getPushFiles` git porcelain parsing: TrimSpace before `line[3:]` ate the first character of filenames
+- `getPushFiles` now also checks untracked files via `git ls-files --others`
+
 ## [0.6.4] - 2026-07-14
 
 ### Changed

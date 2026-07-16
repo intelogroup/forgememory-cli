@@ -63,6 +63,8 @@ func main() {
 		runServiceStart(os.Args[2:])
 	case "service-stop":
 		runServiceStop(os.Args[2:])
+	case "context":
+		runContext(os.Args[2:])
 	case "config":
 		runConfig(os.Args[2:])
 	case "login":
@@ -74,7 +76,7 @@ func main() {
 	case "agent-guide":
 		runAgentGuide(os.Args[2:])
 	case "inject-check":
-		runInjectCheck(os.Args[2:]) // internal, called by agent hooks
+		runInjectCheck(os.Args[2:]) // agent hook + pre-push git hook
 	case "help", "--help", "-h":
 		runHelp(os.Args[2:])
 	default:
@@ -102,12 +104,14 @@ func printUsage() {
    distill       Run distillation manually (--all drains backlog, --wait queues behind running distill)
    memory        Manage distilled principles (list, delete, rate, thumbs-up/down)
    harden        Key lifecycle: rotate-key, revoke <id>
+   context       Show recent work across all agents (sessions + principles + timeline)
    search <q>    Full-text search on event payloads
    mcp           Start MCP server (stdio transport, for Claude Code)
    ui            Start memory dashboard web UI (http://localhost:5555)
    doctor        Self-test: check DB, daemon, agents, binary
-   config        Configure inference provider (--provider --api-key [--model --timeout --retries])
-   login         Login to Forge (--email --password [--purchase])
+    inject-check  Check staged changes against stored principles [--pre-push]
+    config        Configure inference provider (--provider --api-key [--model --timeout --retries])
+    login         Login to Forge (--email --password [--purchase])
    agent-guide   Print copy-pasteable agent setup guide (CLAUDE.md / system prompt)
    hook          (internal) Hook entrypoint — called by agents
    daemon        (internal) Daemon entrypoint — long-running service
