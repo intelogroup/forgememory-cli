@@ -34,6 +34,7 @@ forgememory-app/
 
 # Build artifacts
 cmd/cmd
+graphify-out/
 payment/payment-server
 payment/payment-server-linux
 payment/payment-server-test
