@@ -1,5 +1,16 @@
 # Changelog
 
+## [0.7.2] - 2026-07-18
+
+### Fixed
+- Fixed TypeScript ESM issue in `distill-agent` by importing `node:crypto` using ESM import syntax rather than `require()`.
+- Changed OpenAI provider model generation in `distill-agent` to call `.chat()` completions explicitly, restoring compatibility with OpenRouter and other OpenAI-compatible chat backends.
+
+## [0.7.1] - 2026-07-16
+
+### Fixed
+- Fixed session_id parsing for opencode/antigravity hooks.
+
 ## [0.7.0] - 2026-07-16
 
 ### Changed

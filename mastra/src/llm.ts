@@ -62,7 +62,7 @@ function createModel(cfg: ProviderConfig) {
         apiKey: cfg.apiKey || undefined,
         baseURL: cfg.baseURL || undefined,
       });
-      return openaiProvider(cfg.model || "gpt-4o");
+      return openaiProvider.chat(cfg.model || "gpt-4o");
     }
   }
 }

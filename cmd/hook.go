@@ -35,6 +35,7 @@ type HookMessage struct {
 }
 
 // ClaudeHookInput is the common JSON structure used by Claude and Gemini hooks.
+// Custom UnmarshalJSON handles multiple session ID field names across agents.
 type ClaudeHookInput struct {
 	SessionID      string `json:"session_id"`
 	TranscriptPath string `json:"transcript_path"`
@@ -44,6 +45,37 @@ type ClaudeHookInput struct {
 	ToolName       string `json:"tool_name"`
 	ToolInput      any    `json:"tool_input"`
 	ToolResponse   any    `json:"tool_response,omitempty"`
+}
+
+func (c *ClaudeHookInput) UnmarshalJSON(data []byte) error {
+	var raw map[string]any
+	if err := json.Unmarshal(data, &raw); err != nil {
+		return err
+	}
+	for _, key := range []string{"session_id", "sessionID", "conversationId"} {
+		if v, ok := raw[key].(string); ok && v != "" {
+			c.SessionID = v
+			break
+		}
+	}
+	if v, ok := raw["transcript_path"].(string); ok {
+		c.TranscriptPath = v
+	}
+	if v, ok := raw["cwd"].(string); ok {
+		c.CWD = v
+	}
+	if v, ok := raw["permission_mode"].(string); ok {
+		c.PermissionMode = v
+	}
+	if v, ok := raw["hook_event_name"].(string); ok {
+		c.HookEventName = v
+	}
+	if v, ok := raw["tool_name"].(string); ok {
+		c.ToolName = v
+	}
+	c.ToolInput = raw["tool_input"]
+	c.ToolResponse = raw["tool_response"]
+	return nil
 }
 
 // writeTool is the set of tools whose events are worth capturing.

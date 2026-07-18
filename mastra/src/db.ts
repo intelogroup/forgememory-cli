@@ -2,6 +2,7 @@ import Database from "better-sqlite3";
 import path from "node:path";
 import os from "node:os";
 import { v4 as uuid } from "uuid";
+import crypto from "node:crypto";
 
 const DB_PATH = path.join(os.homedir(), ".forge", "forge.db");
 
@@ -147,7 +148,6 @@ export function insertSessionSummary(
 }
 
 function fingerprint(title: string, projectID: string): string {
-  const crypto = require("node:crypto");
   return crypto
     .createHash("sha256")
     .update((title || "").toLowerCase() + "|" + (projectID || ""))
