@@ -55,6 +55,8 @@ func main() {
 		runStreams(os.Args[2:])
 	case "steering":
 		runSteering(os.Args[2:])
+	case "profile":
+		runProfile(os.Args[2:])
 	case "mcp":
 		runMCP(os.Args[2:])
 	case "ui":
@@ -112,6 +114,7 @@ func printUsage() {
    commits       Link git commits to the session active when they landed (--path --since)
    streams       Group sessions into multi-day work streams (--path --gap)
    steering      Show mid-task redirect rate per session (--path)
+   profile       Score builder on 5 axes from local commits/streams/steering (--path)
    search <q>    Full-text search on event payloads
    mcp           Start MCP server (stdio transport, for Claude Code)
    ui            Start memory dashboard web UI (http://localhost:5555)
