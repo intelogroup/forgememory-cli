@@ -1,5 +1,10 @@
 # Changelog
 
+## [0.7.3] - 2026-07-27
+
+### Added
+- `forge commits` — links git commits to the agent session that was active when each commit landed, matched by event-timerange overlap. Reports per-session commit counts and lines changed.
+
 ## [0.7.2] - 2026-07-18
 
 ### Fixed
