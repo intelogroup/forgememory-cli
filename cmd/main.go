@@ -53,6 +53,8 @@ func main() {
 		runCommits(os.Args[2:])
 	case "streams":
 		runStreams(os.Args[2:])
+	case "steering":
+		runSteering(os.Args[2:])
 	case "mcp":
 		runMCP(os.Args[2:])
 	case "ui":
@@ -107,6 +109,9 @@ func printUsage() {
    memory        Manage distilled principles (list, delete, rate, thumbs-up/down)
    harden        Key lifecycle: rotate-key, revoke <id>
    context       Show recent work across all agents (sessions + principles + timeline)
+   commits       Link git commits to the session active when they landed (--path --since)
+   streams       Group sessions into multi-day work streams (--path --gap)
+   steering      Show mid-task redirect rate per session (--path)
    search <q>    Full-text search on event payloads
    mcp           Start MCP server (stdio transport, for Claude Code)
    ui            Start memory dashboard web UI (http://localhost:5555)
