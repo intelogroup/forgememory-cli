@@ -4,17 +4,23 @@ import (
 	"flag"
 	"fmt"
 	"os"
+	"os/exec"
+	"strings"
+	"time"
 
 	"github.com/forge/forge/internal/db"
 	"github.com/forge/forge/internal/distill"
+	forgegit "github.com/forge/forge/internal/git"
 	"github.com/forge/forge/internal/profile"
 	"github.com/forge/forge/internal/steering"
 	"github.com/forge/forge/internal/streams"
 )
 
-// runProfile scores a builder on 5 axes using local commit/stream/steering
-// signals and session summaries already produced by forge — a single LLM
-// call over locally-derived evidence, never raw payloads.
+const maxProfilePromptSamples = 8
+
+// runProfile scores a builder on 5 axes using local commit-hygiene, tool-use,
+// verification, and steering signals plus raw prompt samples — a single LLM
+// call over locally-derived evidence, never raw payloads beyond this digest.
 func runProfile(args []string) {
 	fs := flag.NewFlagSet("profile", flag.ContinueOnError)
 	path := fs.String("path", "", "repo path (default: current directory)")
@@ -26,7 +32,11 @@ func runProfile(args []string) {
 	if repoPath == "" {
 		repoPath, _ = os.Getwd()
 	}
-	projectID := detectProjectIDForPath(repoPath)
+	gitRoot := repoPath
+	if out, err := exec.Command("git", "-C", repoPath, "rev-parse", "--show-toplevel").Output(); err == nil {
+		gitRoot = strings.TrimSpace(string(out))
+	}
+	projectID := detectProjectIDForPath(gitRoot)
 
 	database, err := db.Open("")
 	if err != nil {
@@ -48,6 +58,14 @@ func runProfile(args []string) {
 		sig.TotalDeletions += c.Deletions
 	}
 
+	if commits, err := forgegit.CommitsSince(gitRoot, 365*24*time.Hour); err == nil {
+		pathsPerCommit := make([][]string, len(commits))
+		for i, c := range commits {
+			pathsPerCommit[i] = c.Paths
+		}
+		sig.AvgFilesPerCommit, sig.TestPairedCommitPct = profile.CommitHygiene(pathsPerCommit)
+	}
+
 	ranges, err := database.SessionRangesByProject(projectID)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
@@ -63,7 +81,9 @@ func runProfile(args []string) {
 		os.Exit(1)
 	}
 	sig.WorkStreams = len(ws)
+	sig.TotalSessions = len(ranges)
 
+	toolCounts := map[string]int{}
 	for _, r := range ranges {
 		events, err := database.SessionEventsUpTo(r.SessionID, "", 0)
 		if err != nil {
@@ -73,6 +93,30 @@ func runProfile(args []string) {
 		st := steering.Compute(events)
 		sig.TotalPrompts += st.TotalPrompts
 		sig.SteeredPrompts += st.SteeredPrompts
+
+		sessionTools, hasTestRun := profile.ClassifyEvents(events)
+		for name, n := range sessionTools {
+			toolCounts[name] += n
+		}
+		if hasTestRun {
+			sig.VerifiedSessions++
+		}
+
+		for _, e := range events {
+			if e.EventType != "UserPromptSubmit" && e.EventType != "beforeSubmitPrompt" {
+				continue
+			}
+			if text := distill.ExtractPromptText(e.Payload); text != "" {
+				sig.PromptSamples = append(sig.PromptSamples, text)
+			}
+			break // first prompt of the session is enough signal per session
+		}
+	}
+	sig.ToolCounts = toolCounts
+
+	// Keep only the most recent samples — ranges are ordered oldest-first.
+	if len(sig.PromptSamples) > maxProfilePromptSamples {
+		sig.PromptSamples = sig.PromptSamples[len(sig.PromptSamples)-maxProfilePromptSamples:]
 	}
 
 	summaries, err := database.GetRecentSessionSummariesByProject(projectID, 10)
@@ -102,8 +146,9 @@ func runProfile(args []string) {
 		os.Exit(1)
 	}
 
-	fmt.Printf("%s builder profile (%d commits, %d work streams, %d/%d prompts steered)\n\n",
-		projectID, sig.TotalCommits, sig.WorkStreams, sig.SteeredPrompts, sig.TotalPrompts)
+	fmt.Printf("%s builder profile (%d commits, %.1f files/commit, %.0f%% test-paired, %d/%d sessions verified, %d/%d prompts steered)\n\n",
+		projectID, sig.TotalCommits, sig.AvgFilesPerCommit, sig.TestPairedCommitPct,
+		sig.VerifiedSessions, sig.TotalSessions, sig.SteeredPrompts, sig.TotalPrompts)
 	printAxis := func(name string, a profile.Axis) {
 		fmt.Printf("  %-17s %d/10  %s\n", name, a.Score, a.Why)
 	}

@@ -21,6 +21,7 @@ type CommitStat struct {
 	Files      int
 	Insertions int
 	Deletions  int
+	Paths      []string
 }
 
 const commitSep = "@@FORGE@@"
@@ -73,6 +74,7 @@ func parseNumstatLog(r *bytes.Buffer) ([]CommitStat, error) {
 			continue
 		}
 		cur.Files++
+		cur.Paths = append(cur.Paths, fields[2])
 		if n, err := strconv.Atoi(fields[0]); err == nil {
 			cur.Insertions += n
 		}

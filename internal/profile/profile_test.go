@@ -3,6 +3,8 @@ package profile
 import (
 	"strings"
 	"testing"
+
+	"github.com/forge/forge/internal/db"
 )
 
 func TestParseScores_Clean(t *testing.T) {
@@ -36,8 +38,57 @@ func TestParseScores_NoJSON(t *testing.T) {
 }
 
 func TestBuildPrompt_IncludesEvidence(t *testing.T) {
-	p := BuildPrompt(Signals{ProjectID: "demo", TotalCommits: 5, TotalPrompts: 10, SteeredPrompts: 2})
+	p := BuildPrompt(Signals{ProjectID: "demo", TotalCommits: 5, TotalPrompts: 10, SteeredPrompts: 2, AvgFilesPerCommit: 3.2, TestPairedCommitPct: 40})
 	if !strings.Contains(p, "5 commits") || !strings.Contains(p, "2/10 prompts") {
 		t.Errorf("prompt missing evidence: %s", p)
+	}
+	if !strings.Contains(p, "3.2 files/commit") || !strings.Contains(p, "40%") {
+		t.Errorf("prompt missing hygiene evidence: %s", p)
+	}
+}
+
+func TestCommitHygiene(t *testing.T) {
+	paths := [][]string{
+		{"foo.go", "foo_test.go"},    // paired
+		{"bar.go", "baz.go"},         // not paired, 2 files
+		{"internal/tests/helper.go"}, // test dir path, but no code file -> not paired
+	}
+	avg, pct := CommitHygiene(paths)
+	if avg != 5.0/3.0 {
+		t.Errorf("avgFiles = %v, want %v", avg, 5.0/3.0)
+	}
+	if pct != 100.0/3.0 {
+		t.Errorf("testPairedPct = %v, want %v", pct, 100.0/3.0)
+	}
+}
+
+func TestCommitHygiene_Empty(t *testing.T) {
+	avg, pct := CommitHygiene(nil)
+	if avg != 0 || pct != 0 {
+		t.Errorf("expected zeros for empty input, got %v %v", avg, pct)
+	}
+}
+
+func TestClassifyEvents(t *testing.T) {
+	events := []db.Event{
+		{EventType: "PostToolUse", ToolName: "Read", Payload: ""},
+		{EventType: "PostToolUse", ToolName: "Bash", Payload: "go test ./..."},
+		{EventType: "PostToolUse", ToolName: "Edit", Payload: ""},
+		{EventType: "UserPromptSubmit", ToolName: "", Payload: "run go test"}, // wrong event type, ignored
+	}
+	counts, hasTestRun := ClassifyEvents(events)
+	if counts["Read"] != 1 || counts["Bash"] != 1 || counts["Edit"] != 1 {
+		t.Errorf("unexpected tool counts: %+v", counts)
+	}
+	if !hasTestRun {
+		t.Error("expected hasTestRun=true from Bash payload containing 'go test'")
+	}
+}
+
+func TestClassifyEvents_NoTestRun(t *testing.T) {
+	events := []db.Event{{EventType: "PostToolUse", ToolName: "Edit", Payload: "changed foo.go"}}
+	_, hasTestRun := ClassifyEvents(events)
+	if hasTestRun {
+		t.Error("expected hasTestRun=false, no test command present")
 	}
 }
