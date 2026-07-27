@@ -1732,6 +1732,11 @@ func shouldKeepPrinciple(p db.Principle) bool {
 	return true
 }
 
+// ExtractPromptText pulls user-visible prompt text out of a raw event payload.
+func ExtractPromptText(payload string) string {
+	return extractPromptText(payload)
+}
+
 func extractPromptText(payload string) string {
 	payload = strings.TrimSpace(payload)
 	if payload == "" {
