@@ -51,6 +51,8 @@ func main() {
 		runScan(os.Args[2:])
 	case "commits":
 		runCommits(os.Args[2:])
+	case "streams":
+		runStreams(os.Args[2:])
 	case "mcp":
 		runMCP(os.Args[2:])
 	case "ui":
