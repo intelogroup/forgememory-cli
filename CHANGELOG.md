@@ -1,5 +1,10 @@
 # Changelog
 
+## [0.8.0] - 2026-07-27
+
+### Added
+- `forge profile` — scores a builder on 5 axes (steering, execution, engineering, product instinct, planning) from local commit/stream/steering signals and session summaries, via a single LLM call over derived evidence only (no raw payloads sent).
+
 ## [0.7.4] - 2026-07-27
 
 ### Added
