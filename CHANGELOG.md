@@ -1,5 +1,10 @@
 # Changelog
 
+## [0.8.1] - 2026-07-27
+
+### Added
+- `forge stats` — fun aggregates over existing local data: rule-based archetype label, peak working hour, top prompt keywords, and max concurrent-session count (agent parallelism).
+
 ## [0.8.0] - 2026-07-27
 
 ### Added
