@@ -303,6 +303,21 @@ func (d *DB) migrate() error {
 			last_duration_ms INTEGER DEFAULT 0,
 			next_scheduled_at TEXT DEFAULT ''
 		)`,
+		`CREATE TABLE IF NOT EXISTS session_commits (
+			id          TEXT PRIMARY KEY,
+			session_id  TEXT NOT NULL,
+			project_id  TEXT NOT NULL,
+			sha         TEXT NOT NULL,
+			author      TEXT DEFAULT '',
+			commit_ts   TEXT NOT NULL,
+			subject     TEXT DEFAULT '',
+			files       INTEGER DEFAULT 0,
+			insertions  INTEGER DEFAULT 0,
+			deletions   INTEGER DEFAULT 0,
+			UNIQUE(project_id, sha)
+		)`,
+		`CREATE INDEX IF NOT EXISTS idx_session_commits_session ON session_commits(session_id)`,
+		`CREATE INDEX IF NOT EXISTS idx_session_commits_project ON session_commits(project_id, commit_ts DESC)`,
 	}
 	for _, m := range extraMigrations {
 		if _, err := d.conn.Exec(m); err != nil {

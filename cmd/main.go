@@ -49,6 +49,8 @@ func main() {
 		runSave(os.Args[2:])
 	case "scan":
 		runScan(os.Args[2:])
+	case "commits":
+		runCommits(os.Args[2:])
 	case "mcp":
 		runMCP(os.Args[2:])
 	case "ui":
