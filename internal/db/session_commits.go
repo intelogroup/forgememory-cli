@@ -39,14 +39,20 @@ func (d *DB) LinkCommitToSession(projectID string, c SessionCommit) (string, err
 	// Match against each session's full [min(ts), max(ts)] span (padded),
 	// not individual event timestamps — a session can have gaps between
 	// tool-use events larger than any fixed point-window.
+	// Excludes session_id='unknown': that's forgememo's own catch-all bucket
+	// for events whose session boundary wasn't captured, so its span covers
+	// the entire project history and would otherwise swallow every commit.
+	// Ties broken by narrowest window (most specific session), not latest —
+	// a wide, mostly-idle session's span still frequently outlasts a short
+	// but well-targeted one.
 	var sessionID string
 	err = d.conn.QueryRow(
 		`SELECT session_id FROM (
 		   SELECT session_id, MIN(ts) AS lo, MAX(ts) AS hi
-		   FROM events WHERE project_id = ? GROUP BY session_id
+		   FROM events WHERE project_id = ? AND session_id != 'unknown' GROUP BY session_id
 		 )
 		 WHERE datetime(?) BETWEEN datetime(lo, ?) AND datetime(hi, ?)
-		 ORDER BY hi DESC LIMIT 1`,
+		 ORDER BY (julianday(hi) - julianday(lo)) ASC LIMIT 1`,
 		projectID, commitTS,
 		fmt.Sprintf("-%d seconds", int(sessionWindowPad.Seconds())),
 		fmt.Sprintf("+%d seconds", int(sessionWindowPad.Seconds())),

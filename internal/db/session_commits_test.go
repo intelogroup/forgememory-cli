@@ -52,6 +52,38 @@ func TestLinkCommitToSession(t *testing.T) {
 	}
 }
 
+// TestLinkCommitToSession_IgnoresUnknownBucket guards against the regression
+// found when dry-running against real repos: the "unknown" session (forgememo's
+// catch-all for events with no captured session boundary) spans the entire
+// project history, so it overlaps every commit and previously always won the
+// old "latest hi" tiebreak — swallowing every real, more specific session.
+func TestLinkCommitToSession_IgnoresUnknownBucket(t *testing.T) {
+	dir := t.TempDir()
+	d, err := Open(filepath.Join(dir, "test.db"))
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	defer d.Close()
+
+	// "unknown" spans the whole project history.
+	mustInsertEvent(t, d, "unknown", "proj", time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC))
+	mustInsertEvent(t, d, "unknown", "proj", time.Date(2026, 12, 31, 0, 0, 0, 0, time.UTC))
+
+	// A real, narrow session sits inside that span.
+	real := time.Date(2026, 7, 20, 12, 0, 0, 0, time.UTC)
+	mustInsertEvent(t, d, "sess-real", "proj", real)
+	mustInsertEvent(t, d, "sess-real", "proj", real.Add(5*time.Minute))
+
+	sc := SessionCommit{ID: uuid.New().String(), SHA: "regressiontest", CommitTS: real.Add(2 * time.Minute).Format(time.RFC3339)}
+	sessionID, err := d.LinkCommitToSession("proj", sc)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if sessionID != "sess-real" {
+		t.Errorf("expected commit inside sess-real's narrow window to match sess-real, got %q", sessionID)
+	}
+}
+
 func mustInsertEvent(t *testing.T, d *DB, sessionID, projectID string, ts time.Time) {
 	t.Helper()
 	e := &Event{
