@@ -1,5 +1,10 @@
 # Changelog
 
+## [0.8.2] - 2026-07-27
+
+### Changed
+- `forge profile` now scores against concrete engineering signals instead of vague adjectives: commit atomicity (files/commit from real git history), test-coverage pairing (commits touching both a test file and code), verification discipline (sessions that actually ran a test suite before ending), tool-usage counts, and verbatim prompt samples judged directly for specificity — not inferred only from steering rate.
+
 ## [0.8.1] - 2026-07-27
 
 ### Added
