@@ -1,5 +1,11 @@
 # Changelog
 
+## [0.7.4] - 2026-07-27
+
+### Added
+- `forge streams` — groups a project's sessions into multi-day work streams using a 48h idle-gap threshold, so a continuous multi-day push shows as one stream instead of many disconnected sessions.
+- `forge steering` — reports how often a prompt interrupted an in-progress agent turn (a new prompt before the prior one's `Stop`), per session and overall.
+
 ## [0.7.3] - 2026-07-27
 
 ### Added
