@@ -224,12 +224,13 @@ func printProfile(projectID string, sig profile.Signals, scores profile.Scores) 
 	fmt.Printf("%s builder profile (%d commits, %.1f files/commit, %.0f%% test-paired, %d/%d sessions verified, %d/%d prompts steered)\n\n",
 		projectID, sig.TotalCommits, sig.AvgFilesPerCommit, sig.TestPairedCommitPct,
 		sig.VerifiedSessions, sig.TotalSessions, sig.SteeredPrompts, sig.TotalPrompts)
+	confidence := profile.Confidence(sig.TotalSessions, sig.TotalPrompts)
 	printAxis := func(name string, a profile.Axis) {
 		if a.NA {
-			fmt.Printf("  %-17s N/A   %s\n", name, a.Why)
+			fmt.Printf("  %-17s N/A   %s%s\n", name, a.Why, confidence)
 			return
 		}
-		fmt.Printf("  %-17s %d/10  %s\n", name, a.Score, a.Why)
+		fmt.Printf("  %-17s %d/10  %s%s\n", name, a.Score, a.Why, confidence)
 	}
 	printAxis("Steering", scores.Steering)
 	printAxis("Execution", scores.Execution)

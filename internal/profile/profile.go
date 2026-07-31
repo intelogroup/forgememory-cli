@@ -134,6 +134,15 @@ func ComputeScores(s Signals, errs funstats.ErrorProfile) (engineering, steering
 	return engineering, steering
 }
 
+// Confidence returns a suffix noting a low-sample-size caveat, or "" when
+// there's enough data (>=10 sessions, >=20 prompts) to trust the score.
+func Confidence(totalSessions, totalPrompts int) string {
+	if totalSessions >= 10 && totalPrompts >= 20 {
+		return ""
+	}
+	return fmt.Sprintf(" (n=%d sessions, low confidence)", totalSessions)
+}
+
 func scaleToTen(pct float64) int {
 	if pct < 0 {
 		pct = 0

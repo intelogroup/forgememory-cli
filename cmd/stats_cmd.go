@@ -144,11 +144,12 @@ func statsOne(database *db.DB, projectID string) (statsResult, bool, error) {
 }
 
 func printStats(projectID string, res statsResult) {
+	confidence := profile.Confidence(res.totalRanges, res.steer.TotalPrompts)
 	fmt.Printf("%s fun stats\n\n", projectID)
-	fmt.Printf("  Archetype:         %s\n", res.archetype)
+	fmt.Printf("  Archetype:         %s%s\n", res.archetype, confidence)
 	fmt.Printf("  Peak hour (UTC):   %02d:00\n", res.peak)
 	fmt.Printf("  Top prompt words:  %v\n", res.top)
 	fmt.Printf("  Max concurrent sessions: %d\n", res.concurrent)
 	fmt.Printf("  Steering rate:     %.0f%% (%d/%d prompts) [%s]\n", res.steer.Rate()*100, res.steer.SteeredPrompts, res.steer.TotalPrompts, res.steeringTag)
-	fmt.Printf("  Engineer score:    %.0f%% (vibe-coder: %.0f%%)\n", res.vibeScore, 100-res.vibeScore)
+	fmt.Printf("  Engineer score:    %.0f%% (vibe-coder: %.0f%%)%s\n", res.vibeScore, 100-res.vibeScore, confidence)
 }
