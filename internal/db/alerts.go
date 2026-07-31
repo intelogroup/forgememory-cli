@@ -97,6 +97,34 @@ func (d *DB) getActiveFailureSignature(projectID, sessionID, fingerprint string)
 	return &sig, nil
 }
 
+// FailureSignaturesByProject returns all failure signatures recorded for a project.
+func (d *DB) FailureSignaturesByProject(projectID string) ([]FailureSignature, error) {
+	rows, err := d.conn.Query(
+		`SELECT id, project_id, session_id, source_tool, tool_name, COALESCE(command_family,''), fingerprint, error_kind, normalized_message,
+		        first_seen_ts, last_seen_ts, repeat_count, resolved_ts
+		 FROM failure_signatures
+		 WHERE project_id=?`,
+		projectID,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var sigs []FailureSignature
+	for rows.Next() {
+		var sig FailureSignature
+		if err := rows.Scan(
+			&sig.ID, &sig.ProjectID, &sig.SessionID, &sig.SourceTool, &sig.ToolName, &sig.CommandFamily, &sig.Fingerprint,
+			&sig.ErrorKind, &sig.NormalizedMessage, &sig.FirstSeenTS, &sig.LastSeenTS, &sig.RepeatCount, &sig.ResolvedTS,
+		); err != nil {
+			return nil, err
+		}
+		sigs = append(sigs, sig)
+	}
+	return sigs, rows.Err()
+}
+
 // ActiveAlertsByProject returns recent active alerts for a project.
 func (d *DB) ActiveAlertsByProject(projectID string, limit int) ([]Alert, error) {
 	if limit <= 0 {

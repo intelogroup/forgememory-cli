@@ -64,3 +64,52 @@ func TestArchetype(t *testing.T) {
 		t.Errorf("got %q, want Autopilot Truster", got)
 	}
 }
+
+func TestComputeErrorProfileNoFailures(t *testing.T) {
+	p := ComputeErrorProfile(nil)
+	if p.Total != 0 || p.FlailingRepeats != 0 || p.Resolved != 0 {
+		t.Errorf("expected zero-value profile, got %+v", p)
+	}
+}
+
+func TestComputeErrorProfileFlailing(t *testing.T) {
+	sigs := []db.FailureSignature{
+		{ErrorKind: "tool_error", RepeatCount: 5, FirstSeenTS: "2026-01-01T09:00:00Z", ResolvedTS: ""},
+		{ErrorKind: "rustc", RepeatCount: 3, FirstSeenTS: "2026-01-01T09:00:00Z", ResolvedTS: ""},
+	}
+	p := ComputeErrorProfile(sigs)
+	if p.Total != 2 {
+		t.Errorf("total = %d, want 2", p.Total)
+	}
+	if p.FlailingRepeats != 4 {
+		t.Errorf("flailing repeats = %d, want 4 (only tool_error counts)", p.FlailingRepeats)
+	}
+}
+
+func TestComputeErrorProfileResolved(t *testing.T) {
+	sigs := []db.FailureSignature{
+		{ErrorKind: "go_build", RepeatCount: 1, FirstSeenTS: "2026-01-01T09:00:00Z", ResolvedTS: "2026-01-01T09:10:00Z"},
+	}
+	p := ComputeErrorProfile(sigs)
+	if p.Resolved != 1 {
+		t.Errorf("resolved = %d, want 1", p.Resolved)
+	}
+	if p.AvgResolveMins != 10 {
+		t.Errorf("avg resolve mins = %v, want 10", p.AvgResolveMins)
+	}
+}
+
+func TestVibeCoderScoreNoFailuresIsNeutral(t *testing.T) {
+	got := VibeCoderScore(1.0, 1.0, ErrorProfile{})
+	if got != 100 {
+		t.Errorf("score = %v, want 100 (full steering+verification, no error evidence)", got)
+	}
+}
+
+func TestVibeCoderScoreFlailingPullsDown(t *testing.T) {
+	steady := VibeCoderScore(0.5, 0.5, ErrorProfile{Total: 10, FlailingRepeats: 0})
+	flailing := VibeCoderScore(0.5, 0.5, ErrorProfile{Total: 10, FlailingRepeats: 10})
+	if flailing >= steady {
+		t.Errorf("flailing score %v should be less than steady score %v", flailing, steady)
+	}
+}
