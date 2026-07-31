@@ -57,31 +57,46 @@ type Signals struct {
 
 var testTouchedPath = regexp.MustCompile(`(?i)(_test\.|\.test\.|/tests?/|^tests?/)`)
 
+// nonLogicPath matches files that aren't application logic — docs, license/
+// changelog/version files, lockfiles, .gitignore — so docs-only commits
+// don't count against commit atomicity or the test-pairing denominator,
+// neither of which is meant to measure prose/metadata churn.
+var nonLogicPath = regexp.MustCompile(`(?i)(^|/)(readme|changelog|license|version|\.gitignore|package-lock\.json|yarn\.lock|pnpm-lock\.yaml|go\.sum)(\.\w+)?$|\.(md|txt)$`)
+
 // CommitHygiene computes atomicity signals from a commit's file paths:
 // avgFilesPerCommit (lower = more focused changes) and the fraction of
 // commits that pair a test-file edit with a non-test code edit (test
-// coverage discipline, not just line-count churn).
+// coverage discipline, not just line-count churn). Commits touching only
+// non-logic files (docs, lockfiles, etc.) are excluded from both metrics.
 func CommitHygiene(pathsPerCommit [][]string) (avgFiles float64, testPairedPct float64) {
-	if len(pathsPerCommit) == 0 {
-		return 0, 0
-	}
-	totalFiles, paired := 0, 0
+	totalFiles, paired, counted := 0, 0, 0
 	for _, paths := range pathsPerCommit {
-		totalFiles += len(paths)
-		hasTest, hasCode := false, false
+		hasTest, hasCode, hasLogic := false, false, false
 		for _, p := range paths {
+			if nonLogicPath.MatchString(p) {
+				continue
+			}
+			hasLogic = true
 			if testTouchedPath.MatchString(p) {
 				hasTest = true
 			} else {
 				hasCode = true
 			}
 		}
+		if !hasLogic {
+			continue
+		}
+		counted++
+		totalFiles += len(paths)
 		if hasTest && hasCode {
 			paired++
 		}
 	}
-	avgFiles = float64(totalFiles) / float64(len(pathsPerCommit))
-	testPairedPct = 100 * float64(paired) / float64(len(pathsPerCommit))
+	if counted == 0 {
+		return 0, 0
+	}
+	avgFiles = float64(totalFiles) / float64(counted)
+	testPairedPct = 100 * float64(paired) / float64(counted)
 	return avgFiles, testPairedPct
 }
 
