@@ -111,8 +111,12 @@ func BuildPrompt(s Signals) string {
 
 	sb.WriteString("Evidence:\n")
 	fmt.Fprintf(&sb, "- %d commits, +%d/-%d lines, across %d work streams\n", s.TotalCommits, s.TotalInsertions, s.TotalDeletions, s.WorkStreams)
-	fmt.Fprintf(&sb, "- Commit atomicity: avg %.1f files/commit (industry norm for focused, reviewable changes: 1-5)\n", s.AvgFilesPerCommit)
-	fmt.Fprintf(&sb, "- Test-coverage discipline: %.0f%% of commits pair a test-file edit with a code edit\n", s.TestPairedCommitPct)
+	if s.TotalCommits == 0 {
+		sb.WriteString("- No commits in the observed window (this may be a non-git working directory, or work not yet committed) — do NOT penalize engineering/commit-hygiene axes for this; treat commit atomicity and test-pairing as not applicable rather than as evidence of poor discipline.\n")
+	} else {
+		fmt.Fprintf(&sb, "- Commit atomicity: avg %.1f files/commit (industry norm for focused, reviewable changes: 1-5)\n", s.AvgFilesPerCommit)
+		fmt.Fprintf(&sb, "- Test-coverage discipline: %.0f%% of commits pair a test-file edit with a code edit\n", s.TestPairedCommitPct)
+	}
 	if s.TotalSessions > 0 {
 		fmt.Fprintf(&sb, "- Verification discipline: %d/%d sessions (%.0f%%) ran a test suite (go test/npm test/pytest/etc.) via tool calls before ending\n",
 			s.VerifiedSessions, s.TotalSessions, 100*float64(s.VerifiedSessions)/float64(s.TotalSessions))
