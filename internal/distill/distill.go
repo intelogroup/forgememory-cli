@@ -1189,10 +1189,14 @@ func (d *Distiller) callOpenAI(prompt string) (string, error) {
 	url := normalizeOpenAIBase(base) + "/v1/chat/completions"
 
 	body := map[string]any{
-		"model": d.config.Model,
+		"model":      d.config.Model,
+		"max_tokens": 4096,
 		"messages": []map[string]string{
 			{"role": "user", "content": prompt},
 		},
+	}
+	if d.config.Provider == ProviderOpenAI && strings.Contains(strings.ToLower(prompt), "json") {
+		body["response_format"] = map[string]string{"type": "json_object"}
 	}
 	jsonBody, _ := json.Marshal(body)
 
@@ -1246,6 +1250,7 @@ func (d *Distiller) callOpenAI(prompt string) (string, error) {
 			Message struct {
 				Content string `json:"content"`
 			} `json:"message"`
+			FinishReason string `json:"finish_reason"`
 		} `json:"choices"`
 		Usage struct {
 			PromptTokens     int `json:"prompt_tokens"`
@@ -1258,6 +1263,9 @@ func (d *Distiller) callOpenAI(prompt string) (string, error) {
 	d.Usage.CompletionTokens += result.Usage.CompletionTokens
 	d.Usage.TotalTokens += result.Usage.TotalTokens
 	if len(result.Choices) > 0 {
+		if result.Choices[0].FinishReason == "length" {
+			return "", fmt.Errorf("%s response was cut off at the token limit (finish_reason=length) — output too long for max_tokens", displayProvider)
+		}
 		return result.Choices[0].Message.Content, nil
 	}
 	return "", fmt.Errorf("no response from %s", displayProvider)
