@@ -40,7 +40,10 @@ func runSave(args []string) {
 	}
 	defer database.Close()
 
-	projectID := detectProjectID()
+	projectID, projectRoot := resolveProjectRoot("")
+	if err := database.UpsertProject(projectID, projectRoot, projectID, "manual-save"); err != nil {
+		fmt.Fprintf(os.Stderr, "Warning: could not update projects table: %v\n", err)
+	}
 
 	if *principle != "" {
 		// Direct insert into principles table — no LLM needed.

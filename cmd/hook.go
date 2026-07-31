@@ -23,15 +23,16 @@ import (
 
 // HookMessage is the message sent by hooks to the daemon.
 type HookMessage struct {
-	Type       string `json:"type"` // always "event"
-	ID         string `json:"id"`
-	TS         string `json:"ts"`
-	SessionID  string `json:"session_id"`
-	ProjectID  string `json:"project_id"`
-	SourceTool string `json:"source_tool"`
-	EventType  string `json:"event_type"`
-	ToolName   string `json:"tool_name,omitempty"`
-	Payload    string `json:"payload"`
+	Type        string `json:"type"` // always "event"
+	ID          string `json:"id"`
+	TS          string `json:"ts"`
+	SessionID   string `json:"session_id"`
+	ProjectID   string `json:"project_id"`
+	ProjectRoot string `json:"project_root,omitempty"`
+	SourceTool  string `json:"source_tool"`
+	EventType   string `json:"event_type"`
+	ToolName    string `json:"tool_name,omitempty"`
+	Payload     string `json:"payload"`
 }
 
 // ClaudeHookInput is the common JSON structure used by Claude and Gemini hooks.
@@ -234,7 +235,7 @@ func runHook(args []string) {
 		toolName = envOr("FORGE_TOOL_NAME", "")
 	}
 
-	projectID := detectProjectIDForPath(input.CWD)
+	projectID, projectRoot := resolveProjectRoot(input.CWD)
 
 	// Session end: synthesize summary asynchronously then forward event.
 	if isSessionEndEvent(eventType) {
@@ -248,15 +249,16 @@ func runHook(args []string) {
 	}
 
 	msg := HookMessage{
-		Type:       "event",
-		ID:         uuid.New().String(),
-		TS:         time.Now().UTC().Format(time.RFC3339),
-		ProjectID:  projectID,
-		SourceTool: sourceTool,
-		EventType:  eventType,
-		SessionID:  sessionID,
-		ToolName:   toolName,
-		Payload:    payload,
+		Type:        "event",
+		ID:          uuid.New().String(),
+		TS:          time.Now().UTC().Format(time.RFC3339),
+		ProjectID:   projectID,
+		ProjectRoot: projectRoot,
+		SourceTool:  sourceTool,
+		EventType:   eventType,
+		SessionID:   sessionID,
+		ToolName:    toolName,
+		Payload:     payload,
 	}
 
 	if err := ipc.Send(msg); err != nil {
@@ -656,8 +658,6 @@ func buildSessionRecallOutput(projectID string, summaries []db.SessionSummary, p
 			break
 		}
 	}
-
-
 
 	if distillError != "" && len(sentences) > 0 {
 		errMsg := distillError

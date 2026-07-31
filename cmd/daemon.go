@@ -263,6 +263,7 @@ func handleEventMsg(raw map[string]json.RawMessage, database *db.DB) {
 		ToolName:   extract("tool_name"),
 		Payload:    extract("payload"),
 	}
+	projectRoot := extract("project_root")
 
 	if event.SessionID == "" {
 		event.SessionID = "unknown"
@@ -274,6 +275,11 @@ func handleEventMsg(raw map[string]json.RawMessage, database *db.DB) {
 	if err := database.InsertEvent(event); err != nil {
 		log.Printf("Insert event error: %v", err)
 		return
+	}
+	if projectRoot != "" {
+		if err := database.UpsertProject(event.ProjectID, projectRoot, event.ProjectID, event.SourceTool); err != nil {
+			log.Printf("Upsert project error: %v", err)
+		}
 	}
 	if err := detect.ProcessEvent(database, event); err != nil {
 		log.Printf("Failure detection error: %v", err)
@@ -644,7 +650,6 @@ func isDaemonAlive(addr string) bool {
 	return true
 }
 
-
 // isStaleLock checks whether the lock file exists but points to a dead process.
 func isStaleLock() bool {
 	lockPath := daemonLockPath()
@@ -675,13 +680,13 @@ type statusReport struct {
 		Total       int `json:"total"`
 		Undistilled int `json:"undistilled"`
 	} `json:"events"`
-	Principles            int    `json:"principles"`
-	Sessions              int    `json:"sessions"`
-	CrossSessionPatterns  int    `json:"cross_session_patterns"`
-	Daemon        string `json:"daemon"`
-	DaemonAddress string `json:"daemon_address,omitempty"`
-	LastDistilled string `json:"last_distilled,omitempty"`
-	Distillation  struct {
+	Principles           int    `json:"principles"`
+	Sessions             int    `json:"sessions"`
+	CrossSessionPatterns int    `json:"cross_session_patterns"`
+	Daemon               string `json:"daemon"`
+	DaemonAddress        string `json:"daemon_address,omitempty"`
+	LastDistilled        string `json:"last_distilled,omitempty"`
+	Distillation         struct {
 		LastRunAt            string `json:"last_run_at,omitempty"`
 		LastSuccessAt        string `json:"last_success_at,omitempty"`
 		LastErrorAt          string `json:"last_error_at,omitempty"`
