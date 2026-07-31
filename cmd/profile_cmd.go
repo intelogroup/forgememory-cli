@@ -10,6 +10,7 @@ import (
 
 	"github.com/forge/forge/internal/db"
 	"github.com/forge/forge/internal/distill"
+	"github.com/forge/forge/internal/funstats"
 	forgegit "github.com/forge/forge/internal/git"
 	"github.com/forge/forge/internal/profile"
 	"github.com/forge/forge/internal/steering"
@@ -46,7 +47,7 @@ func runProfile(args []string) {
 			fmt.Println("No known projects found.")
 			return
 		}
-		var scoredCount int
+		var scoredCount, engScoredCount int
 		var sumSteering, sumExecution, sumEngineering, sumProduct, sumPlanning float64
 		for _, p := range projects {
 			sig, scores, hasSessions, err := profileOne(database, p.ID, p.GitRoot)
@@ -63,16 +64,23 @@ func runProfile(args []string) {
 			scoredCount++
 			sumSteering += float64(scores.Steering.Score)
 			sumExecution += float64(scores.Execution.Score)
-			sumEngineering += float64(scores.Engineering.Score)
 			sumProduct += float64(scores.ProductInstinct.Score)
 			sumPlanning += float64(scores.Planning.Score)
+			if !scores.Engineering.NA {
+				engScoredCount++
+				sumEngineering += float64(scores.Engineering.Score)
+			}
 		}
 		if scoredCount == 0 {
 			return
 		}
 		n := float64(scoredCount)
-		fmt.Printf("Aggregate across %d projects — Steering %.1f/10, Execution %.1f/10, Engineering %.1f/10, Product instinct %.1f/10, Planning %.1f/10\n",
-			scoredCount, sumSteering/n, sumExecution/n, sumEngineering/n, sumProduct/n, sumPlanning/n)
+		engAvg := "N/A"
+		if engScoredCount > 0 {
+			engAvg = fmt.Sprintf("%.1f/10", sumEngineering/float64(engScoredCount))
+		}
+		fmt.Printf("Aggregate across %d projects — Steering %.1f/10, Execution %.1f/10, Engineering %s, Product instinct %.1f/10, Planning %.1f/10\n",
+			scoredCount, sumSteering/n, sumExecution/n, engAvg, sumProduct/n, sumPlanning/n)
 		return
 	}
 
@@ -197,6 +205,17 @@ func profileOne(database *db.DB, projectID, gitRoot string) (profile.Signals, pr
 		return sig, profile.Scores{}, true, fmt.Errorf("parsing model response: %w\nRaw response:\n%s", err, resp)
 	}
 
+	sigs, err := database.FailureSignaturesByProject(projectID)
+	if err != nil {
+		return sig, profile.Scores{}, true, err
+	}
+	errs := funstats.ComputeErrorProfile(sigs)
+	engineering, steering := profile.ComputeScores(sig, errs)
+	engineering.Why = scores.Engineering.Why
+	steering.Why = scores.Steering.Why
+	scores.Engineering = engineering
+	scores.Steering = steering
+
 	return sig, scores, true, nil
 }
 
@@ -205,6 +224,10 @@ func printProfile(projectID string, sig profile.Signals, scores profile.Scores) 
 		projectID, sig.TotalCommits, sig.AvgFilesPerCommit, sig.TestPairedCommitPct,
 		sig.VerifiedSessions, sig.TotalSessions, sig.SteeredPrompts, sig.TotalPrompts)
 	printAxis := func(name string, a profile.Axis) {
+		if a.NA {
+			fmt.Printf("  %-17s N/A   %s\n", name, a.Why)
+			return
+		}
 		fmt.Printf("  %-17s %d/10  %s\n", name, a.Score, a.Why)
 	}
 	printAxis("Steering", scores.Steering)

@@ -13,12 +13,16 @@ import (
 	"strings"
 
 	"github.com/forge/forge/internal/db"
+	"github.com/forge/forge/internal/funstats"
 )
 
-// Axis is one scored dimension with its one-line justification.
+// Axis is one scored dimension with its one-line justification. NA marks a
+// deterministic axis with no applicable evidence (e.g. Engineering with 0
+// commits) — Score should not be printed or averaged when NA is true.
 type Axis struct {
 	Score int    `json:"score"`
 	Why   string `json:"why"`
+	NA    bool   `json:"-"`
 }
 
 // Scores is the 5-axis builder profile.
@@ -79,6 +83,57 @@ func CommitHygiene(pathsPerCommit [][]string) (avgFiles float64, testPairedPct f
 	avgFiles = float64(totalFiles) / float64(len(pathsPerCommit))
 	testPairedPct = 100 * float64(paired) / float64(len(pathsPerCommit))
 	return avgFiles, testPairedPct
+}
+
+// ComputeScores derives the Engineering and Steering axis scores directly
+// from local signals — the two axes with a clean deterministic proxy — so
+// they're reproducible across runs instead of an LLM picking the digit.
+// Engineering is NA when there are no commits in the observed window (atomicity
+// and test-pairing aren't measurable, not evidence of poor discipline).
+func ComputeScores(s Signals, errs funstats.ErrorProfile) (engineering, steering Axis) {
+	if s.TotalCommits == 0 {
+		engineering.NA = true
+	} else {
+		verifiedRate := 0.0
+		if s.TotalSessions > 0 {
+			verifiedRate = float64(s.VerifiedSessions) / float64(s.TotalSessions)
+		}
+		vibe := funstats.VibeCoderScore(0, verifiedRate, errs)
+		atomicity := 1.0
+		if s.AvgFilesPerCommit > 5 {
+			atomicity = 5 / s.AvgFilesPerCommit
+			if atomicity < 0 {
+				atomicity = 0
+			}
+		}
+		pairing := s.TestPairedCommitPct / 100
+		score := 100 * (0.4*atomicity + 0.3*pairing + 0.3*(vibe/100))
+		engineering.Score = scaleToTen(score)
+	}
+
+	steeringRate := 0.0
+	if s.TotalPrompts > 0 {
+		steeringRate = float64(s.SteeredPrompts) / float64(s.TotalPrompts)
+	}
+	steering.Score = scaleToTen(100 * (1 - steeringRate))
+	return engineering, steering
+}
+
+func scaleToTen(pct float64) int {
+	if pct < 0 {
+		pct = 0
+	}
+	if pct > 100 {
+		pct = 100
+	}
+	n := int(pct/10 + 0.5)
+	if n < 1 {
+		n = 1
+	}
+	if n > 10 {
+		n = 10
+	}
+	return n
 }
 
 var testRunPattern = regexp.MustCompile(`(?i)\b(go test|npm test|npm run test|yarn test|pnpm test|pytest|jest|vitest|cargo test|mvn test|gradle test|rspec|dotnet test)\b`)
@@ -142,13 +197,15 @@ func BuildPrompt(s Signals) string {
 	}
 
 	sb.WriteString(`
-Score these 5 axes from 1-10 using the rubric below. Each "why" must name the
-evidence line that justified the score.
+Score execution, product_instinct, and planning from 1-10 using the rubric
+below. Each "why" must name the evidence line that justified the score.
 
-- steering: prompt specificity and directive clarity (judge the actual prompt
-  text quality, not just interruption frequency — a low steering rate can
-  mean either trust from clear upfront direction, or disengagement; use the
-  prompt samples to tell which)
+steering and engineering are scored deterministically elsewhere from the raw
+numbers — you do NOT pick their digit (put 0 in "score" for both, it is
+discarded). You still write their "why": explain what the numbers mean,
+using the prompt samples to tell whether a low steering rate reflects trust
+from clear upfront direction, or disengagement.
+
 - execution: shipping cadence and follow-through across work streams
 - engineering: weighted from commit atomicity (fewer files/commit is better,
   >10 avg is a red flag for sprawling changes) AND test-coverage discipline
@@ -156,9 +213,10 @@ evidence line that justified the score.
   standard senior-engineer practice — near-0% is a real gap, not neutral)
 - product_instinct: judgment on what to build/skip, visible in prompts/notes
 - planning: evidence of upfront structure vs. reactive thrashing
+- steering: prompt specificity and directive clarity
 
 Respond with ONLY this JSON shape, no prose, no markdown fences:
-{"steering":{"score":N,"why":"..."},"execution":{"score":N,"why":"..."},"engineering":{"score":N,"why":"..."},"product_instinct":{"score":N,"why":"..."},"planning":{"score":N,"why":"..."}}
+{"steering":{"score":0,"why":"..."},"execution":{"score":N,"why":"..."},"engineering":{"score":0,"why":"..."},"product_instinct":{"score":N,"why":"..."},"planning":{"score":N,"why":"..."}}
 `)
 	return sb.String()
 }
