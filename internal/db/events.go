@@ -95,7 +95,7 @@ func (d *DB) UndistilledEventsFiltered(limit int, includeUnknown bool) ([]Event,
 	}
 
 	rows, err := d.conn.Query(
-		`SELECT id, ts, session_id, project_id, source_tool, event_type, tool_name, payload, distilled
+		`SELECT id, ts, session_id, project_id, source_tool, event_type, COALESCE(tool_name,''), payload, distilled
 		 FROM events
 		 WHERE distilled=0 AND session_id = ? AND project_id = ?
 		 ORDER BY ts ASC LIMIT ?`, targetSession, targetProject, limit,
@@ -157,7 +157,7 @@ func (d *DB) SearchEvents(query string, limit int) ([]Event, error) {
 	// Escape any embedded double-quotes by doubling them, then phrase-quote the whole thing.
 	ftsQuery := `"` + strings.ReplaceAll(query, `"`, `""`) + `"`
 	rows, err := d.conn.Query(
-		`SELECT e.id, e.ts, e.session_id, e.project_id, e.source_tool, e.event_type, e.tool_name, e.payload, e.distilled
+		`SELECT e.id, e.ts, e.session_id, e.project_id, e.source_tool, e.event_type, COALESCE(e.tool_name,''), e.payload, e.distilled
 		 FROM events e
 		 JOIN events_fts f ON e.rowid = f.rowid
 		 WHERE events_fts MATCH ?
@@ -189,7 +189,7 @@ func (d *DB) SearchEventsByProject(projectID, query string, limit int) ([]Event,
 	ftsQuery := `"` + strings.ReplaceAll(query, `"`, `""`) + `"`
 	exact, unixLike, windowsLike := projectIDSelectors(projectID)
 	rows, err := d.conn.Query(
-		`SELECT e.id, e.ts, e.session_id, e.project_id, e.source_tool, e.event_type, e.tool_name, e.payload, e.distilled
+		`SELECT e.id, e.ts, e.session_id, e.project_id, e.source_tool, e.event_type, COALESCE(e.tool_name,''), e.payload, e.distilled
 		 FROM events e
 		 JOIN events_fts f ON e.rowid = f.rowid
 		 WHERE events_fts MATCH ?
@@ -255,7 +255,7 @@ func (d *DB) MarkSessionDistilled(sessionID string) error {
 // SessionEvents returns the most recent events for a specific session.
 func (d *DB) SessionEvents(sessionID string, limit int) ([]Event, error) {
 	rows, err := d.conn.Query(
-		`SELECT id, ts, session_id, project_id, source_tool, event_type, tool_name, payload, distilled
+		`SELECT id, ts, session_id, project_id, source_tool, event_type, COALESCE(tool_name,''), payload, distilled
 		 FROM events WHERE session_id=? ORDER BY ts DESC LIMIT ?`, sessionID, limit,
 	)
 	if err != nil {
@@ -279,7 +279,7 @@ func (d *DB) SessionEvents(sessionID string, limit int) ([]Event, error) {
 // capped at a cutoff timestamp. limit > 0 applies LIMIT n; limit == 0 returns
 // all matching events (used by distill-agent for large sessions).
 func (d *DB) SessionEventsUpTo(sessionID, cutoffTS string, limit int) ([]Event, error) {
-	query := `SELECT id, ts, session_id, project_id, source_tool, event_type, tool_name, payload, distilled
+	query := `SELECT id, ts, session_id, project_id, source_tool, event_type, COALESCE(tool_name,''), payload, distilled
 		 FROM events WHERE session_id=?`
 	args := []any{sessionID}
 	if strings.TrimSpace(cutoffTS) != "" {
@@ -313,7 +313,7 @@ func (d *DB) SessionEventsUpTo(sessionID, cutoffTS string, limit int) ([]Event, 
 // RecentEvents returns the most recent events.
 func (d *DB) RecentEvents(limit int) ([]Event, error) {
 	rows, err := d.conn.Query(
-		`SELECT id, ts, session_id, project_id, source_tool, event_type, tool_name, payload, distilled
+		`SELECT id, ts, session_id, project_id, source_tool, event_type, COALESCE(tool_name,''), payload, distilled
 		 FROM events ORDER BY ts DESC LIMIT ?`, limit,
 	)
 	if err != nil {
