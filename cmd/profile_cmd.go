@@ -193,9 +193,15 @@ func profileOne(database *db.DB, projectID, gitRoot string) (profile.Signals, pr
 		}
 	}
 
+	sigs, err := database.FailureSignaturesByProject(projectID)
+	if err != nil {
+		return sig, profile.Scores{}, true, err
+	}
+	errs := funstats.ComputeErrorProfile(sigs)
+
 	cfg := distill.LoadConfig()
 	d := distill.New(database, cfg)
-	resp, err := d.CallLLM(profile.BuildPrompt(sig))
+	resp, err := d.CallLLM(profile.BuildPrompt(sig, errs))
 	if err != nil {
 		return sig, profile.Scores{}, true, fmt.Errorf("calling LLM (%w). Configure a provider: forge config --provider <name> --api-key <key>", err)
 	}
@@ -205,11 +211,6 @@ func profileOne(database *db.DB, projectID, gitRoot string) (profile.Signals, pr
 		return sig, profile.Scores{}, true, fmt.Errorf("parsing model response: %w\nRaw response:\n%s", err, resp)
 	}
 
-	sigs, err := database.FailureSignaturesByProject(projectID)
-	if err != nil {
-		return sig, profile.Scores{}, true, err
-	}
-	errs := funstats.ComputeErrorProfile(sigs)
 	engineering, steering := profile.ComputeScores(sig, errs)
 	engineering.Why = scores.Engineering.Why
 	steering.Why = scores.Steering.Why

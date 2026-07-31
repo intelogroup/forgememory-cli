@@ -18,6 +18,7 @@ type statsResult struct {
 	top         []string
 	concurrent  int
 	steer       steering.Stats
+	steeringTag string
 	vibeScore   float64
 	totalRanges int
 }
@@ -128,6 +129,7 @@ func statsOne(database *db.DB, projectID string) (statsResult, bool, error) {
 	errProfile := funstats.ComputeErrorProfile(sigs)
 	verifiedRate := float64(verifiedSessions) / float64(len(ranges))
 	vibeScore := funstats.VibeCoderScore(steer.Rate(), verifiedRate, errProfile)
+	steeringTag := funstats.SteeringLabel(steer.Rate(), errProfile)
 
 	return statsResult{
 		archetype:   archetype,
@@ -135,6 +137,7 @@ func statsOne(database *db.DB, projectID string) (statsResult, bool, error) {
 		top:         top,
 		concurrent:  concurrent,
 		steer:       steer,
+		steeringTag: steeringTag,
 		vibeScore:   vibeScore,
 		totalRanges: len(ranges),
 	}, true, nil
@@ -146,6 +149,6 @@ func printStats(projectID string, res statsResult) {
 	fmt.Printf("  Peak hour (UTC):   %02d:00\n", res.peak)
 	fmt.Printf("  Top prompt words:  %v\n", res.top)
 	fmt.Printf("  Max concurrent sessions: %d\n", res.concurrent)
-	fmt.Printf("  Steering rate:     %.0f%% (%d/%d prompts)\n", res.steer.Rate()*100, res.steer.SteeredPrompts, res.steer.TotalPrompts)
+	fmt.Printf("  Steering rate:     %.0f%% (%d/%d prompts) [%s]\n", res.steer.Rate()*100, res.steer.SteeredPrompts, res.steer.TotalPrompts, res.steeringTag)
 	fmt.Printf("  Engineer score:    %.0f%% (vibe-coder: %.0f%%)\n", res.vibeScore, 100-res.vibeScore)
 }

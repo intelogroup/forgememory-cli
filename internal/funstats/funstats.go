@@ -206,3 +206,19 @@ func VibeCoderScore(steeringRate, verifiedRate float64, errs ErrorProfile) float
 
 	return 100 * (0.35*steeringRate + 0.35*verifiedRate + 0.3*understanding)
 }
+
+// SteeringLabel disambiguates a low steering rate: "trust" (clear upfront
+// direction, few corrections needed) vs. "disengagement" (not reviewing
+// closely enough to catch and correct problems, masked by repeated flailing
+// on the same errors). "active" marks a high steering rate — frequent
+// mid-task correction, neither of the other two.
+func SteeringLabel(rate float64, errs ErrorProfile) string {
+	const lowRate = 0.15
+	if rate > lowRate {
+		return "active"
+	}
+	if errs.Total > 0 && float64(errs.FlailingRepeats)/float64(errs.Total) > 0.3 {
+		return "disengagement"
+	}
+	return "trust"
+}

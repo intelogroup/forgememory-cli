@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	"github.com/forge/forge/internal/db"
+	"github.com/forge/forge/internal/funstats"
 )
 
 func TestParseScores_Clean(t *testing.T) {
@@ -38,7 +39,7 @@ func TestParseScores_NoJSON(t *testing.T) {
 }
 
 func TestBuildPrompt_IncludesEvidence(t *testing.T) {
-	p := BuildPrompt(Signals{ProjectID: "demo", TotalCommits: 5, TotalPrompts: 10, SteeredPrompts: 2, AvgFilesPerCommit: 3.2, TestPairedCommitPct: 40})
+	p := BuildPrompt(Signals{ProjectID: "demo", TotalCommits: 5, TotalPrompts: 10, SteeredPrompts: 2, AvgFilesPerCommit: 3.2, TestPairedCommitPct: 40}, funstats.ErrorProfile{})
 	if !strings.Contains(p, "5 commits") || !strings.Contains(p, "2/10 prompts") {
 		t.Errorf("prompt missing evidence: %s", p)
 	}

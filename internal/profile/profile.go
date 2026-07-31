@@ -160,7 +160,7 @@ func ClassifyEvents(events []db.Event) (toolCounts map[string]int, hasTestRun bo
 // BuildPrompt renders the signals into an LLM prompt that scores 5 axes
 // against a concrete engineering rubric, grounded only in the evidence
 // given — not vague adjectives.
-func BuildPrompt(s Signals) string {
+func BuildPrompt(s Signals, errs funstats.ErrorProfile) string {
 	var sb strings.Builder
 	fmt.Fprintf(&sb, "You are a principal engineer assessing a software builder's habits on project %q using ONLY the evidence below. Do not invent facts. Do not give generic praise — every rationale must cite a specific number from the evidence.\n\n", s.ProjectID)
 
@@ -177,8 +177,9 @@ func BuildPrompt(s Signals) string {
 			s.VerifiedSessions, s.TotalSessions, 100*float64(s.VerifiedSessions)/float64(s.TotalSessions))
 	}
 	if s.TotalPrompts > 0 {
-		fmt.Fprintf(&sb, "- %d/%d prompts interrupted the agent mid-task (steering rate %.0f%%)\n",
-			s.SteeredPrompts, s.TotalPrompts, 100*float64(s.SteeredPrompts)/float64(s.TotalPrompts))
+		steeringRate := float64(s.SteeredPrompts) / float64(s.TotalPrompts)
+		fmt.Fprintf(&sb, "- %d/%d prompts interrupted the agent mid-task (steering rate %.0f%%), local signal classifies this as %q\n",
+			s.SteeredPrompts, s.TotalPrompts, 100*steeringRate, funstats.SteeringLabel(steeringRate, errs))
 	}
 	if len(s.ToolCounts) > 0 {
 		fmt.Fprintf(&sb, "- Tool usage: %s\n", formatToolCounts(s.ToolCounts))
@@ -202,9 +203,10 @@ below. Each "why" must name the evidence line that justified the score.
 
 steering and engineering are scored deterministically elsewhere from the raw
 numbers — you do NOT pick their digit (put 0 in "score" for both, it is
-discarded). You still write their "why": explain what the numbers mean,
-using the prompt samples to tell whether a low steering rate reflects trust
-from clear upfront direction, or disengagement.
+discarded). You still write their "why": explain what the numbers mean. For
+steering, the evidence already classifies the rate as "trust", "disengagement",
+or "active" — use the prompt samples to explain WHY that classification fits
+(or, if the prompt samples clearly contradict it, say so).
 
 - execution: shipping cadence and follow-through across work streams
 - engineering: weighted from commit atomicity (fewer files/commit is better,
