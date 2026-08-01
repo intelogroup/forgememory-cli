@@ -181,10 +181,27 @@ func TestParsePrinciplesWithMarkdown(t *testing.T) {
 }
 
 func TestParsePrinciplesInvalidJSON(t *testing.T) {
+	// Non-array/malformed LLM responses are treated as "no principles" rather
+	// than a hard error, so a single bad response doesn't stall the drain
+	// loop forever (#38 cause 2: the batch must still get MarkDistilled'd).
 	d := &Distiller{}
-	_, err := d.parsePrinciples("not json at all", "test")
-	if err == nil {
-		t.Error("expected error for invalid JSON")
+	principles, err := d.parsePrinciples("not json at all", "test")
+	if err != nil {
+		t.Fatalf("expected no error for malformed JSON, got: %v", err)
+	}
+	if principles != nil {
+		t.Errorf("expected nil principles for malformed JSON, got: %v", principles)
+	}
+}
+
+func TestParsePrinciplesNonArrayObject(t *testing.T) {
+	d := &Distiller{}
+	principles, err := d.parsePrinciples(`{"foo": "bar"}`, "test")
+	if err != nil {
+		t.Fatalf("expected no error for non-array JSON object, got: %v", err)
+	}
+	if principles != nil {
+		t.Errorf("expected nil principles for non-array JSON object, got: %v", principles)
 	}
 }
 
@@ -559,6 +576,111 @@ func TestDistillBatchNoReDistill(t *testing.T) {
 	total, _, _ := database.EventCount()
 	if total != 8 {
 		t.Errorf("total events = %d, want 8", total)
+	}
+}
+
+// TestDistillBatchShortSessionDoesNotStall verifies that the --all drain
+// path (DistillBatchIncludingUnknown) marks a sub-3-event session distilled
+// rather than re-selecting it forever, since UndistilledEventsFiltered
+// scopes the batch to a single session and can never surface the
+// multi-session boundary that used to be required to unblock it (#38 cause
+// 1).
+func TestDistillBatchShortSessionDoesNotStall(t *testing.T) {
+	database, err := db.Open(t.TempDir() + "/test.db")
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	defer database.Close()
+
+	callCount := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		callCount++
+		json.NewEncoder(w).Encode(map[string]any{
+			"choices": []map[string]any{{"message": map[string]string{"content": `[]`}}},
+			"usage":   map[string]int{"prompt_tokens": 10, "completion_tokens": 5, "total_tokens": 15},
+		})
+	}))
+	defer server.Close()
+
+	d := &Distiller{
+		db: database,
+		config: Config{
+			Provider: ProviderGroq,
+			Model:    "llama-3.3-70b-versatile",
+			APIKey:   "gsk-test",
+			BaseURL:  server.URL,
+		},
+		client: server.Client(),
+	}
+
+	// Only 2 events in the oldest (and only) session — below the
+	// distillation minimum of 3.
+	for i := 0; i < 2; i++ {
+		database.InsertEvent(&db.Event{
+			SessionID: "short-sess", ProjectID: "proj", SourceTool: "claude",
+			EventType: "PostToolUse", ToolName: "Edit",
+			Payload: `{"file":"main.go"}`,
+		})
+	}
+
+	n, err := d.DistillBatchIncludingUnknown(50)
+	if err != nil {
+		t.Fatalf("DistillBatchIncludingUnknown: %v", err)
+	}
+	if n != 0 {
+		t.Errorf("principles = %d, want 0", n)
+	}
+	if callCount != 0 {
+		t.Errorf("LLM should not be called for a sub-minimum batch, got %d calls", callCount)
+	}
+
+	_, undistilled, _ := database.EventCount()
+	if undistilled != 0 {
+		t.Errorf("undistilled after batch = %d, want 0 (short session must be marked distilled to avoid stalling the drain)", undistilled)
+	}
+
+	// A second call must be a true no-op (0 events left), not a re-select
+	// of the same short session — that's the actual stall condition.
+	n2, err := d.DistillBatchIncludingUnknown(50)
+	if err != nil {
+		t.Fatalf("second DistillBatchIncludingUnknown: %v", err)
+	}
+	if n2 != 0 {
+		t.Errorf("second call principles = %d, want 0", n2)
+	}
+}
+
+// TestDistillBatchShortSessionKeepsQueueForOneShot verifies the plain
+// (non-drain) DistillBatch still leaves a sub-3-event session queued so it
+// can grow past the minimum on a later run, preserving existing one-shot
+// `forge distill` UX (see TestRunDistill_NotEnoughEventsKeepsQueue in cmd/).
+func TestDistillBatchShortSessionKeepsQueueForOneShot(t *testing.T) {
+	database, err := db.Open(t.TempDir() + "/test.db")
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	defer database.Close()
+
+	d := &Distiller{db: database, config: Config{Provider: ProviderGroq, Model: "llama-3.3-70b-versatile", APIKey: "gsk-test"}}
+
+	for i := 0; i < 2; i++ {
+		database.InsertEvent(&db.Event{
+			SessionID: "short-sess", ProjectID: "proj", SourceTool: "claude",
+			EventType: "PostToolUse", ToolName: "Edit",
+			Payload: `{"file":"main.go"}`,
+		})
+	}
+
+	n, err := d.DistillBatch(50)
+	if err != nil {
+		t.Fatalf("DistillBatch: %v", err)
+	}
+	if n != 0 {
+		t.Errorf("principles = %d, want 0", n)
+	}
+	_, undistilled, _ := database.EventCount()
+	if undistilled != 2 {
+		t.Errorf("undistilled after one-shot DistillBatch = %d, want 2 (events must stay queued)", undistilled)
 	}
 }
 

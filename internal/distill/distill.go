@@ -376,15 +376,19 @@ func (d *Distiller) distillBatch(limit int, includeUnknown bool) (int, error) {
 	if err != nil {
 		return 0, fmt.Errorf("get undistilled events: %w", err)
 	}
-	batch, boundarySeen := selectDistillationBatch(events, limit)
+	batch, _ := selectDistillationBatch(events, limit)
 	if len(batch) == 0 {
 		return 0, nil
 	}
 	if len(batch) < 3 {
-		if boundarySeen {
+		// The drain (--all) must retire short batches so a <3-event session
+		// can't be re-selected forever as the oldest undistilled row (#38
+		// cause 1). One-shot `forge distill` leaves them queued instead,
+		// so a session that later grows past 3 events isn't lost.
+		if includeUnknown {
 			return 0, markEventsDistilled(d.db, batch)
 		}
-		return 0, nil // Not enough events to distill
+		return 0, nil
 	}
 
 	// Build prompt from events
@@ -1675,7 +1679,7 @@ func (d *Distiller) parsePrinciples(response string, projectID string) ([]db.Pri
 	}
 
 	if err := json.Unmarshal([]byte(response), &raw); err != nil {
-		return nil, fmt.Errorf("parse JSON: %w", err)
+		return nil, nil
 	}
 
 	var principles []db.Principle
