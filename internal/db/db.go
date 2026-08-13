@@ -95,7 +95,20 @@ func defaultPath() string {
 	return filepath.Join(home, ".forge", "forge.db")
 }
 
+// migrate applies the full schema in one transaction. It runs on every
+// Open(), including every short-lived CLI subprocess invocation, so batching
+// its ~60 statements into a single lock acquisition (instead of one
+// auto-committed statement at a time) matters: unbatched, each call raced the
+// daemon's own writes for many separate lock windows, which was reliably
+// slow enough on Windows CI's stricter/slower file locking to exceed the
+// busy_timeout and surface as spurious "database is locked" failures.
 func (d *DB) migrate() error {
+	tx, err := d.conn.Begin()
+	if err != nil {
+		return fmt.Errorf("begin migration: %w", err)
+	}
+	defer tx.Rollback()
+
 	migrations := []string{
 		`CREATE TABLE IF NOT EXISTS events (
 			id          TEXT PRIMARY KEY,
@@ -238,7 +251,7 @@ func (d *DB) migrate() error {
 		END`,
 	}
 	for _, m := range migrations {
-		if _, err := d.conn.Exec(m); err != nil {
+		if _, err := tx.Exec(m); err != nil {
 			return fmt.Errorf("exec migration: %w", err)
 		}
 	}
@@ -392,43 +405,43 @@ func (d *DB) migrate() error {
 		`CREATE INDEX IF NOT EXISTS idx_session_commits_project ON session_commits(project_id, commit_ts DESC)`,
 	}
 	for _, m := range extraMigrations {
-		if _, err := d.conn.Exec(m); err != nil {
+		if _, err := tx.Exec(m); err != nil {
 			return fmt.Errorf("exec migration: %w", err)
 		}
 	}
 	for _, cm := range colMigrations {
-		if err := d.addColumnIfMissing(cm.table, cm.col, cm.def); err != nil {
+		if err := addColumnIfMissing(tx, cm.table, cm.col, cm.def); err != nil {
 			return fmt.Errorf("add column %s.%s: %w", cm.table, cm.col, err)
 		}
 	}
 	// Indexes that depend on columns added above must run after colMigrations.
-	if _, err := d.conn.Exec(
+	if _, err := tx.Exec(
 		`CREATE INDEX IF NOT EXISTS idx_principles_status ON principles(project_id, status)`,
 	); err != nil {
 		return fmt.Errorf("exec migration: %w", err)
 	}
-	if _, err := d.conn.Exec(`INSERT OR IGNORE INTO distillation_health(id) VALUES ('singleton')`); err != nil {
+	if _, err := tx.Exec(`INSERT OR IGNORE INTO distillation_health(id) VALUES ('singleton')`); err != nil {
 		return fmt.Errorf("init distillation_health singleton: %w", err)
 	}
-	if err := d.maybeRebuildPrinciplesFTS(); err != nil {
+	if err := maybeRebuildPrinciplesFTS(tx); err != nil {
 		return fmt.Errorf("principles fts rebuild: %w", err)
 	}
-	return nil
+	return tx.Commit()
 }
 
 // maybeRebuildPrinciplesFTS runs a one-time FTS rebuild to backfill principles
 // that existed before the FTS index was added. Runs exactly once per DB file,
 // tracked in _fts_rebuild_log so it never repeats on subsequent startups.
-func (d *DB) maybeRebuildPrinciplesFTS() error {
+func maybeRebuildPrinciplesFTS(tx *sql.Tx) error {
 	var doneat string
-	_ = d.conn.QueryRow(`SELECT done_at FROM _fts_rebuild_log WHERE name='principles_fts_v1'`).Scan(&doneat)
+	_ = tx.QueryRow(`SELECT done_at FROM _fts_rebuild_log WHERE name='principles_fts_v1'`).Scan(&doneat)
 	if doneat != "" {
 		return nil
 	}
-	if _, err := d.conn.Exec(`INSERT INTO principles_fts(principles_fts) VALUES('rebuild')`); err != nil {
+	if _, err := tx.Exec(`INSERT INTO principles_fts(principles_fts) VALUES('rebuild')`); err != nil {
 		return err
 	}
-	_, err := d.conn.Exec(
+	_, err := tx.Exec(
 		`INSERT OR REPLACE INTO _fts_rebuild_log(name, done_at) VALUES('principles_fts_v1', ?)`,
 		time.Now().UTC().Format(time.RFC3339),
 	)
@@ -436,8 +449,8 @@ func (d *DB) maybeRebuildPrinciplesFTS() error {
 }
 
 // addColumnIfMissing runs ALTER TABLE ADD COLUMN, ignoring duplicate-column errors.
-func (d *DB) addColumnIfMissing(table, column, colDef string) error {
-	_, err := d.conn.Exec(fmt.Sprintf("ALTER TABLE %s ADD COLUMN %s %s", table, column, colDef))
+func addColumnIfMissing(tx *sql.Tx, table, column, colDef string) error {
+	_, err := tx.Exec(fmt.Sprintf("ALTER TABLE %s ADD COLUMN %s %s", table, column, colDef))
 	if err != nil && strings.Contains(err.Error(), "duplicate column name") {
 		return nil
 	}
