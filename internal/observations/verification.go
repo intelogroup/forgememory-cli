@@ -99,7 +99,7 @@ func DetectVerification(input Input) []ObservationDraft {
 		if len(matchingSuccesses) > 0 {
 			best := matchingSuccesses[0]
 			confidence := verificationConfidence(best, changed)
-			counterSources := testSources(counterTests)
+			counterSources := testSources(contradictingTests(changed, counterTests))
 			for _, failure := range matchingFailures {
 				if failure.at.After(best.at) && sameTestFamily(best.command, failure.command) {
 					counterSources = append(counterSources, failure.source)
@@ -287,6 +287,24 @@ func matchTests(changed change, runs []testRun) (successes []testRun, counters [
 		return left > right
 	})
 	return successes, counters
+}
+
+// contradictingTests narrows a change's counterTests down to the ones that
+// actually bear on whether *this* change was verified: runs relevant to its
+// path that happened after it within the delayed-test window, but didn't
+// succeed (a relevant, timely success would already be in successes, not
+// counters). counterTests otherwise mixes in runs for unrelated changes
+// elsewhere in the same session, runs that predate this change, and runs
+// outside the window — none of which contradict a verification that did
+// happen, so they must not reduce its confidence.
+func contradictingTests(changed change, counterTests []testRun) []testRun {
+	var contradicting []testRun
+	for _, run := range counterTests {
+		if run.at.After(changed.at) && run.at.Sub(changed.at) <= delayedTestWindow && isRelevant(changed.path, run) {
+			contradicting = append(contradicting, run)
+		}
+	}
+	return contradicting
 }
 
 func failuresAfter(changed change, failures []failure) []failure {
