@@ -117,6 +117,16 @@ func (d *DB) ListObservations(projectID string, status string, limit int) ([]Obs
 	if limit <= 0 {
 		limit = 100
 	}
+	return d.listObservations(projectID, status, limit)
+}
+
+// ListAllObservations returns every matching observation for internal
+// reconciliation paths. User-facing queries should use ListObservations.
+func (d *DB) ListAllObservations(projectID, status string) ([]Observation, error) {
+	return d.listObservations(projectID, status, 0)
+}
+
+func (d *DB) listObservations(projectID, status string, limit int) ([]Observation, error) {
 	query := `SELECT id, created_at, project_id, session_id, kind, skill_key, confidence, severity, status, summary, extractor_version
 		FROM observations WHERE project_id=?`
 	args := []any{projectID}
@@ -124,8 +134,11 @@ func (d *DB) ListObservations(projectID string, status string, limit int) ([]Obs
 		query += ` AND status=?`
 		args = append(args, status)
 	}
-	query += ` ORDER BY created_at DESC LIMIT ?`
-	args = append(args, limit)
+	query += ` ORDER BY created_at DESC`
+	if limit > 0 {
+		query += ` LIMIT ?`
+		args = append(args, limit)
+	}
 	rows, err := d.conn.Query(query, args...)
 	if err != nil {
 		return nil, err
@@ -189,6 +202,17 @@ func (d *DB) ListCoachingItems(projectID, status string, limit int) ([]CoachingI
 	if limit <= 0 {
 		limit = 100
 	}
+	return d.listCoachingItems(projectID, status, limit)
+}
+
+// ListAllCoachingItems returns every matching coaching item for internal
+// lifecycle and suppression checks. User-facing queries should use
+// ListCoachingItems.
+func (d *DB) ListAllCoachingItems(projectID, status string) ([]CoachingItem, error) {
+	return d.listCoachingItems(projectID, status, 0)
+}
+
+func (d *DB) listCoachingItems(projectID, status string, limit int) ([]CoachingItem, error) {
 	query := `SELECT id, observation_id, skill_key, project_id, status, delivery_mode, question, next_action, lesson,
 		created_at, surfaced_at, resolved_at, resolution FROM coaching_items WHERE project_id=?`
 	args := []any{projectID}
@@ -196,8 +220,11 @@ func (d *DB) ListCoachingItems(projectID, status string, limit int) ([]CoachingI
 		query += ` AND status=?`
 		args = append(args, status)
 	}
-	query += ` ORDER BY created_at DESC LIMIT ?`
-	args = append(args, limit)
+	query += ` ORDER BY created_at DESC`
+	if limit > 0 {
+		query += ` LIMIT ?`
+		args = append(args, limit)
+	}
 	rows, err := d.conn.Query(query, args...)
 	if err != nil {
 		return nil, err

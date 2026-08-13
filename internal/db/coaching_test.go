@@ -1,6 +1,7 @@
 package db
 
 import (
+	"fmt"
 	"path/filepath"
 	"testing"
 )
@@ -38,6 +39,54 @@ func TestCoachingSchemaAndSeed(t *testing.T) {
 	}
 	if seedCount != 1 {
 		t.Fatalf("verification.pre_ship seed count = %d, want 1", seedCount)
+	}
+}
+
+func TestCompleteCoachingListsBypassPublicPageLimit(t *testing.T) {
+	database, err := Open(filepath.Join(t.TempDir(), "test.db"))
+	if err != nil {
+		t.Fatalf("Open failed: %v", err)
+	}
+	defer database.Close()
+
+	for i := 0; i < 101; i++ {
+		id := fmt.Sprintf("observation-%03d", i)
+		if err := database.InsertObservation(&Observation{ID: id, CreatedAt: "2026-08-13T12:00:00Z", ProjectID: "project-a", Kind: "verification_detected", SkillKey: "verification.pre_ship", Confidence: 0.9, Severity: "info", Status: "active", Summary: "tests passed"}); err != nil {
+			t.Fatalf("InsertObservation %q: %v", id, err)
+		}
+		if err := database.InsertCoachingItem(&CoachingItem{ID: fmt.Sprintf("coaching-%03d", i), ObservationID: id, ProjectID: "project-a", SkillKey: "verification.pre_ship", Status: "queued", DeliveryMode: "normal", CreatedAt: "2026-08-13T12:00:00Z"}); err != nil {
+			t.Fatalf("InsertCoachingItem %q: %v", id, err)
+		}
+	}
+
+	observations, err := database.ListObservations("project-a", "active", 0)
+	if err != nil {
+		t.Fatalf("ListObservations: %v", err)
+	}
+	if len(observations) != 100 {
+		t.Fatalf("ListObservations returned %d records, want bounded 100", len(observations))
+	}
+	allObservations, err := database.ListAllObservations("project-a", "active")
+	if err != nil {
+		t.Fatalf("ListAllObservations: %v", err)
+	}
+	if len(allObservations) != 101 {
+		t.Fatalf("ListAllObservations returned %d records, want 101", len(allObservations))
+	}
+
+	items, err := database.ListCoachingItems("project-a", "queued", 0)
+	if err != nil {
+		t.Fatalf("ListCoachingItems: %v", err)
+	}
+	if len(items) != 100 {
+		t.Fatalf("ListCoachingItems returned %d records, want bounded 100", len(items))
+	}
+	allItems, err := database.ListAllCoachingItems("project-a", "queued")
+	if err != nil {
+		t.Fatalf("ListAllCoachingItems: %v", err)
+	}
+	if len(allItems) != 101 {
+		t.Fatalf("ListAllCoachingItems returned %d records, want 101", len(allItems))
 	}
 }
 

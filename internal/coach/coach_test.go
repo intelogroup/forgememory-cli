@@ -1,6 +1,7 @@
 package coach
 
 import (
+	"fmt"
 	"path/filepath"
 	"testing"
 
@@ -33,7 +34,7 @@ func TestParseMode(t *testing.T) {
 	}
 }
 
-func TestQueueEligibleSuppressesLowConfidenceEvidence(t *testing.T) {
+func TestQueueEligibleTrustsProjectSuspectedGapState(t *testing.T) {
 	database := openTestDB(t)
 	seedSuspectedGap(t, database, "project-a", "low-confidence", 0.69)
 
@@ -41,10 +42,32 @@ func TestQueueEligibleSuppressesLowConfidenceEvidence(t *testing.T) {
 	if err != nil {
 		t.Fatalf("QueueEligible: %v", err)
 	}
-	if queued != 0 {
-		t.Fatalf("QueueEligible queued %d items, want 0", queued)
+	if queued != 1 {
+		t.Fatalf("QueueEligible queued %d items, want 1", queued)
 	}
-	assertItems(t, database, "project-a", "", 0)
+	assertItems(t, database, "project-a", statusQueued, 1)
+}
+
+func TestQueueEligibleSuppressesSingleHighConfidenceEventBeforeStateTransition(t *testing.T) {
+	database := openTestDB(t)
+	if err := database.InsertObservation(&db.Observation{ID: "single-high-confidence", CreatedAt: "2026-08-13T12:00:00Z", ProjectID: "project-a", Kind: "code_change_without_relevant_test", SkillKey: "verification.pre_ship", Confidence: 0.99, Severity: "warning", Status: "active", Summary: "A code change had no detected relevant passing test."}); err != nil {
+		t.Fatalf("InsertObservation: %v", err)
+	}
+	state, _ := skills.Evaluate(db.SkillState{SkillKey: "verification.pre_ship", ScopeType: skills.ScopeProject, ScopeID: "project-a"}, skills.EvidenceSummary{Confidence: 0.99, CounterEvidence: 1, FailedApplications: 1})
+	if state.State == skills.StateSuspectedGap {
+		t.Fatalf("single event state = %q, want state before suspected_gap", state.State)
+	}
+	if err := database.UpsertSkillState(&state); err != nil {
+		t.Fatalf("UpsertSkillState: %v", err)
+	}
+
+	queued, err := QueueEligible(database, "project-a", ModeNormal)
+	if err != nil {
+		t.Fatalf("QueueEligible: %v", err)
+	}
+	if queued != 0 {
+		t.Fatalf("QueueEligible queued %d single-event items, want 0", queued)
+	}
 }
 
 func TestQueueEligibleQueuesRepeatedHighConfidenceEvidenceWithDefaultLesson(t *testing.T) {
@@ -127,6 +150,45 @@ func TestQueueEligibleDeduplicatesAndStaysWithinProject(t *testing.T) {
 	assertItems(t, database, "project-b", "", 0)
 }
 
+func TestQueueEligibleProcessesObservationsBeyondPublicPageLimit(t *testing.T) {
+	database := openTestDB(t)
+	for i := 0; i < 101; i++ {
+		seedSuspectedGap(t, database, "project-a", fmt.Sprintf("observation-%03d", i), 0.90)
+	}
+
+	queued, err := QueueEligible(database, "project-a", ModeNormal)
+	if err != nil {
+		t.Fatalf("QueueEligible: %v", err)
+	}
+	if queued != 101 {
+		t.Fatalf("QueueEligible queued %d items, want all 101 observations", queued)
+	}
+	again, err := QueueEligible(database, "project-a", ModeNormal)
+	if err != nil {
+		t.Fatalf("second QueueEligible: %v", err)
+	}
+	if again != 0 {
+		t.Fatalf("second QueueEligible queued %d duplicate items, want 0", again)
+	}
+}
+
+func TestQueueEligibleFindsNeverShowSuppressionBeyondPublicPageLimit(t *testing.T) {
+	database := openTestDB(t)
+	insertItem(t, database, db.CoachingItem{ID: "suppression", ObservationID: "suppressed-observation", ProjectID: "project-a", SkillKey: "verification.pre_ship", Status: statusDismissed, DeliveryMode: string(ModeNormal), CreatedAt: "2020-01-01T00:00:00Z", ResolvedAt: "2020-01-01T00:00:01Z", Resolution: neverShowAgain})
+	for i := 0; i < 100; i++ {
+		insertItem(t, database, db.CoachingItem{ID: fmt.Sprintf("newer-%03d", i), ObservationID: fmt.Sprintf("newer-observation-%03d", i), ProjectID: "project-a", SkillKey: "other.skill", Status: statusAccepted, DeliveryMode: string(ModeNormal), CreatedAt: "2026-08-13T12:00:00Z", ResolvedAt: "2026-08-13T12:00:01Z", Resolution: statusAccepted})
+	}
+	seedSuspectedGap(t, database, "project-a", "new-observation", 0.90)
+
+	queued, err := QueueEligible(database, "project-a", ModeNormal)
+	if err != nil {
+		t.Fatalf("QueueEligible: %v", err)
+	}
+	if queued != 0 {
+		t.Fatalf("QueueEligible queued %d suppressed items, want 0", queued)
+	}
+}
+
 func TestSafeBoundarySuggestionReturnsOneDeliverableItemWithoutMutation(t *testing.T) {
 	database := openTestDB(t)
 	insertItem(t, database, db.CoachingItem{ID: "quiet", ProjectID: "project-a", SkillKey: "verification.pre_ship", Status: "queued", DeliveryMode: string(ModeQuiet), CreatedAt: "2026-08-13T10:00:00Z"})
@@ -185,6 +247,25 @@ func TestDeferLeavesItemDeferred(t *testing.T) {
 	}
 }
 
+func TestDeferMakesItemEligibleAtTheNextSafeBoundary(t *testing.T) {
+	database := openTestDB(t)
+	item := queueItem(t, database, "project-a", "defer-and-resurface")
+
+	if err := Defer(database, item.ID); err != nil {
+		t.Fatalf("Defer: %v", err)
+	}
+	suggestion, err := SafeBoundarySuggestion(database, "project-a")
+	if err != nil {
+		t.Fatalf("SafeBoundarySuggestion: %v", err)
+	}
+	if suggestion == nil || suggestion.ID != item.ID || suggestion.Status != statusDeferred {
+		t.Fatalf("SafeBoundarySuggestion = %#v, want deferred item %q", suggestion, item.ID)
+	}
+	if err := Accept(database, suggestion.ID); err != nil {
+		t.Fatalf("Accept deferred suggestion: %v", err)
+	}
+}
+
 func TestDismissRecordsReasonAndNeverShowAgainSuppressesPattern(t *testing.T) {
 	database := openTestDB(t)
 	first := queueItem(t, database, "project-a", "dismissed-observation")
@@ -206,6 +287,33 @@ func TestDismissRecordsReasonAndNeverShowAgainSuppressesPattern(t *testing.T) {
 	}
 	if err := Dismiss(database, first.ID, ""); err == nil {
 		t.Fatal("Dismiss with empty reason error = nil, want error")
+	}
+}
+
+func TestLifecycleRejectsUnknownAndResolvedItems(t *testing.T) {
+	database := openTestDB(t)
+	if err := Accept(database, "missing"); err == nil {
+		t.Fatal("Accept unknown item error = nil, want error")
+	}
+	if err := Defer(database, "missing"); err == nil {
+		t.Fatal("Defer unknown item error = nil, want error")
+	}
+	if err := Dismiss(database, "missing", "not useful"); err == nil {
+		t.Fatal("Dismiss unknown item error = nil, want error")
+	}
+
+	item := queueItem(t, database, "project-a", "resolved-observation")
+	if err := Accept(database, item.ID); err != nil {
+		t.Fatalf("Accept: %v", err)
+	}
+	if err := Accept(database, item.ID); err == nil {
+		t.Fatal("Accept resolved item error = nil, want error")
+	}
+	if err := Defer(database, item.ID); err == nil {
+		t.Fatal("Defer resolved item error = nil, want error")
+	}
+	if err := Dismiss(database, item.ID, "not useful"); err == nil {
+		t.Fatal("Dismiss resolved item error = nil, want error")
 	}
 }
 

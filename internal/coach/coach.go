@@ -13,9 +13,6 @@ import (
 )
 
 const (
-	minimumQueueConfidence = 0.70
-	minimumEvidenceCount   = 2
-
 	defaultQuestion   = "What behavior should the test prove?"
 	defaultNextAction = "Identify one invariant and add the narrowest relevant test."
 
@@ -73,11 +70,11 @@ func QueueEligible(database *db.DB, projectID string, mode Mode) (int, error) {
 		return 0, nil
 	}
 
-	observations, err := database.ListObservations(projectID, "active", 0)
+	observations, err := database.ListAllObservations(projectID, "active")
 	if err != nil {
 		return 0, fmt.Errorf("list observations: %w", err)
 	}
-	items, err := database.ListCoachingItems(projectID, "", 0)
+	items, err := database.ListAllCoachingItems(projectID, "")
 	if err != nil {
 		return 0, fmt.Errorf("list coaching items: %w", err)
 	}
@@ -92,14 +89,14 @@ func QueueEligible(database *db.DB, projectID string, mode Mode) (int, error) {
 
 	queued := 0
 	for _, observation := range observations {
-		if existing[observation.ID] || suppressed[observation.SkillKey] || observation.Confidence < minimumQueueConfidence {
+		if existing[observation.ID] || suppressed[observation.SkillKey] {
 			continue
 		}
 		state, err := database.GetSkillState(observation.SkillKey, skills.ScopeProject, projectID)
 		if err != nil {
 			return queued, fmt.Errorf("get skill state for %s: %w", observation.SkillKey, err)
 		}
-		if state == nil || state.State != skills.StateSuspectedGap || state.EvidenceCount < minimumEvidenceCount {
+		if state == nil || state.State != skills.StateSuspectedGap {
 			continue
 		}
 		item := lessonFor(observation, mode)
@@ -125,8 +122,10 @@ func lessonFor(observation db.Observation, mode Mode) db.CoachingItem {
 	}
 }
 
-// SafeBoundarySuggestion returns the newest item that may be shown at a safe
-// prompt or session boundary. Selection deliberately does not mutate it.
+// SafeBoundarySuggestion returns one item that may be shown at a safe prompt
+// or session boundary. Queued items take priority; when none remain, deferred
+// items become eligible again in newest-first order. Selection does not mutate
+// the selected item.
 func SafeBoundarySuggestion(database *db.DB, projectID string) (*db.CoachingItem, error) {
 	if database == nil {
 		return nil, fmt.Errorf("coach database is required")
@@ -134,13 +133,15 @@ func SafeBoundarySuggestion(database *db.DB, projectID string) (*db.CoachingItem
 	if projectID == "" {
 		return nil, fmt.Errorf("project ID is required")
 	}
-	items, err := database.ListCoachingItems(projectID, statusQueued, 0)
-	if err != nil {
-		return nil, fmt.Errorf("list queued coaching items: %w", err)
-	}
-	for _, item := range items {
-		if item.DeliveryMode == string(ModeNormal) || item.DeliveryMode == string(ModeStrict) {
-			return &item, nil
+	for _, status := range []string{statusQueued, statusDeferred} {
+		items, err := database.ListAllCoachingItems(projectID, status)
+		if err != nil {
+			return nil, fmt.Errorf("list %s coaching items: %w", status, err)
+		}
+		for _, item := range items {
+			if item.DeliveryMode == string(ModeNormal) || item.DeliveryMode == string(ModeStrict) {
+				return &item, nil
+			}
 		}
 	}
 	return nil, nil
@@ -221,7 +222,7 @@ func coachingItem(database *db.DB, id string) (db.CoachingItem, error) {
 }
 
 func requireOpenItem(item db.CoachingItem) error {
-	if item.Status != statusQueued && item.Status != statusSurfaced {
+	if item.Status != statusQueued && item.Status != statusSurfaced && item.Status != statusDeferred {
 		return fmt.Errorf("coaching item %q is already %s", item.ID, item.Status)
 	}
 	return nil
