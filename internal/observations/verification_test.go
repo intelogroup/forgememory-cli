@@ -257,12 +257,15 @@ func TestDetectVerificationFailedTestDoesNotCountAsVerification(t *testing.T) {
 func TestDetectVerificationParsesTextOnlyOutcomesConservatively(t *testing.T) {
 	base := time.Date(2026, time.August, 13, 12, 0, 0, 0, time.UTC)
 	tests := []struct {
-		name      string
-		output    string
-		wantKinds []string
+		name        string
+		output      string
+		wantKinds   []string
+		wantCounter map[string][]string
 	}{
-		{"zero failure summary is success", "Tests: 5 passed, 0 failures", []string{"verification_detected"}},
-		{"ambiguous failure word is unknown", "Previous failures are documented above", []string{"code_change_without_relevant_test"}},
+		{"zero failure summary is success", "Tests: 5 passed, 0 failures", []string{"verification_detected"}, nil},
+		{"mixed pass and failure summary is not positive", "Tests: 5 passed, 1 failed", []string{"code_change_without_relevant_test"}, map[string][]string{"code_change_without_relevant_test": {"test"}}},
+		{"not ok is a failed result", "not ok 1 - charge", []string{"code_change_without_relevant_test"}, map[string][]string{"code_change_without_relevant_test": {"test"}}},
+		{"ambiguous failure word is unknown", "Previous failures are documented above", []string{"code_change_without_relevant_test"}, nil},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -270,9 +273,23 @@ func TestDetectVerificationParsesTextOnlyOutcomesConservatively(t *testing.T) {
 				writeEvent("change", base.Format(time.RFC3339), "internal/payments/charge.go"),
 				textTestEvent("test", base.Add(time.Minute).Format(time.RFC3339), "go test ./internal/payments", tt.output),
 			}})
-			assertDrafts(t, got, tt.wantKinds, nil, nil, nil)
+			assertDrafts(t, got, tt.wantKinds, nil, nil, tt.wantCounter)
 		})
 	}
+}
+
+func TestDetectVerificationDoesNotLinkAmbiguousSimultaneousFailures(t *testing.T) {
+	base := time.Date(2026, time.August, 13, 12, 0, 0, 0, time.UTC)
+	got := DetectVerification(Input{ProjectID: projectID, SessionID: sessionID, Events: []db.Event{
+		writeEvent("change", base.Format(time.RFC3339), "internal/payments/charge.go"),
+		testEvent("z-auth", base.Add(time.Minute).Format(time.RFC3339), "go test ./internal/auth", 1, "FAIL\tforge/internal/auth"),
+		testEvent("a-payments", base.Add(time.Minute).Format(time.RFC3339), "go test ./internal/payments", 1, "FAIL\tforge/internal/payments"),
+	}, Failures: []db.FailureSignature{{
+		ID: "failure", ProjectID: projectID, SessionID: sessionID, CommandFamily: "go test", RepeatCount: 2, LastSeenTS: base.Add(time.Minute).Format(time.RFC3339), NormalizedMessage: "test failed",
+	}}})
+	assertDrafts(t, got, []string{"code_change_without_relevant_test"}, nil, nil, map[string][]string{
+		"code_change_without_relevant_test": {"a-payments", "z-auth"},
+	})
 }
 
 func TestDetectVerificationDraftsAreAuditable(t *testing.T) {
@@ -311,6 +328,26 @@ func TestDetectVerificationDraftsAreAuditable(t *testing.T) {
 		t.Fatalf("missing regression draft in %#v", regression)
 	}
 	assertSource(t, regressionDraft.CounterSources[0], "event", "passed", "go test ./internal/payments")
+
+	positive := DetectVerification(Input{ProjectID: projectID, SessionID: sessionID, Events: []db.Event{
+		writeEvent("change", base.Format(time.RFC3339), "internal/payments/charge.go"),
+		testEvent("passed", base.Add(time.Minute).Format(time.RFC3339), "go test ./internal/payments", 0, "PASS"),
+	}})[0]
+	if positive.SkillKey != "verification.pre_ship" || positive.Severity != "info" || positive.Summary != "A targeted test passed after a code change." {
+		t.Errorf("positive draft = %#v, want verification skill, info severity, and targeted summary", positive)
+	}
+	assertSource(t, positive.SupportingSources[0], "event", "change", "internal/payments/charge.go")
+	assertSource(t, positive.SupportingSources[1], "event", "passed", "go test ./internal/payments")
+
+	missing := DetectVerification(Input{ProjectID: projectID, SessionID: sessionID, Events: []db.Event{
+		writeEvent("change", base.Format(time.RFC3339), "internal/payments/charge.go"),
+		testEvent("unrelated", base.Add(time.Minute).Format(time.RFC3339), "go test ./internal/auth", 0, "PASS"),
+	}})[0]
+	if missing.SkillKey != "verification.pre_ship" || missing.Severity != "warning" || missing.Summary != "A code change had no detected relevant passing test." {
+		t.Errorf("missing-test draft = %#v, want verification skill, warning severity, and missing-test summary", missing)
+	}
+	assertSource(t, missing.SupportingSources[0], "event", "change", "internal/payments/charge.go")
+	assertSource(t, missing.CounterSources[0], "event", "unrelated", "go test ./internal/auth")
 }
 
 func writeEvent(id, ts, path string) db.Event {

@@ -440,20 +440,20 @@ func commandSucceeded(payload string) (bool, bool) {
 			return code == 0, true
 		}
 		output := strings.ToLower(strings.Join(responseStrings(value), "\n"))
-		if hasSuccessText(output) {
-			return true, true
-		}
 		if hasFailureText(output) {
 			return false, true
+		}
+		if hasSuccessText(output) {
+			return true, true
 		}
 		return false, false
 	}
 	text := strings.ToLower(payload)
-	if hasSuccessText(text) {
-		return true, true
-	}
 	if hasFailureText(text) {
 		return false, true
+	}
+	if hasSuccessText(text) {
+		return true, true
 	}
 	return false, false
 }
@@ -519,7 +519,7 @@ func collectStrings(value any, out *[]string) {
 var (
 	zeroFailureSummary = regexp.MustCompile(`(?i)\b0\s+(?:failures?|failed)\b`)
 	passSummary        = regexp.MustCompile(`(?im)^\s*PASS\b|\ball\s+tests?\s+passed\b|\btests?:\s*\d+\s+passed\b|\bok\s+\S+`)
-	failureSummary     = regexp.MustCompile(`(?im)^\s*(?:FAIL|ERROR)\b|\b[1-9]\d*\s+(?:failures?|failed)\b|\btests?\s+failed\b`)
+	failureSummary     = regexp.MustCompile(`(?im)^\s*(?:FAIL|ERROR|not ok)\b|\b[1-9]\d*\s+(?:failures?|failed)\b|\btests?\s+failed\b`)
 )
 
 func hasFailureText(text string) bool { return failureSummary.MatchString(text) }
@@ -610,9 +610,10 @@ func failedRunForSignature(command string, at time.Time, runs []testRun) (testRu
 		if run.success || !sameTestFamily(run.command, command) || !run.at.Equal(at) {
 			continue
 		}
-		if matched.at.IsZero() || run.source.SourceID < matched.source.SourceID {
-			matched = run
+		if !matched.at.IsZero() {
+			return testRun{}, false
 		}
+		matched = run
 	}
 	return matched, !matched.at.IsZero()
 }
