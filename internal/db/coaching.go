@@ -2,6 +2,7 @@ package db
 
 import (
 	"database/sql"
+	"fmt"
 	"time"
 
 	"github.com/google/uuid"
@@ -173,8 +174,16 @@ func (d *DB) GetSkillState(skillKey, scopeType, scopeID string) (*SkillState, er
 }
 
 func (d *DB) UpsertSkillState(state *SkillState) error {
+	return upsertSkillState(d.conn, state)
+}
+
+type sqlExecutor interface {
+	Exec(query string, args ...any) (sql.Result, error)
+}
+
+func upsertSkillState(executor sqlExecutor, state *SkillState) error {
 	nowIfEmpty(&state.UpdatedAt)
-	_, err := d.conn.Exec(`INSERT INTO skill_states
+	_, err := executor.Exec(`INSERT INTO skill_states
 		(skill_key, scope_type, scope_id, state, confidence, evidence_count, successful_applications,
 		 failed_applications, last_observed_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 		ON CONFLICT(skill_key, scope_type, scope_id) DO UPDATE SET state=excluded.state, confidence=excluded.confidence,
@@ -183,6 +192,39 @@ func (d *DB) UpsertSkillState(state *SkillState) error {
 		 updated_at=excluded.updated_at`, state.SkillKey, state.ScopeType, state.ScopeID, state.State, state.Confidence,
 		state.EvidenceCount, state.SuccessfulApplications, state.FailedApplications, state.LastObservedAt, state.UpdatedAt)
 	return err
+}
+
+// ApplySkillStateOnce persists a skill-state transition and its durable
+// processing marker together. If marker persistence fails, the state update
+// is rolled back so a retry can safely apply the observation once.
+func (d *DB) ApplySkillStateOnce(observationID string, state *SkillState, marker ObservationEvidence) (bool, error) {
+	tx, err := d.conn.Begin()
+	if err != nil {
+		return false, err
+	}
+	defer tx.Rollback()
+
+	var exists int
+	err = tx.QueryRow(`SELECT 1 FROM observation_evidence WHERE observation_id=? AND source_type=? AND source_id=? AND role=?`,
+		observationID, marker.SourceType, marker.SourceID, marker.Role).Scan(&exists)
+	if err == nil {
+		return false, tx.Commit()
+	}
+	if err != sql.ErrNoRows {
+		return false, fmt.Errorf("find processing marker: %w", err)
+	}
+	if err := upsertSkillState(tx, state); err != nil {
+		return false, fmt.Errorf("update skill state: %w", err)
+	}
+	if _, err := tx.Exec(`INSERT INTO observation_evidence
+		(observation_id, source_type, source_id, role, excerpt) VALUES (?, ?, ?, ?, ?)`, observationID,
+		marker.SourceType, marker.SourceID, marker.Role, marker.Excerpt); err != nil {
+		return false, fmt.Errorf("mark observation processed: %w", err)
+	}
+	if err := tx.Commit(); err != nil {
+		return false, err
+	}
+	return true, nil
 }
 
 func (d *DB) InsertCoachingItem(item *CoachingItem) error {

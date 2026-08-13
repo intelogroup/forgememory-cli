@@ -25,11 +25,25 @@ func TestDaemonProcessesCompletedVerificationWithoutProviderAndKeepsCapturingEve
 	insertDaemonCoachEvent(t, database, "change", base, "PostToolUse", "Edit", `{"file_path":"internal/payments/charge.go"}`)
 	insertDaemonCoachEvent(t, database, "test", base.Add(time.Minute), "PostToolUse", "Bash", `{"tool_input":{"command":"go test ./internal/payments"},"tool_response":{"exit_code":0,"stdout":"PASS"}}`)
 	insertDaemonCoachEvent(t, database, "stop", base.Add(2*time.Minute), "SessionEnd", "", `{}`)
+	if _, err := database.Conn().Exec(`CREATE TRIGGER fail_daemon_processing_marker BEFORE INSERT ON observation_evidence
+		WHEN NEW.source_type = 'processing'
+		BEGIN
+			SELECT RAISE(ABORT, 'coaching persistence failure');
+		END`); err != nil {
+		t.Fatalf("create coaching failure trigger: %v", err)
+	}
 
 	lastCrossSessionRun := time.Time{}
 	_, batchErr, _ := distillSessionBatch(database, time.Minute, &lastCrossSessionRun)
 	if batchErr == nil {
 		t.Fatal("distillSessionBatch without a provider error = nil, want provider failure")
+	}
+	state, err := database.GetSkillState("verification.pre_ship", "project", "project-a")
+	if err != nil {
+		t.Fatalf("GetSkillState after coaching failure: %v", err)
+	}
+	if state != nil {
+		t.Fatalf("coaching failure advanced state = %#v, want no state", state)
 	}
 	observations, err := database.ListAllObservations("project-a", "")
 	if err != nil {

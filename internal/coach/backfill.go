@@ -53,7 +53,7 @@ func Backfill(ctx context.Context, database *db.DB, projectID string, limit int)
 	if err != nil {
 		return BackfillReport{}, fmt.Errorf("list session commits: %w", err)
 	}
-	failures, err := database.FailureSignaturesByProject(projectID)
+	failures, err := database.FailureSignaturesByProjectLimited(projectID, limit)
 	if err != nil {
 		return BackfillReport{}, fmt.Errorf("list failure signatures: %w", err)
 	}
@@ -220,18 +220,8 @@ func processSession(ctx context.Context, database *db.DB, projectID, sessionID s
 		if !known {
 			created++
 		}
-		applied, err := processingApplied(database, observation.ID)
-		if err != nil {
+		if err := applyObservationState(database, observation.ID, projectID, draft, observedAt); err != nil {
 			return created, true, err
-		}
-		if applied {
-			continue
-		}
-		if err := applyObservationState(database, projectID, draft, observedAt); err != nil {
-			return created, true, err
-		}
-		if err := database.AddObservationEvidence(&db.ObservationEvidence{ObservationID: observation.ID, SourceType: processingSourceType, SourceID: processingSourceID, Role: processingRole}); err != nil {
-			return created, true, fmt.Errorf("mark observation processed: %w", err)
 		}
 	}
 	return created, true, nil
@@ -275,13 +265,24 @@ func observationExists(database *db.DB, projectID, sessionID string, draft obser
 	if err != nil {
 		return false, fmt.Errorf("find matching observation: %w", err)
 	}
-	defer rows.Close()
-	expected := draftSourceKeys(draft)
+	var observationIDs []string
 	for rows.Next() {
 		var observationID string
 		if err := rows.Scan(&observationID); err != nil {
+			rows.Close()
 			return false, err
 		}
+		observationIDs = append(observationIDs, observationID)
+	}
+	if err := rows.Err(); err != nil {
+		rows.Close()
+		return false, err
+	}
+	if err := rows.Close(); err != nil {
+		return false, err
+	}
+	expected := draftSourceKeys(draft)
+	for _, observationID := range observationIDs {
 		evidence, err := database.ListObservationEvidence(observationID)
 		if err != nil {
 			return false, err
@@ -305,7 +306,7 @@ func observationExists(database *db.DB, projectID, sessionID string, draft obser
 			}
 		}
 	}
-	return false, rows.Err()
+	return false, nil
 }
 
 func draftSourceKeys(draft observations.ObservationDraft) map[string]bool {
@@ -319,20 +320,7 @@ func draftSourceKeys(draft observations.ObservationDraft) map[string]bool {
 	return keys
 }
 
-func processingApplied(database *db.DB, observationID string) (bool, error) {
-	evidence, err := database.ListObservationEvidence(observationID)
-	if err != nil {
-		return false, fmt.Errorf("list observation evidence: %w", err)
-	}
-	for _, source := range evidence {
-		if source.SourceType == processingSourceType && source.SourceID == processingSourceID && source.Role == processingRole {
-			return true, nil
-		}
-	}
-	return false, nil
-}
-
-func applyObservationState(database *db.DB, projectID string, draft observations.ObservationDraft, observedAt string) error {
+func applyObservationState(database *db.DB, observationID, projectID string, draft observations.ObservationDraft, observedAt string) error {
 	state, err := database.GetSkillState(draft.SkillKey, skills.ScopeProject, projectID)
 	if err != nil {
 		return fmt.Errorf("get skill state for %s: %w", draft.SkillKey, err)
@@ -341,8 +329,14 @@ func applyObservationState(database *db.DB, projectID string, draft observations
 		state = &db.SkillState{SkillKey: draft.SkillKey, ScopeType: skills.ScopeProject, ScopeID: projectID}
 	}
 	next, _ := skills.Evaluate(*state, verificationEvidenceSummary(draft, observedAt))
-	if err := database.UpsertSkillState(&next); err != nil {
-		return fmt.Errorf("update skill state for %s: %w", draft.SkillKey, err)
+	_, err = database.ApplySkillStateOnce(observationID, &next, db.ObservationEvidence{
+		ObservationID: observationID,
+		SourceType:    processingSourceType,
+		SourceID:      processingSourceID,
+		Role:          processingRole,
+	})
+	if err != nil {
+		return fmt.Errorf("apply skill state for %s: %w", draft.SkillKey, err)
 	}
 	return nil
 }

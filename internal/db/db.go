@@ -170,6 +170,9 @@ func (d *DB) migrate() error {
 		)`,
 		`CREATE INDEX IF NOT EXISTS idx_failure_signatures_active
 		 ON failure_signatures(project_id, session_id, fingerprint, resolved_ts)`,
+		`CREATE INDEX IF NOT EXISTS idx_failure_signatures_repeated_recent
+		 ON failure_signatures(project_id, last_seen_ts DESC, id DESC)
+		 WHERE repeat_count >= 2 AND resolved_ts=''`,
 		`CREATE TABLE IF NOT EXISTS alerts (
 			id          TEXT PRIMARY KEY,
 			ts          TEXT NOT NULL,

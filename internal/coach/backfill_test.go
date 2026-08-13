@@ -128,6 +128,75 @@ func TestProcessCompletedSessionUsesLiveProvenanceAndIsRetrySafe(t *testing.T) {
 	}
 }
 
+func TestProcessCompletedSessionRollsBackStateWhenProcessingMarkerCannotPersist(t *testing.T) {
+	database := openTestDB(t)
+	base := time.Date(2026, time.August, 13, 12, 0, 0, 0, time.UTC)
+	seedBackfillChange(t, database, "interrupted-session", "project-a", base, "internal/payments/charge.go")
+	seedBackfillTest(t, database, "interrupted-session", "project-a", base.Add(time.Minute), 0)
+	seedBackfillBoundary(t, database, "interrupted-session", "project-a", base.Add(2*time.Minute))
+
+	if _, err := database.Conn().Exec(`CREATE TRIGGER fail_processing_marker BEFORE INSERT ON observation_evidence
+		WHEN NEW.source_type = 'processing'
+		BEGIN
+			SELECT RAISE(ABORT, 'interrupted processing marker write');
+		END`); err != nil {
+		t.Fatalf("create marker trigger: %v", err)
+	}
+	if err := ProcessCompletedSession(context.Background(), database, "interrupted-session"); err == nil {
+		t.Fatal("ProcessCompletedSession marker failure = nil, want error")
+	}
+
+	state, err := database.GetSkillState("verification.pre_ship", "project", "project-a")
+	if err != nil {
+		t.Fatalf("GetSkillState after interrupted marker write: %v", err)
+	}
+	if state != nil {
+		t.Fatalf("interrupted marker write advanced state = %#v, want no state", state)
+	}
+
+	if _, err := database.Conn().Exec(`DROP TRIGGER fail_processing_marker`); err != nil {
+		t.Fatalf("drop marker trigger: %v", err)
+	}
+	if err := ProcessCompletedSession(context.Background(), database, "interrupted-session"); err != nil {
+		t.Fatalf("ProcessCompletedSession retry: %v", err)
+	}
+	state, err = database.GetSkillState("verification.pre_ship", "project", "project-a")
+	if err != nil || state == nil {
+		t.Fatalf("GetSkillState after retry = %#v, %v", state, err)
+	}
+	if state.SuccessfulApplications != 1 {
+		t.Fatalf("successful applications after retry = %d, want 1", state.SuccessfulApplications)
+	}
+}
+
+func TestBackfillUsesDefaultAndMaximumLimits(t *testing.T) {
+	database := openTestDB(t)
+	base := time.Date(2026, time.August, 13, 12, 0, 0, 0, time.UTC)
+	for i := 0; i < maximumBackfillLimit+1; i++ {
+		sessionID := "limit-session-" + strconv.Itoa(i)
+		at := base.Add(time.Duration(i) * time.Hour)
+		seedBackfillChange(t, database, sessionID, "project-a", at, "internal/payments/charge.go")
+		seedBackfillBoundary(t, database, sessionID, "project-a", at.Add(time.Second))
+		linkBackfillCommit(t, database, "project-a", sessionID, "limit-commit-"+strconv.Itoa(i), at)
+	}
+
+	defaultReport, err := Backfill(context.Background(), database, "project-a", 0)
+	if err != nil {
+		t.Fatalf("Backfill default limit: %v", err)
+	}
+	if defaultReport.SessionsSelected != defaultBackfillLimit || defaultReport.ObservationsCreated != defaultBackfillLimit {
+		t.Fatalf("default report = %#v, want %d selected and created", defaultReport, defaultBackfillLimit)
+	}
+
+	maximumReport, err := Backfill(context.Background(), database, "project-a", maximumBackfillLimit+1)
+	if err != nil {
+		t.Fatalf("Backfill maximum limit: %v", err)
+	}
+	if maximumReport.SessionsSelected != maximumBackfillLimit || maximumReport.ObservationsCreated != maximumBackfillLimit-defaultBackfillLimit {
+		t.Fatalf("maximum report = %#v, want %d selected and %d newly created", maximumReport, maximumBackfillLimit, maximumBackfillLimit-defaultBackfillLimit)
+	}
+}
+
 func seedBackfillChange(t *testing.T, database *db.DB, sessionID, projectID string, at time.Time, path string) {
 	t.Helper()
 	if err := database.InsertEvent(&db.Event{ID: sessionID + "-change", TS: at.Format(time.RFC3339), SessionID: sessionID, ProjectID: projectID, EventType: "PostToolUse", ToolName: "Edit", Payload: `{"file_path":"` + path + `"}`}); err != nil {

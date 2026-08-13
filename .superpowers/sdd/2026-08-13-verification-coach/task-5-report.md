@@ -9,7 +9,8 @@
   - Labels saved evidence with existing `backfill` provenance and reports selected, processed, skipped, created, and queued work.
 - Added `coach.ProcessCompletedSession(ctx, database, sessionID)`.
   - Uses the same deterministic pipeline with `Live=true`.
-  - Records a compact processing marker on each observation after its skill-state update, preventing normal retries from duplicating state counts, observations, or coaching items.
+  - Applies each skill-state transition and its compact processing marker in one SQLite transaction. A failed marker write rolls back the state transition, so a retry applies the observation exactly once.
+- Backfill now reads only a limit-sized, newest-first set of unresolved repeated failure signatures before selection. A partial SQLite index supports that bounded query without sorting the full project failure history.
 - Integrated completed-session processing into the daemon's existing distillation batch as deferred post-batch work.
   - It still runs when distillation is provider-less or backoff-limited.
   - Processing failures are logged and isolated; hook event capture remains independent.
@@ -27,18 +28,22 @@
 - Historical provenance, idempotent reruns, and retry-stable skill state.
 - Skipped ambiguous/document-only historical sessions.
 - Live completed-session provenance and retry safety.
-- Provider absence does not prevent deterministic completed-session processing; later hook events still persist.
+- Interrupted marker persistence rolls back state and a later retry applies it once.
+- Default (20) and maximum (100) backfill limits, including retry-safe replay across both bounds.
+- Limited failure-history selection excludes one-off and resolved signatures.
+- Provider absence and coaching persistence failures do not prevent later hook event capture.
 
 ### Verification
 
 - `go test ./internal/coach -run 'Backfill|ProcessCompletedSession' -count=1` — PASS
 - `go test ./cmd -run 'DaemonProcessesCompletedVerification' -count=1` — PASS
-- `go test ./internal/coach ./cmd -run 'Coach|Backfill|Daemon' -count=1` — PASS
-- `go test ./internal/coach ./cmd -count=1` — PASS
-- `go vet ./internal/coach ./cmd` — PASS
+- `go test ./internal/db -run 'FailureSignaturesByProjectLimited' -count=1` — PASS
+- `go test ./internal/coach -count=1` — PASS
+- `go test ./internal/db -count=1` — PASS
+- `go test ./cmd -run 'DaemonProcessesCompletedVerification|Coach' -count=1` — PASS
 - `go test ./...` — PASS
 - `git diff --check` — PASS
 
 ### Scope review
 
-Only `internal/coach`, `cmd/daemon.go`, focused tests, and this required task report were changed. Existing graphify and unrelated user work were not modified.
+Only `internal/coach`, `internal/db`, focused daemon tests, and this required task report were changed for these review findings. Existing graphify and unrelated user work were not modified.

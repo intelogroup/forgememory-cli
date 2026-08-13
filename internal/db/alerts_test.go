@@ -69,6 +69,47 @@ func TestUpsertFailureSignature_Increment(t *testing.T) {
 	}
 }
 
+func TestFailureSignaturesByProjectLimitedOrdersAndCapsHistory(t *testing.T) {
+	database := openAlertsDB(t)
+	for i, sessionID := range []string{"old", "middle", "new"} {
+		at := time.Date(2026, time.August, 13, 12+i, 0, 0, 0, time.UTC)
+		for n := 0; n < 2; n++ {
+			if _, err := database.UpsertFailureSignature(&FailureSignature{
+				ProjectID: "proj", SessionID: sessionID, ToolName: "Bash", CommandFamily: "go test",
+				Fingerprint: "limited-" + sessionID, ErrorKind: "test_failure", NormalizedMessage: "test failed",
+				FirstSeenTS: at.Format(time.RFC3339), LastSeenTS: at.Format(time.RFC3339),
+			}); err != nil {
+				t.Fatalf("UpsertFailureSignature %s: %v", sessionID, err)
+			}
+		}
+	}
+	if _, err := database.UpsertFailureSignature(&FailureSignature{
+		ProjectID: "proj", SessionID: "single", ToolName: "Bash", CommandFamily: "go test",
+		Fingerprint: "limited-single", ErrorKind: "test_failure", NormalizedMessage: "test failed",
+		FirstSeenTS: "2026-08-13T16:00:00Z", LastSeenTS: "2026-08-13T16:00:00Z",
+	}); err != nil {
+		t.Fatalf("UpsertFailureSignature single: %v", err)
+	}
+	if _, err := database.UpsertFailureSignature(&FailureSignature{
+		ProjectID: "proj", SessionID: "resolved", ToolName: "Bash", CommandFamily: "go test",
+		Fingerprint: "limited-resolved", ErrorKind: "test_failure", NormalizedMessage: "test failed",
+		FirstSeenTS: "2026-08-13T17:00:00Z", LastSeenTS: "2026-08-13T17:00:00Z",
+	}); err != nil {
+		t.Fatalf("UpsertFailureSignature resolved: %v", err)
+	}
+	if _, err := database.ResolveFailureSignatures("proj", "resolved", "Bash", "", "2026-08-13T18:00:00Z"); err != nil {
+		t.Fatalf("ResolveFailureSignatures: %v", err)
+	}
+
+	sigs, err := database.FailureSignaturesByProjectLimited("proj", 2)
+	if err != nil {
+		t.Fatalf("FailureSignaturesByProjectLimited: %v", err)
+	}
+	if len(sigs) != 2 || sigs[0].SessionID != "new" || sigs[1].SessionID != "middle" {
+		t.Fatalf("limited failure signatures = %#v, want newest two repeated signatures", sigs)
+	}
+}
+
 func TestUpsertActiveAlert_And_ActiveAlertsByProject(t *testing.T) {
 	db := openAlertsDB(t)
 	alert := &Alert{

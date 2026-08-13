@@ -99,12 +99,32 @@ func (d *DB) getActiveFailureSignature(projectID, sessionID, fingerprint string)
 
 // FailureSignaturesByProject returns all failure signatures recorded for a project.
 func (d *DB) FailureSignaturesByProject(projectID string) ([]FailureSignature, error) {
-	rows, err := d.conn.Query(
-		`SELECT id, project_id, session_id, source_tool, tool_name, COALESCE(command_family,''), fingerprint, error_kind, normalized_message,
+	return d.failureSignaturesByProject(projectID, 0)
+}
+
+// FailureSignaturesByProjectLimited returns at most limit unresolved, repeated
+// failure signatures, ordered by most recently seen. It is intended for
+// bounded background work that only needs detector-eligible history.
+func (d *DB) FailureSignaturesByProjectLimited(projectID string, limit int) ([]FailureSignature, error) {
+	if limit <= 0 {
+		return nil, nil
+	}
+	return d.failureSignaturesByProject(projectID, limit)
+}
+
+func (d *DB) failureSignaturesByProject(projectID string, limit int) ([]FailureSignature, error) {
+	query := `SELECT id, project_id, session_id, source_tool, tool_name, COALESCE(command_family,''), fingerprint, error_kind, normalized_message,
 		        first_seen_ts, last_seen_ts, repeat_count, resolved_ts
 		 FROM failure_signatures
-		 WHERE project_id=?`,
-		projectID,
+		 WHERE project_id=? AND repeat_count >= 2 AND resolved_ts=''`
+	args := []any{projectID}
+	if limit > 0 {
+		query += ` ORDER BY last_seen_ts DESC, id DESC LIMIT ?`
+		args = append(args, limit)
+	}
+	rows, err := d.conn.Query(
+		query,
+		args...,
 	)
 	if err != nil {
 		return nil, err
