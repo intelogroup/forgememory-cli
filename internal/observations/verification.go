@@ -5,6 +5,7 @@ package observations
 import (
 	"encoding/json"
 	"path/filepath"
+	"regexp"
 	"sort"
 	"strings"
 	"time"
@@ -57,9 +58,10 @@ type ObservationDraft struct {
 }
 
 type change struct {
-	at     time.Time
-	path   string
-	source SourceReference
+	at        time.Time
+	path      string
+	knownPath bool
+	source    SourceReference
 }
 
 type testScope string
@@ -67,6 +69,7 @@ type testScope string
 const (
 	targetedScope testScope = "targeted"
 	broadScope    testScope = "broad"
+	unknownScope  testScope = "unknown"
 )
 
 type testRun struct {
@@ -86,7 +89,7 @@ func DetectVerification(input Input) []ObservationDraft {
 		return nil
 	}
 	tests := collectTestRuns(input)
-	failures := collectFailures(input)
+	failures := collectFailures(input, tests)
 
 	var drafts []ObservationDraft
 	for _, changed := range changes {
@@ -146,7 +149,7 @@ func DetectVerification(input Input) []ObservationDraft {
 			continue
 		}
 
-		if len(matchingSuccesses) == 0 {
+		if changed.knownPath && len(matchingSuccesses) == 0 {
 			drafts = append(drafts, ObservationDraft{
 				Kind:              "code_change_without_relevant_test",
 				SkillKey:          verificationSkill,
@@ -162,7 +165,30 @@ func DetectVerification(input Input) []ObservationDraft {
 }
 
 func collectChanges(input Input) []change {
-	var commits []change
+	var changes []change
+	hasWritePath := false
+	for _, event := range input.Events {
+		if !matchesInput(event.ProjectID, event.SessionID, input) || !isWriteEvent(event) {
+			continue
+		}
+		path := filePath(event.Payload)
+		if path != "" {
+			hasWritePath = true
+		}
+		if !isMeaningfulCodePath(path) || isFormattingEvent(event) || isWhitespaceOnlyEdit(event.Payload) {
+			continue
+		}
+		changes = append(changes, change{
+			at:        parseTime(event.TS),
+			path:      cleanPath(path),
+			knownPath: true,
+			source:    SourceReference{SourceType: "event", SourceID: event.ID, Excerpt: bounded(path)},
+		})
+	}
+	if hasWritePath {
+		sortChanges(changes)
+		return changes
+	}
 	for _, commit := range input.Commits {
 		if !matchesInput(commit.ProjectID, commit.SessionID, input) || commit.Files <= 0 || commit.Insertions+commit.Deletions <= 0 {
 			continue
@@ -171,29 +197,9 @@ func collectChanges(input Input) []change {
 		if id == "" {
 			id = commit.ID
 		}
-		commits = append(commits, change{
+		changes = append(changes, change{
 			at:     parseTime(commit.CommitTS),
 			source: SourceReference{SourceType: "commit", SourceID: id, Excerpt: bounded(commit.Subject)},
-		})
-	}
-	if len(commits) > 0 {
-		sortChanges(commits)
-		return commits
-	}
-
-	var changes []change
-	for _, event := range input.Events {
-		if !matchesInput(event.ProjectID, event.SessionID, input) || !isWriteEvent(event) {
-			continue
-		}
-		path := filePath(event.Payload)
-		if !isMeaningfulCodePath(path) || isFormattingEvent(event) || isWhitespaceOnlyEdit(event.Payload) {
-			continue
-		}
-		changes = append(changes, change{
-			at:     parseTime(event.TS),
-			path:   cleanPath(path),
-			source: SourceReference{SourceType: "event", SourceID: event.ID, Excerpt: bounded(path)},
 		})
 	}
 	sortChanges(changes)
@@ -232,10 +238,12 @@ func collectTestRuns(input Input) []testRun {
 type failure struct {
 	at      time.Time
 	command string
+	scope   testScope
+	target  string
 	source  SourceReference
 }
 
-func collectFailures(input Input) []failure {
+func collectFailures(input Input, runs []testRun) []failure {
 	var failures []failure
 	for _, sig := range input.Failures {
 		if !matchesInput(sig.ProjectID, sig.SessionID, input) || sig.ResolvedTS != "" || sig.RepeatCount < 2 {
@@ -245,8 +253,12 @@ func collectFailures(input Input) []failure {
 		if !ok {
 			continue
 		}
+		failedRun, ok := failedRunForSignature(command, parseTime(sig.LastSeenTS), runs)
+		if !ok {
+			continue
+		}
 		failures = append(failures, failure{
-			at: parseTime(sig.LastSeenTS), command: command,
+			at: parseTime(sig.LastSeenTS), command: failedRun.command, scope: failedRun.scope, target: failedRun.target,
 			source: SourceReference{SourceType: "failure_signature", SourceID: sig.ID, Excerpt: bounded(sig.NormalizedMessage)},
 		})
 	}
@@ -280,7 +292,7 @@ func matchTests(changed change, runs []testRun) (successes []testRun, counters [
 func failuresAfter(changed change, failures []failure) []failure {
 	var matches []failure
 	for _, failure := range failures {
-		if failure.at.After(changed.at) && failure.at.Sub(changed.at) <= delayedTestWindow {
+		if failure.at.After(changed.at) && failure.at.Sub(changed.at) <= delayedTestWindow && isRelevantScope(changed, failure.scope, failure.target) {
 			matches = append(matches, failure)
 		}
 	}
@@ -309,15 +321,19 @@ func verificationConfidence(run testRun, changed change) float64 {
 }
 
 func isRelevant(path string, run testRun) bool {
-	if run.scope == broadScope {
+	return isRelevantScope(change{path: path, knownPath: path != ""}, run.scope, run.target)
+}
+
+func isRelevantScope(changed change, scope testScope, target string) bool {
+	if scope == broadScope {
 		return true
 	}
-	if path == "" || run.target == "" {
+	if scope != targetedScope || !changed.knownPath || changed.path == "" || target == "" {
 		return false
 	}
-	path, target := cleanPath(path), cleanPath(run.target)
+	path, target := cleanPath(changed.path), cleanPath(target)
 	pathDir := filepath.Dir(path)
-	return target == path || target == pathDir || strings.HasPrefix(path, target+"/") || strings.HasPrefix(target, pathDir+"/")
+	return target == path || target == pathDir || strings.HasPrefix(path, target+"/")
 }
 
 func isToolEvent(event db.Event) bool {
@@ -424,20 +440,20 @@ func commandSucceeded(payload string) (bool, bool) {
 			return code == 0, true
 		}
 		output := strings.ToLower(strings.Join(responseStrings(value), "\n"))
-		if hasFailureText(output) {
-			return false, true
-		}
 		if hasSuccessText(output) {
 			return true, true
+		}
+		if hasFailureText(output) {
+			return false, true
 		}
 		return false, false
 	}
 	text := strings.ToLower(payload)
-	if hasFailureText(text) {
-		return false, true
-	}
 	if hasSuccessText(text) {
 		return true, true
+	}
+	if hasFailureText(text) {
+		return false, true
 	}
 	return false, false
 }
@@ -500,12 +516,16 @@ func collectStrings(value any, out *[]string) {
 	}
 }
 
-func hasFailureText(text string) bool {
-	return strings.Contains(text, "fail") || strings.Contains(text, "error") || strings.Contains(text, "exception")
-}
+var (
+	zeroFailureSummary = regexp.MustCompile(`(?i)\b0\s+(?:failures?|failed)\b`)
+	passSummary        = regexp.MustCompile(`(?im)^\s*PASS\b|\ball\s+tests?\s+passed\b|\btests?:\s*\d+\s+passed\b|\bok\s+\S+`)
+	failureSummary     = regexp.MustCompile(`(?im)^\s*(?:FAIL|ERROR)\b|\b[1-9]\d*\s+(?:failures?|failed)\b|\btests?\s+failed\b`)
+)
+
+func hasFailureText(text string) bool { return failureSummary.MatchString(text) }
 
 func hasSuccessText(text string) bool {
-	return strings.Contains(text, "pass") || strings.Contains(text, "success") || strings.Contains(text, "ok\t") || strings.Contains(text, "ok ")
+	return zeroFailureSummary.MatchString(text) || passSummary.MatchString(text)
 }
 
 func testCommand(raw string) (string, bool) {
@@ -540,15 +560,31 @@ func classifyScope(command string) (testScope, string) {
 	}
 	parts := strings.Fields(command)
 	start := testArgumentStart(parts)
-	for _, part := range parts[start:] {
-		if strings.HasPrefix(part, "-") || part == "--" || part == "test" || part == "run" || part == "exec" {
+	args := parts[start:]
+	if len(args) == 0 {
+		return broadScope, ""
+	}
+	for index := 0; index < len(args); index++ {
+		part := args[index]
+		if part == "--" || part == "test" || part == "run" || part == "exec" {
+			continue
+		}
+		if strings.HasPrefix(part, "-") {
+			if index+1 < len(args) && !strings.Contains(part, "=") && filterFlag(part) {
+				index++
+			}
 			continue
 		}
 		if strings.Contains(part, "/") || strings.Contains(part, "\\") || strings.HasSuffix(part, ".csproj") || strings.HasSuffix(part, ".rb") {
 			return targetedScope, part
 		}
 	}
-	return broadScope, ""
+	return unknownScope, ""
+}
+
+func filterFlag(flag string) bool {
+	flag = strings.ToLower(flag)
+	return flag == "-run" || flag == "-k" || flag == "--filter" || flag == "--grep" || flag == "--name" || flag == "-t"
 }
 
 func testArgumentStart(parts []string) int {
@@ -566,6 +602,19 @@ func sameTestFamily(left, right string) bool {
 		return false
 	}
 	return leftFields[0] == rightFields[0]
+}
+
+func failedRunForSignature(command string, at time.Time, runs []testRun) (testRun, bool) {
+	var matched testRun
+	for _, run := range runs {
+		if run.success || !sameTestFamily(run.command, command) || !run.at.Equal(at) {
+			continue
+		}
+		if matched.at.IsZero() || run.source.SourceID < matched.source.SourceID {
+			matched = run
+		}
+	}
+	return matched, !matched.at.IsZero()
 }
 
 func verificationSummary(run testRun) string {

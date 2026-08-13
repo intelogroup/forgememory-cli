@@ -46,6 +46,42 @@ func TestDetectVerification(t *testing.T) {
 			wantSupporting: map[string][]string{"verification_detected": {"change", "broad"}},
 		},
 		{
+			name: "filtered cargo test without package scope is not broad verification",
+			input: Input{ProjectID: projectID, SessionID: sessionID, Events: []db.Event{
+				writeEvent("change", stamp(0), "src/auth/login.rs"),
+				testEvent("filtered", stamp(1), "cargo test auth", 0, "test result: ok"),
+			}},
+			wantKinds:   []string{"code_change_without_relevant_test"},
+			wantCounter: map[string][]string{"code_change_without_relevant_test": {"filtered"}},
+		},
+		{
+			name: "go test run filter without package scope is not broad verification",
+			input: Input{ProjectID: projectID, SessionID: sessionID, Events: []db.Event{
+				writeEvent("change", stamp(0), "internal/payments/charge.go"),
+				testEvent("filtered", stamp(1), "go test -run TestCharge", 0, "PASS"),
+			}},
+			wantKinds:   []string{"code_change_without_relevant_test"},
+			wantCounter: map[string][]string{"code_change_without_relevant_test": {"filtered"}},
+		},
+		{
+			name: "pytest keyword filter without path scope is not broad verification",
+			input: Input{ProjectID: projectID, SessionID: sessionID, Events: []db.Event{
+				writeEvent("change", stamp(0), "src/auth/login.py"),
+				testEvent("filtered", stamp(1), "pytest -k auth", 0, "1 passed"),
+			}},
+			wantKinds:   []string{"code_change_without_relevant_test"},
+			wantCounter: map[string][]string{"code_change_without_relevant_test": {"filtered"}},
+		},
+		{
+			name: "child package tests do not verify a parent package change",
+			input: Input{ProjectID: projectID, SessionID: sessionID, Events: []db.Event{
+				writeEvent("change", stamp(0), "internal/payments/charge.go"),
+				testEvent("child", stamp(1), "go test ./internal/payments/stripe", 0, "PASS"),
+			}},
+			wantKinds:   []string{"code_change_without_relevant_test"},
+			wantCounter: map[string][]string{"code_change_without_relevant_test": {"child"}},
+		},
+		{
 			name: "unrelated test does not verify a changed package",
 			input: Input{ProjectID: projectID, SessionID: sessionID, Events: []db.Event{
 				writeEvent("change", stamp(0), "internal/payments/charge.go"),
@@ -78,13 +114,18 @@ func TestDetectVerification(t *testing.T) {
 			wantSupporting: map[string][]string{"verification_detected": {"change", "delayed"}},
 		},
 		{
-			name: "linked code commit without a test is medium high negative evidence",
+			name: "pathless linked commit cannot create a missing test gap",
 			input: Input{ProjectID: projectID, SessionID: sessionID, Commits: []db.SessionCommit{{
 				ID: "commit-record", SessionID: sessionID, ProjectID: projectID, SHA: "abc123", CommitTS: stamp(0), Files: 2, Insertions: 12,
 			}}},
-			wantKinds:      []string{"code_change_without_relevant_test"},
-			wantConfidence: map[string]float64{"code_change_without_relevant_test": 0.70},
-			wantSupporting: map[string][]string{"code_change_without_relevant_test": {"abc123"}},
+		},
+		{
+			name: "pathless commit paired with excluded writes emits no missing test gap",
+			input: Input{ProjectID: projectID, SessionID: sessionID, Commits: []db.SessionCommit{{
+				ID: "commit-record", SessionID: sessionID, ProjectID: projectID, SHA: "abc123", CommitTS: stamp(0), Files: 1, Insertions: 3,
+			}}, Events: []db.Event{
+				writeEvent("lockfile", stamp(0), "pnpm-lock.yaml"),
+			}},
 		},
 		{
 			name: "docs only writes do not create an observation",
@@ -99,6 +140,7 @@ func TestDetectVerification(t *testing.T) {
 			input: Input{ProjectID: projectID, SessionID: sessionID, Events: []db.Event{
 				writeEvent("generated", stamp(0), "web/generated/client.ts"),
 				writeEvent("vendor", stamp(1), "vendor/github.com/acme/lib.go"),
+				writeEvent("lockfile", stamp(2), "go.sum"),
 			}},
 		},
 		{
@@ -111,6 +153,7 @@ func TestDetectVerification(t *testing.T) {
 			name: "repeated unresolved failures after a change are high severity",
 			input: Input{ProjectID: projectID, SessionID: sessionID, Events: []db.Event{
 				writeEvent("change", stamp(0), "internal/payments/charge.go"),
+				testEvent("failed", stamp(1), "go test ./internal/payments", 1, "FAIL\tforge/internal/payments"),
 			}, Failures: []db.FailureSignature{{
 				ID: "failure", ProjectID: projectID, SessionID: sessionID, CommandFamily: "go test", RepeatCount: 2, LastSeenTS: stamp(1), NormalizedMessage: "charge test failed",
 			}}},
@@ -123,6 +166,7 @@ func TestDetectVerification(t *testing.T) {
 			input: Input{ProjectID: projectID, SessionID: sessionID, Events: []db.Event{
 				writeEvent("change", stamp(0), "internal/payments/charge.go"),
 				testEvent("passed", stamp(1), "go test ./internal/payments", 0, "PASS"),
+				testEvent("failed", stamp(2), "go test ./internal/payments", 1, "FAIL\tforge/internal/payments"),
 			}, Failures: []db.FailureSignature{{
 				ID: "failure", ProjectID: projectID, SessionID: sessionID, CommandFamily: "go test", RepeatCount: 3, LastSeenTS: stamp(2), NormalizedMessage: "charge test failed",
 			}}},
@@ -133,6 +177,28 @@ func TestDetectVerification(t *testing.T) {
 				"repeated_regression":   {"change", "failure"},
 			},
 			wantCounter: map[string][]string{"repeated_regression": {"passed"}},
+		},
+		{
+			name: "unrelated repeated failure does not claim a causal observation",
+			input: Input{ProjectID: projectID, SessionID: sessionID, Events: []db.Event{
+				writeEvent("change", stamp(0), "internal/payments/charge.go"),
+				testEvent("failed", stamp(1), "go test ./internal/auth", 1, "FAIL\tforge/internal/auth"),
+			}, Failures: []db.FailureSignature{{
+				ID: "failure", ProjectID: projectID, SessionID: sessionID, CommandFamily: "go test", RepeatCount: 2, LastSeenTS: stamp(1), NormalizedMessage: "auth test failed",
+			}}},
+			wantKinds:   []string{"code_change_without_relevant_test"},
+			wantCounter: map[string][]string{"code_change_without_relevant_test": {"failed"}},
+		},
+		{
+			name: "unrelated repeated failure does not claim a regression",
+			input: Input{ProjectID: projectID, SessionID: sessionID, Events: []db.Event{
+				writeEvent("change", stamp(0), "internal/payments/charge.go"),
+				testEvent("passed", stamp(1), "go test ./internal/payments", 0, "PASS"),
+				testEvent("failed", stamp(2), "go test ./internal/auth", 1, "FAIL\tforge/internal/auth"),
+			}, Failures: []db.FailureSignature{{
+				ID: "failure", ProjectID: projectID, SessionID: sessionID, CommandFamily: "go test", RepeatCount: 3, LastSeenTS: stamp(2), NormalizedMessage: "auth test failed",
+			}}},
+			wantKinds: []string{"verification_detected"},
 		},
 		{
 			name: "a single session end without changes or tests is insufficient",
@@ -188,12 +254,76 @@ func TestDetectVerificationFailedTestDoesNotCountAsVerification(t *testing.T) {
 	})
 }
 
+func TestDetectVerificationParsesTextOnlyOutcomesConservatively(t *testing.T) {
+	base := time.Date(2026, time.August, 13, 12, 0, 0, 0, time.UTC)
+	tests := []struct {
+		name      string
+		output    string
+		wantKinds []string
+	}{
+		{"zero failure summary is success", "Tests: 5 passed, 0 failures", []string{"verification_detected"}},
+		{"ambiguous failure word is unknown", "Previous failures are documented above", []string{"code_change_without_relevant_test"}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := DetectVerification(Input{ProjectID: projectID, SessionID: sessionID, Events: []db.Event{
+				writeEvent("change", base.Format(time.RFC3339), "internal/payments/charge.go"),
+				textTestEvent("test", base.Add(time.Minute).Format(time.RFC3339), "go test ./internal/payments", tt.output),
+			}})
+			assertDrafts(t, got, tt.wantKinds, nil, nil, nil)
+		})
+	}
+}
+
+func TestDetectVerificationDraftsAreAuditable(t *testing.T) {
+	base := time.Date(2026, time.August, 13, 12, 0, 0, 0, time.UTC)
+	got := DetectVerification(Input{ProjectID: projectID, SessionID: sessionID, Events: []db.Event{
+		writeEvent("change", base.Format(time.RFC3339), "internal/payments/charge.go"),
+		testEvent("failed", base.Add(time.Minute).Format(time.RFC3339), "go test ./internal/payments", 1, "FAIL\tforge/internal/payments"),
+	}, Failures: []db.FailureSignature{{
+		ID: "failure", ProjectID: projectID, SessionID: sessionID, CommandFamily: "go test", RepeatCount: 2, LastSeenTS: base.Add(time.Minute).Format(time.RFC3339), NormalizedMessage: "charge test failed",
+	}}})
+	assertDrafts(t, got, []string{"unresolved_failure_after_change"}, nil, map[string][]string{
+		"unresolved_failure_after_change": {"change", "failure"},
+	}, nil)
+	draft := got[0]
+	if draft.Severity != "error" || draft.Summary == "" {
+		t.Errorf("draft severity/summary = %q/%q, want error/non-empty", draft.Severity, draft.Summary)
+	}
+	assertSource(t, draft.SupportingSources[0], "event", "change", "internal/payments/charge.go")
+	assertSource(t, draft.SupportingSources[1], "failure_signature", "failure", "charge test failed")
+
+	regression := DetectVerification(Input{ProjectID: projectID, SessionID: sessionID, Events: []db.Event{
+		writeEvent("change", base.Format(time.RFC3339), "internal/payments/charge.go"),
+		testEvent("passed", base.Add(time.Minute).Format(time.RFC3339), "go test ./internal/payments", 0, "PASS"),
+		testEvent("failed", base.Add(2*time.Minute).Format(time.RFC3339), "go test ./internal/payments", 1, "FAIL\tforge/internal/payments"),
+	}, Failures: []db.FailureSignature{{
+		ID: "failure", ProjectID: projectID, SessionID: sessionID, CommandFamily: "go test", RepeatCount: 3, LastSeenTS: base.Add(2 * time.Minute).Format(time.RFC3339), NormalizedMessage: "charge test failed",
+	}}})
+	var regressionDraft ObservationDraft
+	for _, candidate := range regression {
+		if candidate.Kind == "repeated_regression" {
+			regressionDraft = candidate
+			break
+		}
+	}
+	if regressionDraft.Kind == "" {
+		t.Fatalf("missing regression draft in %#v", regression)
+	}
+	assertSource(t, regressionDraft.CounterSources[0], "event", "passed", "go test ./internal/payments")
+}
+
 func writeEvent(id, ts, path string) db.Event {
 	return db.Event{ID: id, TS: ts, ProjectID: projectID, SessionID: sessionID, EventType: "PostToolUse", ToolName: "Edit", Payload: `{"file_path":"` + path + `"}`}
 }
 
 func testEvent(id, ts, command string, exitCode int, output string) db.Event {
 	payload := fmt.Sprintf(`{"tool_input":{"command":%q},"tool_response":{"exit_code":%d,"stdout":%q}}`, command, exitCode, output)
+	return db.Event{ID: id, TS: ts, ProjectID: projectID, SessionID: sessionID, EventType: "PostToolUse", ToolName: "Bash", Payload: payload}
+}
+
+func textTestEvent(id, ts, command, output string) db.Event {
+	payload := fmt.Sprintf(`{"tool_input":{"command":%q},"tool_response":{"stdout":%q}}`, command, output)
 	return db.Event{ID: id, TS: ts, ProjectID: projectID, SessionID: sessionID, EventType: "PostToolUse", ToolName: "Bash", Payload: payload}
 }
 
@@ -245,5 +375,12 @@ func assertSourceIDs(t *testing.T, label string, sources []SourceReference, want
 		if source.SourceID != want[i] {
 			t.Errorf("%s source %d ID = %q, want %q", label, i, source.SourceID, want[i])
 		}
+	}
+}
+
+func assertSource(t *testing.T, got SourceReference, wantType, wantID, wantExcerpt string) {
+	t.Helper()
+	if got.SourceType != wantType || got.SourceID != wantID || got.Excerpt != wantExcerpt {
+		t.Errorf("source = %#v, want type=%q id=%q excerpt=%q", got, wantType, wantID, wantExcerpt)
 	}
 }
