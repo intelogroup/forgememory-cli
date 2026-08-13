@@ -95,14 +95,30 @@ func defaultPath() string {
 	return filepath.Join(home, ".forge", "forge.db")
 }
 
-// migrate applies the full schema in one transaction. It runs on every
-// Open(), including every short-lived CLI subprocess invocation, so batching
-// its ~60 statements into a single lock acquisition (instead of one
-// auto-committed statement at a time) matters: unbatched, each call raced the
-// daemon's own writes for many separate lock windows, which was reliably
-// slow enough on Windows CI's stricter/slower file locking to exceed the
-// busy_timeout and surface as spurious "database is locked" failures.
+// schemaVersion is stamped into SQLite's user_version pragma once migrate()
+// has applied the current schema. Bump it whenever migrate()'s statements
+// change.
+const schemaVersion = 1
+
+// migrate applies the full schema, but only once: it runs on every Open(),
+// including every short-lived CLI subprocess invocation and any test that
+// polls via repeated Open() calls, so re-running ~60 DDL/ALTER statements
+// each time — even batched into one transaction — still means one write-lock
+// acquisition per call, racing the daemon's own writes on every single poll.
+// Checking user_version first (a lock-free read under WAL — readers are
+// never blocked by a concurrent writer) lets every Open() after the first
+// skip straight through with no write lock at all once the schema is
+// current, which is what actually keeps a polling caller from being a
+// standing source of write contention against the daemon.
 func (d *DB) migrate() error {
+	var version int
+	if err := d.conn.QueryRow(`PRAGMA user_version`).Scan(&version); err != nil {
+		return fmt.Errorf("read schema version: %w", err)
+	}
+	if version >= schemaVersion {
+		return nil
+	}
+
 	tx, err := d.conn.Begin()
 	if err != nil {
 		return fmt.Errorf("begin migration: %w", err)
@@ -425,6 +441,9 @@ func (d *DB) migrate() error {
 	}
 	if err := maybeRebuildPrinciplesFTS(tx); err != nil {
 		return fmt.Errorf("principles fts rebuild: %w", err)
+	}
+	if _, err := tx.Exec(fmt.Sprintf("PRAGMA user_version = %d", schemaVersion)); err != nil {
+		return fmt.Errorf("stamp schema version: %w", err)
 	}
 	return tx.Commit()
 }
