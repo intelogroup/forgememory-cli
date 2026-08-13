@@ -85,6 +85,19 @@ See 'forge agent-guide' for a copy-pasteable CLAUDE.md / system prompt block.
   forge coach review [--path] [--json]
     Review all coaching-item lifecycle states.
 
+Coaching rollout:
+  FORGE_COACH_MODE=off|observe|quiet|normal|strict
+    Default is observation-only (observe): record evidence and skill state,
+    but do not queue or deliver suggestions. quiet queues lessons without
+    safe-boundary delivery; normal and strict permit safe-boundary delivery.
+  Evidence is project-local and auditable. Confidence is derived from
+    supporting/counter-evidence; dismissal resolves a lesson without deleting
+    evidence. Use dismissal reasons: not_relevant, already_known, incorrect,
+    or never_show_again.
+  Keep automatic suggestions disabled until a 20-session pilot measures
+    repeated verification failures, relevant test rate, independent
+    applications, and dismissal/false-positive rate.
+
 Compatibility flags remain available: forge coach [--path] [--mode off|observe|quiet|normal|strict] [--accept|--defer|--dismiss <item-id> --reason <text>] [--no-detect]
 `)
 		return

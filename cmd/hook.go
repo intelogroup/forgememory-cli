@@ -15,6 +15,7 @@ import (
 	"time"
 	"unicode"
 
+	"github.com/forge/forge/internal/coach"
 	"github.com/forge/forge/internal/db"
 	"github.com/forge/forge/internal/ipc"
 	"github.com/forge/forge/internal/retrieve"
@@ -303,6 +304,10 @@ func handleSessionRecall(projectID, payload string) {
 	if !isFirst {
 		return
 	}
+	var coachingItem *db.CoachingItem
+	if item, suggestionErr := coach.SafeBoundarySuggestion(database, projectID); suggestionErr == nil {
+		coachingItem = item
+	}
 
 	principles, summaries, alerts, externalSummaries, promptMatch, distillError := loadSessionRecallContext(database, projectID, promptText)
 	if shouldWaitForOfficialHint(alerts, externalSummaries) && hasPendingFailureRetrieval(database, projectID) {
@@ -317,6 +322,7 @@ func handleSessionRecall(projectID, payload string) {
 	}
 
 	text := buildSessionRecallOutput(projectID, summaries, principles, alerts, externalSummaries, promptMatch, lastSession, distillError)
+	text = appendCoachSuggestion(text, coachingItem)
 	if text == "" {
 		return
 	}
@@ -328,6 +334,17 @@ func handleSessionRecall(projectID, payload string) {
 	}
 	data, _ := json.Marshal(output)
 	fmt.Println(string(data))
+}
+
+func appendCoachSuggestion(recall string, item *db.CoachingItem) string {
+	if item == nil {
+		return recall
+	}
+	suggestion := fmt.Sprintf("Forge coaching (%s): %s Next action: %s", item.SkillKey, item.Question, item.NextAction)
+	if strings.TrimSpace(recall) == "" {
+		return suggestion
+	}
+	return recall + "\n\n" + suggestion
 }
 
 // isFirstPromptOfSession returns true when no prior events exist for this session ID.

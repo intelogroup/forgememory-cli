@@ -87,9 +87,31 @@ Configuration is loaded using the following precedence (highest priority first):
 ### Distillation Threshold
 To maintain high-quality principles and avoid noise, the distillation engine requires **3+ semantically related events** or a completed session boundary before extracting principles. If `forge distill` returns 0 principles while events remain queued, this is normal behavior indicating the cluster density threshold was not met.
 
+### Verification Coach Rollout
+
+ForgeMemo's verification coach is observation-only by default. Configure its
+rollout mode explicitly with:
+
+```text
+FORGE_COACH_MODE=off|observe|quiet|normal|strict
+```
+
+`off` disables coaching processing. `observe` records deterministic,
+project-local evidence and confidence without queuing or delivering lessons.
+`quiet` queues evidence-backed lessons without safe-boundary delivery, while
+`normal` and `strict` permit safe-boundary delivery. Evidence includes compact
+references to supporting and counter-evidence rather than raw event payloads.
+Confidence and skill state are derived from that evidence; dismissing a lesson
+resolves it without deleting its evidence. Dismissal reasons are
+`not_relevant`, `already_known`, `incorrect`, and `never_show_again`.
+
+Keep automatic suggestions disabled until a 20-session pilot measures repeated
+verification failures, relevant test rate, independent applications, and the
+dismissal/false-positive rate. Expand to additional coaching domains only
+after those gates are met.
+
 ### Supported Providers
 Supported providers include:
 - `forgememo` / `openai` / `anthropic` / `groq` / `nvidia` / `ollama`
 - `openrouter` (URL: `https://openrouter.ai/api/v1`)
 - `antigravity` (Gemini CLI backend)
-
