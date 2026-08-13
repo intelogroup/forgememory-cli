@@ -65,7 +65,6 @@ func OpenReadOnly(path string) (*DB, error) {
 	return &DB{conn: conn, Path: path}, nil
 }
 
-
 func (d *DB) Close() error {
 	return d.conn.Close()
 }
@@ -264,6 +263,78 @@ func (d *DB) migrate() error {
 		{"principles", "signature", "TEXT DEFAULT ''"},
 	}
 	extraMigrations := []string{
+		`CREATE TABLE IF NOT EXISTS skill_definitions (
+			key              TEXT PRIMARY KEY,
+			name             TEXT NOT NULL,
+			description      TEXT NOT NULL DEFAULT '',
+			transferable     INTEGER NOT NULL DEFAULT 0,
+			definition_version TEXT NOT NULL DEFAULT '1'
+		)`,
+		`INSERT OR IGNORE INTO skill_definitions(key, name, description, transferable, definition_version)
+			VALUES ('verification.pre_ship', 'Verification before shipping',
+			        'Verify meaningful changes with relevant tests before shipping.', 1, '1')`,
+		`CREATE TABLE IF NOT EXISTS observations (
+			id               TEXT PRIMARY KEY,
+			created_at       TEXT NOT NULL,
+			project_id       TEXT NOT NULL,
+			session_id       TEXT NOT NULL DEFAULT '',
+			kind             TEXT NOT NULL,
+			skill_key        TEXT NOT NULL,
+			confidence       REAL NOT NULL DEFAULT 0,
+			severity         TEXT NOT NULL DEFAULT '',
+			status           TEXT NOT NULL DEFAULT '',
+			summary          TEXT NOT NULL,
+			extractor_version TEXT NOT NULL DEFAULT '1'
+		)`,
+		`CREATE INDEX IF NOT EXISTS idx_observations_project_time
+			ON observations(project_id, created_at DESC)`,
+		`CREATE INDEX IF NOT EXISTS idx_observations_project_status
+			ON observations(project_id, status, created_at DESC)`,
+		`CREATE TABLE IF NOT EXISTS observation_evidence (
+			observation_id TEXT NOT NULL,
+			source_type    TEXT NOT NULL,
+			source_id      TEXT NOT NULL,
+			role           TEXT NOT NULL,
+			excerpt        TEXT NOT NULL DEFAULT '',
+			PRIMARY KEY (observation_id, source_type, source_id, role),
+			FOREIGN KEY (observation_id) REFERENCES observations(id) ON DELETE CASCADE
+		)`,
+		`CREATE UNIQUE INDEX IF NOT EXISTS idx_observation_evidence_source
+			ON observation_evidence(observation_id, source_type, source_id, role)`,
+		`CREATE TABLE IF NOT EXISTS skill_states (
+			skill_key             TEXT NOT NULL,
+			scope_type            TEXT NOT NULL,
+			scope_id              TEXT NOT NULL,
+			state                 TEXT NOT NULL,
+			confidence            REAL NOT NULL DEFAULT 0,
+			evidence_count        INTEGER NOT NULL DEFAULT 0,
+			successful_applications INTEGER NOT NULL DEFAULT 0,
+			failed_applications   INTEGER NOT NULL DEFAULT 0,
+			last_observed_at      TEXT NOT NULL DEFAULT '',
+			updated_at            TEXT NOT NULL,
+			PRIMARY KEY (skill_key, scope_type, scope_id)
+		)`,
+		`CREATE INDEX IF NOT EXISTS idx_skill_states_scope_state
+			ON skill_states(scope_type, scope_id, state)`,
+		`CREATE TABLE IF NOT EXISTS coaching_items (
+			id            TEXT PRIMARY KEY,
+			observation_id TEXT NOT NULL DEFAULT '',
+			skill_key     TEXT NOT NULL,
+			project_id    TEXT NOT NULL,
+			status        TEXT NOT NULL,
+			delivery_mode TEXT NOT NULL,
+			question      TEXT NOT NULL DEFAULT '',
+			next_action   TEXT NOT NULL DEFAULT '',
+			lesson        TEXT NOT NULL DEFAULT '',
+			created_at    TEXT NOT NULL,
+			surfaced_at   TEXT NOT NULL DEFAULT '',
+			resolved_at   TEXT NOT NULL DEFAULT '',
+			resolution    TEXT NOT NULL DEFAULT ''
+		)`,
+		`CREATE INDEX IF NOT EXISTS idx_coaching_items_project_status
+			ON coaching_items(project_id, status, created_at DESC)`,
+		`CREATE INDEX IF NOT EXISTS idx_coaching_items_skill_status
+			ON coaching_items(skill_key, status, created_at DESC)`,
 		`CREATE TABLE IF NOT EXISTS cross_session_patterns (
 			id TEXT PRIMARY KEY,
 			ts TEXT NOT NULL,
