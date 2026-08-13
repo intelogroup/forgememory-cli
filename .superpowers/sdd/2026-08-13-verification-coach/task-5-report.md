@@ -11,6 +11,7 @@
   - Uses the same deterministic pipeline with `Live=true`.
   - Applies each skill-state transition and its compact processing marker in one SQLite transaction. A failed marker write rolls back the state transition, so a retry applies the observation exactly once.
 - Backfill now reads only a limit-sized, newest-first set of unresolved repeated failure signatures before selection. A partial SQLite index supports that bounded query without sorting the full project failure history.
+- Preserved `FailureSignaturesByProject` as the unfiltered history API used by profile, stats, and knowledge-gap callers; unresolved/repeated filtering remains limited to `FailureSignaturesByProjectLimited`.
 - Integrated completed-session processing into the daemon's existing distillation batch as deferred post-batch work.
   - It still runs when distillation is provider-less or backoff-limited.
   - Processing failures are logged and isolated; hook event capture remains independent.
@@ -31,6 +32,7 @@
 - Interrupted marker persistence rolls back state and a later retry applies it once.
 - Default (20) and maximum (100) backfill limits, including retry-safe replay across both bounds.
 - Limited failure-history selection excludes one-off and resolved signatures.
+- Legacy failure-history reads continue to return one-off and resolved signatures while limited reads exclude them.
 - Provider absence and coaching persistence failures do not prevent later hook event capture.
 
 ### Verification

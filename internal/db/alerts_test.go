@@ -110,6 +110,35 @@ func TestFailureSignaturesByProjectLimitedOrdersAndCapsHistory(t *testing.T) {
 	}
 }
 
+func TestFailureSignaturesByProjectPreservesAllHistory(t *testing.T) {
+	database := openAlertsDB(t)
+	for _, sig := range []FailureSignature{
+		{ProjectID: "proj", SessionID: "one-off", ToolName: "Bash", Fingerprint: "one-off", RepeatCount: 1},
+		{ProjectID: "proj", SessionID: "resolved", ToolName: "Bash", Fingerprint: "resolved", RepeatCount: 2, ResolvedTS: "2026-08-13T18:00:00Z"},
+		{ProjectID: "proj", SessionID: "active", ToolName: "Bash", Fingerprint: "active", RepeatCount: 2},
+	} {
+		if _, err := database.UpsertFailureSignature(&sig); err != nil {
+			t.Fatalf("UpsertFailureSignature %s: %v", sig.SessionID, err)
+		}
+	}
+
+	all, err := database.FailureSignaturesByProject("proj")
+	if err != nil {
+		t.Fatalf("FailureSignaturesByProject: %v", err)
+	}
+	if len(all) != 3 {
+		t.Fatalf("all failure signatures = %#v, want one-off, resolved, and active rows", all)
+	}
+
+	limited, err := database.FailureSignaturesByProjectLimited("proj", 10)
+	if err != nil {
+		t.Fatalf("FailureSignaturesByProjectLimited: %v", err)
+	}
+	if len(limited) != 1 || limited[0].SessionID != "active" {
+		t.Fatalf("limited failure signatures = %#v, want only active repeated row", limited)
+	}
+}
+
 func TestUpsertActiveAlert_And_ActiveAlertsByProject(t *testing.T) {
 	db := openAlertsDB(t)
 	alert := &Alert{
