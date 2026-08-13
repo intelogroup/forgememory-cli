@@ -8,9 +8,15 @@ import (
 	"os/exec"
 	"strings"
 
+	"time"
+
+	"github.com/forge/forge/internal/coach"
 	"github.com/forge/forge/internal/db"
 	"github.com/forge/forge/internal/distill"
+	"github.com/forge/forge/internal/evidence"
 	"github.com/forge/forge/internal/knowledgegap"
+	"github.com/forge/forge/internal/observations"
+	"github.com/forge/forge/internal/skills"
 	"github.com/forge/forge/internal/streams"
 )
 
@@ -23,7 +29,14 @@ func runKnowledgeGap(args []string) {
 	all := fs.Bool("all", false, "run across all known projects")
 	vocab := fs.Bool("vocab", false, "vocabulary-only mode (skip gap section)")
 	jsonOut := fs.Bool("json", false, "machine-readable JSON output")
+	coachModeFlag := fs.String("coach-mode", "quiet", "queue gaps as coaching items (off/observe/quiet/normal/strict)")
 	if err := fs.Parse(args); err != nil {
+		os.Exit(1)
+	}
+
+	coachMode, err := coach.ParseMode(*coachModeFlag)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 		os.Exit(1)
 	}
 
@@ -55,6 +68,11 @@ func runKnowledgeGap(args []string) {
 				continue
 			}
 			printKnowledgeGap(p.ID, result, *vocab, *jsonOut)
+			if queued, err := queueKnowledgeGaps(database, p.ID, result, coachMode); err != nil {
+				fmt.Fprintf(os.Stderr, "  (coach queueing failed: %v)\n", err)
+			} else if queued > 0 {
+				fmt.Printf("  queued %d coaching item(s)\n", queued)
+			}
 			fmt.Println()
 		}
 		return
@@ -80,9 +98,67 @@ func runKnowledgeGap(args []string) {
 		return
 	}
 	printKnowledgeGap(projectID, result, *vocab, *jsonOut)
+	if queued, err := queueKnowledgeGaps(database, projectID, result, coachMode); err != nil {
+		fmt.Fprintf(os.Stderr, "Coach queueing failed: %v\n", err)
+	} else if queued > 0 {
+		fmt.Printf("  queued %d coaching item(s)\n", queued)
+	}
 }
 
 const maxKGPromptSamples = 20
+
+// queueKnowledgeGaps records each detected gap as an auditable Observation,
+// evolves its project-local skill state through the same deterministic
+// evaluator the verification detector uses, then queues any that just
+// crossed into suspected_gap as coaching items. A gap only starts coaching
+// once it has recurred across separate knowledge-gap runs — skills.Evaluate
+// requires two failed-application observations before suspected_gap, so a
+// one-off LLM-flagged gap is recorded as evidence but not yet surfaced.
+func queueKnowledgeGaps(database *db.DB, projectID string, result knowledgegap.Result, mode coach.Mode) (int, error) {
+	if len(result.Gaps) == 0 || mode == coach.ModeOff {
+		return 0, nil
+	}
+
+	store := evidence.Store{DB: database, ExtractorVersion: "1"}
+	observedAt := time.Now().UTC().Format(time.RFC3339)
+
+	for _, gap := range result.Gaps {
+		skillKey := knowledgegap.GapSkillKey(gap.Topic)
+		draft := observations.ObservationDraft{
+			Kind:       "knowledge_gap",
+			SkillKey:   skillKey,
+			Confidence: knowledgegap.ObservationConfidence,
+			Severity:   "medium",
+			Summary:    gap.ConcreteLesson,
+			SupportingSources: []observations.SourceReference{{
+				SourceType: "knowledge_gap_evidence",
+				SourceID:   skillKey,
+				Excerpt:    gap.Evidence,
+			}},
+		}
+		if _, err := store.Save(projectID, draft, true); err != nil {
+			return 0, fmt.Errorf("save observation for %q: %w", gap.Topic, err)
+		}
+
+		state, err := database.GetSkillState(skillKey, skills.ScopeProject, projectID)
+		if err != nil {
+			return 0, fmt.Errorf("get skill state for %q: %w", skillKey, err)
+		}
+		if state == nil {
+			state = &db.SkillState{SkillKey: skillKey, ScopeType: skills.ScopeProject, ScopeID: projectID}
+		}
+		next, _ := skills.Evaluate(*state, skills.EvidenceSummary{
+			Confidence:         knowledgegap.ObservationConfidence,
+			FailedApplications: 1,
+			ObservedAt:         observedAt,
+		})
+		if err := database.UpsertSkillState(&next); err != nil {
+			return 0, fmt.Errorf("update skill state for %q: %w", skillKey, err)
+		}
+	}
+
+	return coach.QueueEligible(database, projectID, mode)
+}
 
 // knowledgeGapOne gathers Signals for a project and runs the LLM pass.
 func knowledgeGapOne(database *db.DB, projectID string, vocabOnly bool) (knowledgegap.Result, bool, error) {
