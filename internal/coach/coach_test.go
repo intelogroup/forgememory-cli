@@ -213,6 +213,20 @@ func TestSafeBoundarySuggestionReturnsOneDeliverableItemWithoutMutation(t *testi
 	}
 }
 
+func TestSafeBoundarySuggestionUsesStableIDForEqualTimestamps(t *testing.T) {
+	database := openTestDB(t)
+	insertItem(t, database, db.CoachingItem{ID: "coaching-a", ProjectID: "project-a", SkillKey: "verification.pre_ship", Status: statusQueued, DeliveryMode: string(ModeNormal), CreatedAt: "2026-08-13T12:00:00Z"})
+	insertItem(t, database, db.CoachingItem{ID: "coaching-b", ProjectID: "project-a", SkillKey: "verification.pre_ship", Status: statusQueued, DeliveryMode: string(ModeNormal), CreatedAt: "2026-08-13T12:00:00Z"})
+
+	suggestion, err := SafeBoundarySuggestion(database, "project-a")
+	if err != nil {
+		t.Fatalf("SafeBoundarySuggestion: %v", err)
+	}
+	if suggestion == nil || suggestion.ID != "coaching-b" {
+		t.Fatalf("SafeBoundarySuggestion = %#v, want coaching-b", suggestion)
+	}
+}
+
 func TestAcceptMovesItemToAcceptedAndSkillToLearning(t *testing.T) {
 	database := openTestDB(t)
 	seedSuspectedGap(t, database, "project-a", "accepted-observation", 0.90)

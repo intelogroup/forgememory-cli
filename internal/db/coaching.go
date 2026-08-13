@@ -134,7 +134,7 @@ func (d *DB) listObservations(projectID, status string, limit int) ([]Observatio
 		query += ` AND status=?`
 		args = append(args, status)
 	}
-	query += ` ORDER BY created_at DESC`
+	query += ` ORDER BY created_at DESC, id DESC`
 	if limit > 0 {
 		query += ` LIMIT ?`
 		args = append(args, limit)
@@ -220,7 +220,7 @@ func (d *DB) listCoachingItems(projectID, status string, limit int) ([]CoachingI
 		query += ` AND status=?`
 		args = append(args, status)
 	}
-	query += ` ORDER BY created_at DESC`
+	query += ` ORDER BY created_at DESC, id DESC`
 	if limit > 0 {
 		query += ` LIMIT ?`
 		args = append(args, limit)
