@@ -104,3 +104,53 @@ func TestSaveDeduplicatesAnObservationByProjectSessionKindAndSourceSet(t *testin
 		t.Fatalf("evidence rows = %#v, want deduplicated sources and backfill provenance", evidenceRows)
 	}
 }
+
+func TestSaveKeepsFirstIngestionProvenanceOnCrossModeReplay(t *testing.T) {
+	for _, test := range []struct {
+		name             string
+		firstLive        bool
+		wantProvenanceID string
+	}{
+		{name: "live then backfill", firstLive: true, wantProvenanceID: "live"},
+		{name: "backfill then live", firstLive: false, wantProvenanceID: "backfill"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			database, err := db.Open(filepath.Join(t.TempDir(), "test.db"))
+			if err != nil {
+				t.Fatalf("Open: %v", err)
+			}
+			defer database.Close()
+
+			store := Store{DB: database, ExtractorVersion: "verification-v1", SessionID: "session-a"}
+			draft := observations.ObservationDraft{
+				Kind: "verification_detected", SkillKey: "verification.pre_ship", Confidence: 0.9, Severity: "info", Summary: "tests passed",
+				SupportingSources: []observations.SourceReference{{SourceType: "event", SourceID: "test-1", Excerpt: "go test"}},
+			}
+			first, err := store.Save("project-a", draft, test.firstLive)
+			if err != nil {
+				t.Fatalf("first Save: %v", err)
+			}
+			second, err := store.Save("project-a", draft, !test.firstLive)
+			if err != nil {
+				t.Fatalf("second Save: %v", err)
+			}
+			if second.ID != first.ID {
+				t.Fatalf("observation IDs = %q and %q, want replay to deduplicate", first.ID, second.ID)
+			}
+
+			evidenceRows, err := database.ListObservationEvidence(first.ID)
+			if err != nil {
+				t.Fatalf("ListObservationEvidence: %v", err)
+			}
+			var provenance []db.ObservationEvidence
+			for _, row := range evidenceRows {
+				if row.SourceType == "ingestion" && row.Role == "provenance" {
+					provenance = append(provenance, row)
+				}
+			}
+			if len(provenance) != 1 || provenance[0].SourceID != test.wantProvenanceID {
+				t.Fatalf("provenance = %#v, want one immutable %q row", provenance, test.wantProvenanceID)
+			}
+		})
+	}
+}

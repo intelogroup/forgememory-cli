@@ -71,6 +71,31 @@ func TestEvaluateOnlyUpdatesGlobalForNormalizedTransferableSuccess(t *testing.T)
 	}
 }
 
+func TestEvaluateRejectsMixedEvidenceFromGlobalTransfer(t *testing.T) {
+	global := db.SkillState{SkillKey: "verification.pre_ship", ScopeType: ScopeGlobal, ScopeID: "global", State: StateUnobserved}
+	mixed := EvidenceSummary{
+		Confidence:             0.90,
+		SupportingEvidence:     1,
+		CounterEvidence:        1,
+		SuccessfulApplications: 1,
+		FailedApplications:     1,
+		Transferable:           true,
+		Normalized:             true,
+	}
+
+	next, changed := Evaluate(global, mixed)
+	if changed || next != global {
+		t.Fatalf("mixed global result = %#v, changed=%v; want no global transfer", next, changed)
+	}
+}
+
+func TestEvaluateNormalizesZeroValueStateToUnobserved(t *testing.T) {
+	next, changed := Evaluate(db.SkillState{}, EvidenceSummary{})
+	if !changed || next.State != StateUnobserved {
+		t.Fatalf("zero-value state result = %#v, changed=%v; want state %q", next, changed, StateUnobserved)
+	}
+}
+
 func evaluateState(t *testing.T, current db.SkillState, summary EvidenceSummary) db.SkillState {
 	t.Helper()
 	next, changed := Evaluate(current, summary)

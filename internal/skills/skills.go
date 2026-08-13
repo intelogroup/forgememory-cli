@@ -44,14 +44,16 @@ type EvidenceSummary struct {
 // project-local evidence; global states accept only normalized transferable
 // successes, preserving the provenance of every source observation locally.
 func Evaluate(current db.SkillState, summary EvidenceSummary) (db.SkillState, bool) {
-	if current.ScopeType == ScopeGlobal && (!summary.Transferable || !summary.Normalized || summary.SuccessfulApplications == 0) {
-		return current, false
-	}
-
 	next := current
 	if next.State == "" {
 		next.State = StateUnobserved
 	}
+	if next.ScopeType == ScopeGlobal && (!summary.Transferable || !summary.Normalized || summary.SuccessfulApplications == 0 ||
+		summary.CounterEvidence > 0 || summary.FailedApplications > 0) {
+		return next, next != current
+	}
+
+	previous := next
 	newEvidence := summary.SupportingEvidence + summary.CounterEvidence
 	next.EvidenceCount += newEvidence
 	next.SuccessfulApplications += summary.SuccessfulApplications
@@ -59,8 +61,8 @@ func Evaluate(current db.SkillState, summary EvidenceSummary) (db.SkillState, bo
 	if summary.ObservedAt != "" {
 		next.LastObservedAt = summary.ObservedAt
 	}
-	next.Confidence = confidenceAfter(current, summary, newEvidence)
-	next.State = stateAfter(current, next, summary)
+	next.Confidence = confidenceAfter(previous, summary, newEvidence)
+	next.State = stateAfter(previous, next, summary)
 	return next, next != current
 }
 

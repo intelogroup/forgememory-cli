@@ -61,20 +61,36 @@ func (s Store) Save(projectID string, draft observations.ObservationDraft, live 
 			return db.Observation{}, fmt.Errorf("add observation evidence: %w", err)
 		}
 	}
+	if err := s.addProvenance(observation.ID, version, live); err != nil {
+		return db.Observation{}, fmt.Errorf("add provenance: %w", err)
+	}
+	return observation, nil
+}
+
+func (s Store) addProvenance(observationID, version string, live bool) error {
+	existing, err := s.DB.ListObservationEvidence(observationID)
+	if err != nil {
+		return err
+	}
+	// Provenance is first-write-wins: the observation ID deliberately excludes
+	// ingestion mode, so cross-mode replays retain the original live/backfill
+	// record rather than adding contradictory provenance for the same source set.
+	for _, evidence := range existing {
+		if evidence.SourceType == "ingestion" && evidence.Role == "provenance" {
+			return nil
+		}
+	}
 	provenance := "backfill"
 	if live {
 		provenance = "live"
 	}
-	if err := s.DB.AddObservationEvidence(&db.ObservationEvidence{
-		ObservationID: observation.ID,
+	return s.DB.AddObservationEvidence(&db.ObservationEvidence{
+		ObservationID: observationID,
 		SourceType:    "ingestion",
 		SourceID:      provenance,
 		Role:          "provenance",
 		Excerpt:       "extractor=" + version,
-	}); err != nil {
-		return db.Observation{}, fmt.Errorf("add provenance: %w", err)
-	}
-	return observation, nil
+	})
 }
 
 type sourceRecord struct {
