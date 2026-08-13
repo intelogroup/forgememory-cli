@@ -25,6 +25,13 @@ const (
 	neverShowAgain = "never_show_again"
 )
 
+var dismissalReasons = map[string]bool{
+	"not_relevant":     true,
+	"already_known":    true,
+	"incorrect":        true,
+	"never_show_again": true,
+}
+
 // Mode controls whether the coach records only evidence, queues lessons, or
 // permits safe-boundary delivery. The empty value is observation-only.
 type Mode string
@@ -198,6 +205,63 @@ func Dismiss(database *db.DB, id, reason string) error {
 		return err
 	}
 	return resolve(database, item, statusDismissed, strings.TrimSpace(reason), true)
+}
+
+// AcceptObservation resolves the queued item associated with an observation.
+// It keeps the CLI at the observation boundary while preserving the existing
+// item-level transition implementation.
+func AcceptObservation(database *db.DB, observationID string) error {
+	item, err := itemForObservation(database, observationID)
+	if err != nil {
+		return err
+	}
+	return Accept(database, item.ID)
+}
+
+// DeferObservation defers the queued item associated with an observation.
+func DeferObservation(database *db.DB, observationID string) error {
+	item, err := itemForObservation(database, observationID)
+	if err != nil {
+		return err
+	}
+	return Defer(database, item.ID)
+}
+
+// DismissObservation validates the public dismissal category before resolving
+// the queued item associated with an observation.
+func DismissObservation(database *db.DB, observationID, reason string) error {
+	if !dismissalReasons[strings.TrimSpace(reason)] {
+		return fmt.Errorf("invalid dismissal reason %q (choose not_relevant, already_known, incorrect, or never_show_again)", reason)
+	}
+	item, err := itemForObservation(database, observationID)
+	if err != nil {
+		return err
+	}
+	return Dismiss(database, item.ID, reason)
+}
+
+func itemForObservation(database *db.DB, observationID string) (db.CoachingItem, error) {
+	if database == nil {
+		return db.CoachingItem{}, fmt.Errorf("coach database is required")
+	}
+	if strings.TrimSpace(observationID) == "" {
+		return db.CoachingItem{}, fmt.Errorf("observation ID is required")
+	}
+	observation, found, err := database.ObservationByID(observationID)
+	if err != nil {
+		return db.CoachingItem{}, fmt.Errorf("get observation: %w", err)
+	}
+	if !found {
+		return db.CoachingItem{}, fmt.Errorf("observation %q was not found", observationID)
+	}
+	item, found, err := database.CoachingItemByObservationID(observation.ID)
+	if err != nil {
+		return db.CoachingItem{}, fmt.Errorf("get coaching item: %w", err)
+	}
+	if !found {
+		return db.CoachingItem{}, fmt.Errorf("observation %q has no coaching item", observationID)
+	}
+	return item, nil
 }
 
 func coachingItem(database *db.DB, id string) (db.CoachingItem, error) {

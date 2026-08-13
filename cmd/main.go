@@ -124,7 +124,7 @@ func printUsage() {
    steering      Show mid-task redirect rate per session (--path)
    profile       Score builder on 5 axes from local commits/streams/steering (--path)
    knowledge-gap Surface recurring technical knowledge gaps + vocab corrections (--path --all --vocab --json)
-   coach         List/act on queued coaching items; detects verification gaps by default (--path --mode --accept --defer --dismiss --reason --no-detect)
+   coach         Review evidence-backed coaching items (status|list|explain|accept|defer|dismiss|review; --json for reads)
    prompt-doctor Surface recurring prompt anti-patterns + SCARF fix suggestions (--path --all --coach --json)
    stats         Fun aggregates: archetype, peak hour, top prompt words, agent-parallelism (--path)
    search <q>    Full-text search on event payloads

@@ -65,6 +65,30 @@ See 'forge agent-guide' for a copy-pasteable CLAUDE.md / system prompt block.
 `)
 		return
 	}
+	if len(args) == 1 && args[0] == "coach" {
+		fmt.Print(`forge help coach — evidence-backed coaching
+
+  forge coach status [--path] [--json]
+    Show lifecycle counts for the current project.
+
+  forge coach list [--path] [--json]
+    List coaching items with skill state, confidence, and evidence count.
+
+  forge coach explain <observation-id> [--json]
+    Show the observation, supporting evidence, counter-evidence, and whether it needs more evidence.
+
+  forge coach accept <observation-id>
+  forge coach defer <observation-id>
+  forge coach dismiss <observation-id> --reason <category>
+    Resolve an observation through the coach service. Categories: not_relevant, already_known, incorrect, never_show_again.
+
+  forge coach review [--path] [--json]
+    Review all coaching-item lifecycle states.
+
+Compatibility flags remain available: forge coach [--path] [--mode off|observe|quiet|normal|strict] [--accept|--defer|--dismiss <item-id> --reason <text>] [--no-detect]
+`)
+		return
+	}
 	printUsage()
 }
 

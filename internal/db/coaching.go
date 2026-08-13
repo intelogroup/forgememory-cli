@@ -114,6 +114,22 @@ func (d *DB) ListObservationEvidence(observationID string) ([]ObservationEvidenc
 	return result, rows.Err()
 }
 
+// ObservationByID returns one observation for CLI and service detail views.
+func (d *DB) ObservationByID(id string) (Observation, bool, error) {
+	var observation Observation
+	err := d.conn.QueryRow(`SELECT id, created_at, project_id, session_id, kind, skill_key, confidence, severity, status, summary, extractor_version
+		FROM observations WHERE id=?`, id).Scan(&observation.ID, &observation.CreatedAt, &observation.ProjectID, &observation.SessionID,
+		&observation.Kind, &observation.SkillKey, &observation.Confidence, &observation.Severity, &observation.Status,
+		&observation.Summary, &observation.ExtractorVersion)
+	if err == sql.ErrNoRows {
+		return Observation{}, false, nil
+	}
+	if err != nil {
+		return Observation{}, false, err
+	}
+	return observation, true, nil
+}
+
 func (d *DB) ListObservations(projectID string, status string, limit int) ([]Observation, error) {
 	if limit <= 0 {
 		limit = 100
@@ -252,6 +268,23 @@ func (d *DB) ListCoachingItems(projectID, status string, limit int) ([]CoachingI
 // ListCoachingItems.
 func (d *DB) ListAllCoachingItems(projectID, status string) ([]CoachingItem, error) {
 	return d.listCoachingItems(projectID, status, 0)
+}
+
+// CoachingItemByObservationID returns the coaching item attached to an
+// observation, if it has been queued.
+func (d *DB) CoachingItemByObservationID(observationID string) (CoachingItem, bool, error) {
+	var item CoachingItem
+	err := d.conn.QueryRow(`SELECT id, observation_id, skill_key, project_id, status, delivery_mode, question, next_action, lesson,
+		created_at, surfaced_at, resolved_at, resolution FROM coaching_items WHERE observation_id=?`, observationID).Scan(
+		&item.ID, &item.ObservationID, &item.SkillKey, &item.ProjectID, &item.Status, &item.DeliveryMode, &item.Question,
+		&item.NextAction, &item.Lesson, &item.CreatedAt, &item.SurfacedAt, &item.ResolvedAt, &item.Resolution)
+	if err == sql.ErrNoRows {
+		return CoachingItem{}, false, nil
+	}
+	if err != nil {
+		return CoachingItem{}, false, err
+	}
+	return item, true, nil
 }
 
 func (d *DB) listCoachingItems(projectID, status string, limit int) ([]CoachingItem, error) {

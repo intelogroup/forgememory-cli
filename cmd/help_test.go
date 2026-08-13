@@ -44,3 +44,17 @@ func TestTopLevelHelpSurfacesProviderSetupCommands(t *testing.T) {
 		}
 	}
 }
+
+func TestCoachHelpDocumentsSubcommandsAndModes(t *testing.T) {
+	out := captureStdout(func() { runHelp([]string{"coach"}) })
+	for _, want := range []string{
+		"forge coach status [--path] [--json]",
+		"forge coach explain <observation-id> [--json]",
+		"forge coach dismiss <observation-id> --reason <category>",
+		"off|observe|quiet|normal|strict",
+	} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("coach help missing %q:\n%s", want, out)
+		}
+	}
+}
