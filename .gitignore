@@ -43,3 +43,4 @@ payment/supabase/.temp/
 package/
 *.tgz
 Untitled
+graphify-out/cache/
