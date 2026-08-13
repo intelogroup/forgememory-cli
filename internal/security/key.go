@@ -26,6 +26,11 @@ import (
 // is worse than a session running temporarily unsigned.
 const keychainTimeout = 500 * time.Millisecond
 
+// keychainRetryAfter prevents every short-lived hook process from probing a
+// keychain backend that has already failed. The marker contains no secret and
+// expires so a keychain made available later is still detected.
+const keychainRetryAfter = 10 * time.Minute
+
 // keyringService/keyringUser identify the real keychain entry and are vars
 // (not consts) only so tests can point RotateKey at a throwaway entry via
 // UseIsolatedKeyForTests — RotateKey overwrites whatever entry these name,
@@ -35,30 +40,56 @@ const keychainTimeout = 500 * time.Millisecond
 var (
 	keyringService = "forge-cli"
 	keyringUser    = "forge-hmac-key"
+	keyringGet     = keyring.Get
+	keyringSet     = keyring.Set
 )
 
-const keyFileName = "forge.key"
+const (
+	keyFileName        = "forge.key"
+	keychainMarkerName = "keychain-unavailable"
+	keychainProbeLock  = "keychain-probe.lock"
+)
 
 // GetOrCreateKey returns the HMAC signing key, creating one on first use.
 // It tries the OS keychain first; if unavailable (headless Linux with no
 // Secret Service, etc.) it falls back to a chmod-600 file under ~/.forge
 // and reports that fallback via usedFallback so callers can warn the user.
 func GetOrCreateKey() (key []byte, usedFallback bool, err error) {
-	if secret, ok := keyringGetWithTimeout(); ok {
-		decoded, decErr := hex.DecodeString(secret)
-		if decErr == nil && len(decoded) == 32 {
-			return decoded, false, nil
+	if !keychainRecentlyUnavailable() {
+		// Hook/daemon processes can start together. Only one process may probe
+		// the keychain; peers use the fallback while that probe is in flight.
+		// This prevents a burst of `security` helper processes and prompts.
+		probeLock, acquired := acquireKeychainProbe()
+		if acquired {
+			defer releaseKeychainProbe(probeLock)
+		} else {
+			goto fallback
 		}
-		// Corrupt entry — regenerate below.
+		if secret, ok := keyringGetWithTimeout(); ok {
+			decoded, decErr := hex.DecodeString(secret)
+			if decErr == nil && len(decoded) == 32 {
+				clearKeychainUnavailable()
+				return decoded, false, nil
+			}
+			// Corrupt entry — regenerate below.
+		}
+
+		newKey := make([]byte, 32)
+		if _, err := rand.Read(newKey); err != nil {
+			return nil, false, fmt.Errorf("generate key: %w", err)
+		}
+
+		if keyringSetWithTimeout(hex.EncodeToString(newKey)) {
+			clearKeychainUnavailable()
+			return newKey, false, nil
+		}
+		markKeychainUnavailable()
 	}
 
+fallback:
 	newKey := make([]byte, 32)
 	if _, err := rand.Read(newKey); err != nil {
 		return nil, false, fmt.Errorf("generate key: %w", err)
-	}
-
-	if keyringSetWithTimeout(hex.EncodeToString(newKey)) {
-		return newKey, false, nil
 	}
 
 	// Keychain unavailable or too slow to respond (e.g. blocked on an
@@ -91,7 +122,7 @@ func keyringGetWithTimeout() (string, bool) {
 	}
 	ch := make(chan result, 1)
 	go func() {
-		secret, err := keyring.Get(keyringService, keyringUser)
+		secret, err := keyringGet(keyringService, keyringUser)
 		ch <- result{secret, err == nil}
 	}()
 	select {
@@ -105,7 +136,7 @@ func keyringGetWithTimeout() (string, bool) {
 func keyringSetWithTimeout(secret string) bool {
 	ch := make(chan bool, 1)
 	go func() {
-		ch <- keyring.Set(keyringService, keyringUser, secret) == nil
+		ch <- keyringSet(keyringService, keyringUser, secret) == nil
 	}()
 	select {
 	case ok := <-ch:
@@ -125,7 +156,12 @@ func RotateKey() ([]byte, error) {
 		return nil, fmt.Errorf("generate key: %w", err)
 	}
 
-	storedInKeychain := keyringSetWithTimeout(hex.EncodeToString(newKey))
+	storedInKeychain := !keychainRecentlyUnavailable() && keyringSetWithTimeout(hex.EncodeToString(newKey))
+	if storedInKeychain {
+		clearKeychainUnavailable()
+	} else if !storedInKeychain {
+		markKeychainUnavailable()
+	}
 
 	path, err := keyFilePath()
 	if err != nil {
@@ -162,6 +198,66 @@ func keyFilePath() (string, error) {
 		}
 	}
 	return filepath.Join(home, ".forge", keyFileName), nil
+}
+
+func keychainMarkerPath() (string, error) {
+	path, err := keyFilePath()
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(filepath.Dir(path), keychainMarkerName), nil
+}
+
+func keychainRecentlyUnavailable() bool {
+	path, err := keychainMarkerPath()
+	if err != nil {
+		return false
+	}
+	info, err := os.Stat(path)
+	return err == nil && time.Since(info.ModTime()) < keychainRetryAfter
+}
+
+func markKeychainUnavailable() {
+	path, err := keychainMarkerPath()
+	if err != nil {
+		return
+	}
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		return
+	}
+	_ = os.WriteFile(path, []byte("unavailable\n"), 0o600)
+}
+
+func clearKeychainUnavailable() {
+	path, err := keychainMarkerPath()
+	if err == nil {
+		_ = os.Remove(path)
+	}
+}
+
+func acquireKeychainProbe() (*os.File, bool) {
+	path, err := keychainMarkerPath()
+	if err != nil {
+		return nil, false
+	}
+	lockPath := filepath.Join(filepath.Dir(path), keychainProbeLock)
+	if err := os.MkdirAll(filepath.Dir(lockPath), 0o700); err != nil {
+		return nil, false
+	}
+	lock, err := os.OpenFile(lockPath, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
+	if err != nil {
+		return nil, false
+	}
+	return lock, true
+}
+
+func releaseKeychainProbe(lock *os.File) {
+	if lock == nil {
+		return
+	}
+	path := lock.Name()
+	_ = lock.Close()
+	_ = os.Remove(path)
 }
 
 // Sign computes HMAC-SHA256(data, key) and returns it hex-encoded.

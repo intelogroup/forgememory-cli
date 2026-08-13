@@ -3,6 +3,7 @@ package security
 import (
 	"crypto/rand"
 	"encoding/hex"
+	"errors"
 	"testing"
 
 	"github.com/zalando/go-keyring"
@@ -27,6 +28,39 @@ func useIsolatedKeyForTests(t *testing.T) {
 		_ = keyring.Delete(keyringService, keyringUser)
 		keyringService, keyringUser, testHomeOverride = origService, origUser, origHome
 	})
+}
+
+func TestGetOrCreateKeySkipsKeychainAfterPersistentFailure(t *testing.T) {
+	useIsolatedKeyForTests(t)
+
+	origGet, origSet := keyringGet, keyringSet
+	defer func() { keyringGet, keyringSet = origGet, origSet }()
+	getCalls, setCalls := 0, 0
+	keyringGet = func(string, string) (string, error) {
+		getCalls++
+		return "", errors.New("keychain not found")
+	}
+	keyringSet = func(string, string, string) error {
+		setCalls++
+		return errors.New("keychain not found")
+	}
+
+	first, usedFallback, err := GetOrCreateKey()
+	if err != nil || !usedFallback || len(first) != 32 {
+		t.Fatalf("first lookup = (%d bytes, fallback=%v, err=%v), want fallback key", len(first), usedFallback, err)
+	}
+	if getCalls != 1 || setCalls != 1 {
+		t.Fatalf("first lookup called keychain get=%d set=%d, want one each", getCalls, setCalls)
+	}
+
+	getCalls, setCalls = 0, 0
+	second, usedFallback, err := GetOrCreateKey()
+	if err != nil || !usedFallback || string(second) != string(first) {
+		t.Fatalf("second lookup = (%d bytes, fallback=%v, err=%v), want same fallback key", len(second), usedFallback, err)
+	}
+	if getCalls != 0 || setCalls != 0 {
+		t.Fatalf("second lookup called keychain get=%d set=%d, want no calls after persistent failure", getCalls, setCalls)
+	}
 }
 
 func TestSignVerifyRoundTrip(t *testing.T) {

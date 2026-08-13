@@ -180,6 +180,44 @@ func TestCoachDismissValidatesObservationAndReason(t *testing.T) {
 	}
 }
 
+func TestCoachRejectsUnknownSubcommand(t *testing.T) {
+	_, stderr, code := runForge(t, t.TempDir(), "coach", "stauts")
+	if code == 0 || !strings.Contains(stderr, "Usage: forge coach") {
+		t.Fatalf("unknown subcommand = code %d stderr %q, want usage error", code, stderr)
+	}
+}
+
+func TestCoachReviewIncludesObservationsNeedingMoreEvidence(t *testing.T) {
+	home := t.TempDir()
+	projectID := coachTestProjectID(t)
+	database, err := db.Open(filepath.Join(home, ".forge", "forge.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := database.InsertObservation(&db.Observation{
+		ID: "needs-evidence", CreatedAt: "2026-08-13T12:00:00Z", ProjectID: projectID,
+		SessionID: "review-session", Kind: "code_change_without_relevant_test",
+		SkillKey: "verification.pre_ship", Confidence: 0.42, Severity: "info",
+		Status: "active", Summary: "Needs another observation.",
+	}); err != nil {
+		database.Close()
+		t.Fatal(err)
+	}
+	database.Close()
+
+	stdout, stderr, code := runForge(t, home, "coach", "review", "--json")
+	if code != 0 || stderr != "" {
+		t.Fatalf("coach review failed: code=%d stderr=%q", code, stderr)
+	}
+	var review coachListOutput
+	if err := json.Unmarshal([]byte(stdout), &review); err != nil {
+		t.Fatalf("review --json must emit JSON only: %v\noutput: %q", err, stdout)
+	}
+	if len(review.Items) != 1 || review.Items[0].ObservationID != "needs-evidence" || !review.Items[0].NeedsMoreEvidence {
+		t.Fatalf("review items = %#v, want needs-evidence observation", review.Items)
+	}
+}
+
 func seedCoachCLIItem(t *testing.T, home, projectID, observationID string) {
 	t.Helper()
 	database, err := db.Open(filepath.Join(home, ".forge", "forge.db"))

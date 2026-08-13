@@ -46,6 +46,10 @@ func runCoach(args []string) {
 		case "review":
 			runCoachReview(args[1:])
 			return
+		default:
+			if !strings.HasPrefix(args[0], "-") {
+				coachCommandUsage("forge coach [status|list|explain|accept|defer|dismiss|review]")
+			}
 		}
 	}
 
@@ -360,9 +364,27 @@ func runCoachReview(args []string) {
 		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 		os.Exit(1)
 	}
+	observations, err := database.ListAllObservations(projectID, "active")
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+		os.Exit(1)
+	}
 	payload := coachListPayload{ProjectID: projectID, Items: make([]coachListItem, 0, len(items))}
+	knownObservations := make(map[string]bool, len(items))
 	for _, item := range items {
+		knownObservations[item.ObservationID] = true
 		entry, err := coachListEntryForItem(database, item)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+			os.Exit(1)
+		}
+		payload.Items = append(payload.Items, entry)
+	}
+	for _, observation := range observations {
+		if knownObservations[observation.ID] {
+			continue
+		}
+		entry, err := coachListEntryForObservation(database, observation)
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 			os.Exit(1)
@@ -380,6 +402,26 @@ func runCoachReview(args []string) {
 	for _, item := range payload.Items {
 		fmt.Printf("[%s] status=%s confidence=%.2f needs-more-evidence=%t\n", item.ObservationID, item.Status, item.Confidence, item.NeedsMoreEvidence)
 	}
+}
+
+func coachListEntryForObservation(database *db.DB, observation db.Observation) (coachListItem, error) {
+	entry := coachListItem{
+		ObservationID:     observation.ID,
+		SkillKey:          observation.SkillKey,
+		Status:            observation.Status,
+		NeedsMoreEvidence: true,
+	}
+	state, err := database.GetSkillState(observation.SkillKey, skills.ScopeProject, observation.ProjectID)
+	if err != nil {
+		return coachListItem{}, fmt.Errorf("get skill state: %w", err)
+	}
+	if state != nil {
+		entry.Confidence = state.Confidence
+		entry.State = state.State
+		entry.EvidenceCount = state.EvidenceCount
+		entry.NeedsMoreEvidence = state.State != skills.StateSuspectedGap
+	}
+	return entry, nil
 }
 
 func coachCommandUsage(usage string) {
