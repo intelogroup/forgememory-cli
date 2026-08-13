@@ -216,6 +216,49 @@ func TestDetectVerification(t *testing.T) {
 	}
 }
 
+// TestDetectVerificationUnrelatedChangeDoesNotReduceConfidence guards against
+// cross-contamination between independent changes in the same session.
+// matchTests puts every test run that isn't a relevant match for the current
+// change into counterTests — including a passing test that verified a
+// *different* file changed later in the same session. That counter set drives
+// a flat confidence penalty, so a normal multi-file session (edit A, verify A,
+// edit B, verify B) currently docks both otherwise-fully-verified changes for
+// merely coexisting, even though neither test contradicts the other's change.
+func TestDetectVerificationUnrelatedChangeDoesNotReduceConfidence(t *testing.T) {
+	base := time.Date(2026, time.August, 13, 12, 0, 0, 0, time.UTC)
+	stamp := func(minutes int) string { return base.Add(time.Duration(minutes) * time.Minute).Format(time.RFC3339) }
+
+	got := DetectVerification(Input{ProjectID: projectID, SessionID: sessionID, Events: []db.Event{
+		writeEvent("change-a", stamp(0), "internal/payments/charge.go"),
+		testEvent("test-a", stamp(1), "go test ./internal/payments", 0, "PASS"),
+		writeEvent("change-b", stamp(2), "internal/auth/login.go"),
+		testEvent("test-b", stamp(3), "go test ./internal/auth", 0, "PASS"),
+	}})
+
+	byChange := make(map[string]ObservationDraft, len(got))
+	for _, draft := range got {
+		if draft.Kind != "verification_detected" {
+			t.Fatalf("unexpected draft kind %q for a fully-verified multi-file session: %#v", draft.Kind, got)
+		}
+		byChange[draft.SupportingSources[0].SourceID] = draft
+	}
+	if len(byChange) != 2 {
+		t.Fatalf("got %d verification_detected drafts, want 2 (one per change): %#v", len(byChange), got)
+	}
+	for _, changeID := range []string{"change-a", "change-b"} {
+		draft, ok := byChange[changeID]
+		if !ok {
+			t.Fatalf("missing verification_detected draft for %q in %#v", changeID, got)
+		}
+		if draft.Confidence != targetedVerificationConfidence {
+			t.Errorf("%s confidence = %.2f, want %.2f: an unrelated test run for a different change in the same session must not count as counter-evidence", changeID, draft.Confidence, targetedVerificationConfidence)
+		}
+		if len(draft.CounterSources) != 0 {
+			t.Errorf("%s counter sources = %#v, want none", changeID, draft.CounterSources)
+		}
+	}
+}
+
 func TestDetectVerificationRecognizesTestCommandEcosystems(t *testing.T) {
 	base := time.Date(2026, time.August, 13, 12, 0, 0, 0, time.UTC)
 	commands := []struct {
