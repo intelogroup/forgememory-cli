@@ -95,6 +95,24 @@ func (d *DB) AddObservationEvidence(evidence *ObservationEvidence) error {
 	return err
 }
 
+func (d *DB) ListObservationEvidence(observationID string) ([]ObservationEvidence, error) {
+	rows, err := d.conn.Query(`SELECT observation_id, source_type, source_id, role, excerpt
+		FROM observation_evidence WHERE observation_id=? ORDER BY source_type, source_id, role`, observationID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var result []ObservationEvidence
+	for rows.Next() {
+		var item ObservationEvidence
+		if err := rows.Scan(&item.ObservationID, &item.SourceType, &item.SourceID, &item.Role, &item.Excerpt); err != nil {
+			return nil, err
+		}
+		result = append(result, item)
+	}
+	return result, rows.Err()
+}
+
 func (d *DB) ListObservations(projectID string, status string, limit int) ([]Observation, error) {
 	if limit <= 0 {
 		limit = 100

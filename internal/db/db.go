@@ -299,8 +299,6 @@ func (d *DB) migrate() error {
 			PRIMARY KEY (observation_id, source_type, source_id, role),
 			FOREIGN KEY (observation_id) REFERENCES observations(id) ON DELETE CASCADE
 		)`,
-		`CREATE UNIQUE INDEX IF NOT EXISTS idx_observation_evidence_source
-			ON observation_evidence(observation_id, source_type, source_id, role)`,
 		`CREATE TABLE IF NOT EXISTS skill_states (
 			skill_key             TEXT NOT NULL,
 			scope_type            TEXT NOT NULL,
