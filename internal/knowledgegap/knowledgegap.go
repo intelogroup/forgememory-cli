@@ -15,10 +15,10 @@ import (
 
 // Gap is one ranked technical knowledge gap with cited evidence.
 type Gap struct {
-	Topic         string `json:"topic"`
-	Evidence      string `json:"evidence"`
+	Topic          string `json:"topic"`
+	Evidence       string `json:"evidence"`
 	ConcreteLesson string `json:"concrete_lesson"`
-	StudyPointer  string `json:"study_pointer"`
+	StudyPointer   string `json:"study_pointer"`
 }
 
 // VocabSuggestion flags an imprecise/wrong term the user used and the
@@ -39,9 +39,9 @@ type Result struct {
 // prefix, mirroring how the raw data is actually recurring (not one row per
 // occurrence — that's just noise for the LLM).
 type FailureBucket struct {
-	ErrorKind    string
+	ErrorKind     string
 	MessagePrefix string
-	RepeatCount  int
+	RepeatCount   int
 }
 
 // Signals is the local evidence digest fed to the LLM.
@@ -236,6 +236,26 @@ commas, no comments — strictly valid JSON:
 {"gaps":[{"topic":"...","evidence":"...","concrete_lesson":"...","study_pointer":"..."}],"vocabulary":[{"term_used":"...","correct_term":"...","why":"..."}]}
 `)
 	return sb.String()
+}
+
+// ObservationConfidence is the confidence assigned to a knowledge-gap
+// observation. Gaps carry no per-item confidence from the LLM (unlike the
+// deterministic verification detector), so every gap is queued as coaching
+// evidence at a single fixed confidence, above the coach's queueing floor.
+const ObservationConfidence = 0.75
+
+var nonSlugChar = regexp.MustCompile(`[^a-z0-9]+`)
+
+// GapSkillKey derives a stable, slugified skill key from a gap's free-text
+// topic so repeated knowledge-gap runs accumulate evidence against the same
+// skill state instead of each LLM phrasing minting a new one.
+func GapSkillKey(topic string) string {
+	slug := nonSlugChar.ReplaceAllString(strings.ToLower(strings.TrimSpace(topic)), "_")
+	slug = strings.Trim(slug, "_")
+	if slug == "" {
+		slug = "general"
+	}
+	return "knowledge_gap." + slug
 }
 
 func cap15(items []string) []string {

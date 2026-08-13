@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -16,6 +17,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/forge/forge/internal/coach"
 	"github.com/forge/forge/internal/config"
 	"github.com/forge/forge/internal/db"
 	"github.com/forge/forge/internal/detect"
@@ -58,6 +60,9 @@ func runDaemon(args []string) {
 		}
 		if cfg.OllamaStartupWait != "" {
 			os.Setenv("FORGE_OLLAMA_STARTUP_WAIT", cfg.OllamaStartupWait)
+		}
+		if cfg.CoachMode != "" {
+			os.Setenv("FORGE_COACH_MODE", cfg.CoachMode)
 		}
 		log.Printf("Loaded config: provider=%s", cfg.Provider)
 	} else {
@@ -317,6 +322,10 @@ func distillSessionBatch(database *db.DB, interval time.Duration, lastCrossSessi
 	if len(sessions) == 0 {
 		return 0, nil, false
 	}
+	// Coaching is deterministic and provider-independent. Run it after this
+	// batch returns, even if distillation is backoff-limited or the provider is
+	// unavailable; it must never hold up hook event capture or distillation.
+	defer processCompletedSessions(database, sessions)
 
 	// Apply exponential backoff after consecutive failures so we don't
 	// hammer a misconfigured provider every minute.
@@ -450,6 +459,14 @@ func distillSessionBatch(database *db.DB, interval time.Duration, lastCrossSessi
 	}
 	_ = crossSessionCount
 	return len(sessions), lastErr, len(sessions) >= batchLimit
+}
+
+func processCompletedSessions(database *db.DB, sessionIDs []string) {
+	for _, sessionID := range sessionIDs {
+		if err := coach.ProcessCompletedSession(context.Background(), database, sessionID); err != nil {
+			log.Printf("Coaching: process completed session %s: %v", sessionID, err)
+		}
+	}
 }
 
 // warnProviderURLMismatch logs a one-time warning when provider and BaseURL

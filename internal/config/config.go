@@ -9,19 +9,20 @@ import (
 )
 
 type Config struct {
-	Provider           string
-	APIKey             string
-	Model              string
-	BaseURL            string
-	Context7APIKey     string
-	ExaAPIKey          string
-	TavilyAPIKey       string
-	Timeout            string
-	Retries            int
-	DistillInterval    string
-	OllamaTimeout      string
-	OllamaStartupWait  string
-	DistillBatchSize   int
+	Provider          string
+	APIKey            string
+	Model             string
+	BaseURL           string
+	Context7APIKey    string
+	ExaAPIKey         string
+	TavilyAPIKey      string
+	Timeout           string
+	Retries           int
+	DistillInterval   string
+	OllamaTimeout     string
+	OllamaStartupWait string
+	DistillBatchSize  int
+	CoachMode         string
 }
 
 func Path() string {
@@ -99,6 +100,8 @@ func parseConfigData(data []byte, cfg *Config) {
 			cfg.OllamaStartupWait = value
 		case "FORGE_DISTILL_BATCH_SIZE":
 			fmt.Sscanf(value, "%d", &cfg.DistillBatchSize)
+		case "FORGE_COACH_MODE":
+			cfg.CoachMode = value
 		}
 	}
 }
@@ -116,7 +119,6 @@ func findGitRoot() string {
 	}
 	return strings.TrimSpace(string(out))
 }
-
 
 func Save(cfg Config) error {
 	path := Path()
@@ -164,6 +166,9 @@ func Save(cfg Config) error {
 	}
 	if cfg.DistillBatchSize > 0 {
 		lines = append(lines, fmt.Sprintf("FORGE_DISTILL_BATCH_SIZE=%d", cfg.DistillBatchSize))
+	}
+	if cfg.CoachMode != "" {
+		lines = append(lines, fmt.Sprintf("FORGE_COACH_MODE=%s", cfg.CoachMode))
 	}
 
 	return os.WriteFile(path, []byte(strings.Join(lines, "\n")+"\n"), 0o600)
@@ -213,6 +218,9 @@ func SetEnvFromFile() error {
 	}
 	if cfg.DistillBatchSize > 0 {
 		os.Setenv("FORGE_DISTILL_BATCH_SIZE", fmt.Sprintf("%d", cfg.DistillBatchSize))
+	}
+	if cfg.CoachMode != "" {
+		os.Setenv("FORGE_COACH_MODE", cfg.CoachMode)
 	}
 	return nil
 }

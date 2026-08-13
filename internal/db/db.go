@@ -65,7 +65,6 @@ func OpenReadOnly(path string) (*DB, error) {
 	return &DB{conn: conn, Path: path}, nil
 }
 
-
 func (d *DB) Close() error {
 	return d.conn.Close()
 }
@@ -96,7 +95,36 @@ func defaultPath() string {
 	return filepath.Join(home, ".forge", "forge.db")
 }
 
+// schemaVersion is stamped into SQLite's user_version pragma once migrate()
+// has applied the current schema. Bump it whenever migrate()'s statements
+// change.
+const schemaVersion = 1
+
+// migrate applies the full schema, but only once: it runs on every Open(),
+// including every short-lived CLI subprocess invocation and any test that
+// polls via repeated Open() calls, so re-running ~60 DDL/ALTER statements
+// each time — even batched into one transaction — still means one write-lock
+// acquisition per call, racing the daemon's own writes on every single poll.
+// Checking user_version first (a lock-free read under WAL — readers are
+// never blocked by a concurrent writer) lets every Open() after the first
+// skip straight through with no write lock at all once the schema is
+// current, which is what actually keeps a polling caller from being a
+// standing source of write contention against the daemon.
 func (d *DB) migrate() error {
+	var version int
+	if err := d.conn.QueryRow(`PRAGMA user_version`).Scan(&version); err != nil {
+		return fmt.Errorf("read schema version: %w", err)
+	}
+	if version >= schemaVersion {
+		return nil
+	}
+
+	tx, err := d.conn.Begin()
+	if err != nil {
+		return fmt.Errorf("begin migration: %w", err)
+	}
+	defer tx.Rollback()
+
 	migrations := []string{
 		`CREATE TABLE IF NOT EXISTS events (
 			id          TEXT PRIMARY KEY,
@@ -171,6 +199,9 @@ func (d *DB) migrate() error {
 		)`,
 		`CREATE INDEX IF NOT EXISTS idx_failure_signatures_active
 		 ON failure_signatures(project_id, session_id, fingerprint, resolved_ts)`,
+		`CREATE INDEX IF NOT EXISTS idx_failure_signatures_repeated_recent
+		 ON failure_signatures(project_id, last_seen_ts DESC, id DESC)
+		 WHERE repeat_count >= 2 AND resolved_ts=''`,
 		`CREATE TABLE IF NOT EXISTS alerts (
 			id          TEXT PRIMARY KEY,
 			ts          TEXT NOT NULL,
@@ -236,7 +267,7 @@ func (d *DB) migrate() error {
 		END`,
 	}
 	for _, m := range migrations {
-		if _, err := d.conn.Exec(m); err != nil {
+		if _, err := tx.Exec(m); err != nil {
 			return fmt.Errorf("exec migration: %w", err)
 		}
 	}
@@ -264,6 +295,76 @@ func (d *DB) migrate() error {
 		{"principles", "signature", "TEXT DEFAULT ''"},
 	}
 	extraMigrations := []string{
+		`CREATE TABLE IF NOT EXISTS skill_definitions (
+			key              TEXT PRIMARY KEY,
+			name             TEXT NOT NULL,
+			description      TEXT NOT NULL DEFAULT '',
+			transferable     INTEGER NOT NULL DEFAULT 0,
+			definition_version TEXT NOT NULL DEFAULT '1'
+		)`,
+		`INSERT OR IGNORE INTO skill_definitions(key, name, description, transferable, definition_version)
+			VALUES ('verification.pre_ship', 'Verification before shipping',
+			        'Verify meaningful changes with relevant tests before shipping.', 1, '1')`,
+		`CREATE TABLE IF NOT EXISTS observations (
+			id               TEXT PRIMARY KEY,
+			created_at       TEXT NOT NULL,
+			project_id       TEXT NOT NULL,
+			session_id       TEXT NOT NULL DEFAULT '',
+			kind             TEXT NOT NULL,
+			skill_key        TEXT NOT NULL,
+			confidence       REAL NOT NULL DEFAULT 0,
+			severity         TEXT NOT NULL DEFAULT '',
+			status           TEXT NOT NULL DEFAULT '',
+			summary          TEXT NOT NULL,
+			extractor_version TEXT NOT NULL DEFAULT '1'
+		)`,
+		`CREATE INDEX IF NOT EXISTS idx_observations_project_time
+			ON observations(project_id, created_at DESC)`,
+		`CREATE INDEX IF NOT EXISTS idx_observations_project_status
+			ON observations(project_id, status, created_at DESC)`,
+		`CREATE TABLE IF NOT EXISTS observation_evidence (
+			observation_id TEXT NOT NULL,
+			source_type    TEXT NOT NULL,
+			source_id      TEXT NOT NULL,
+			role           TEXT NOT NULL,
+			excerpt        TEXT NOT NULL DEFAULT '',
+			PRIMARY KEY (observation_id, source_type, source_id, role),
+			FOREIGN KEY (observation_id) REFERENCES observations(id) ON DELETE CASCADE
+		)`,
+		`CREATE TABLE IF NOT EXISTS skill_states (
+			skill_key             TEXT NOT NULL,
+			scope_type            TEXT NOT NULL,
+			scope_id              TEXT NOT NULL,
+			state                 TEXT NOT NULL,
+			confidence            REAL NOT NULL DEFAULT 0,
+			evidence_count        INTEGER NOT NULL DEFAULT 0,
+			successful_applications INTEGER NOT NULL DEFAULT 0,
+			failed_applications   INTEGER NOT NULL DEFAULT 0,
+			last_observed_at      TEXT NOT NULL DEFAULT '',
+			updated_at            TEXT NOT NULL,
+			PRIMARY KEY (skill_key, scope_type, scope_id)
+		)`,
+		`CREATE INDEX IF NOT EXISTS idx_skill_states_scope_state
+			ON skill_states(scope_type, scope_id, state)`,
+		`CREATE TABLE IF NOT EXISTS coaching_items (
+			id            TEXT PRIMARY KEY,
+			observation_id TEXT NOT NULL DEFAULT '',
+			skill_key     TEXT NOT NULL,
+			project_id    TEXT NOT NULL,
+			status        TEXT NOT NULL,
+			delivery_mode TEXT NOT NULL,
+			question      TEXT NOT NULL DEFAULT '',
+			next_action   TEXT NOT NULL DEFAULT '',
+			lesson        TEXT NOT NULL DEFAULT '',
+			created_at    TEXT NOT NULL,
+			surfaced_at   TEXT NOT NULL DEFAULT '',
+			resolved_at   TEXT NOT NULL DEFAULT '',
+			resolution    TEXT NOT NULL DEFAULT ''
+		)`,
+		`CREATE INDEX IF NOT EXISTS idx_coaching_items_project_status
+			ON coaching_items(project_id, status, created_at DESC)`,
+		`CREATE INDEX IF NOT EXISTS idx_coaching_items_skill_status
+			ON coaching_items(skill_key, status, created_at DESC)`,
 		`CREATE TABLE IF NOT EXISTS cross_session_patterns (
 			id TEXT PRIMARY KEY,
 			ts TEXT NOT NULL,
@@ -320,43 +421,46 @@ func (d *DB) migrate() error {
 		`CREATE INDEX IF NOT EXISTS idx_session_commits_project ON session_commits(project_id, commit_ts DESC)`,
 	}
 	for _, m := range extraMigrations {
-		if _, err := d.conn.Exec(m); err != nil {
+		if _, err := tx.Exec(m); err != nil {
 			return fmt.Errorf("exec migration: %w", err)
 		}
 	}
 	for _, cm := range colMigrations {
-		if err := d.addColumnIfMissing(cm.table, cm.col, cm.def); err != nil {
+		if err := addColumnIfMissing(tx, cm.table, cm.col, cm.def); err != nil {
 			return fmt.Errorf("add column %s.%s: %w", cm.table, cm.col, err)
 		}
 	}
 	// Indexes that depend on columns added above must run after colMigrations.
-	if _, err := d.conn.Exec(
+	if _, err := tx.Exec(
 		`CREATE INDEX IF NOT EXISTS idx_principles_status ON principles(project_id, status)`,
 	); err != nil {
 		return fmt.Errorf("exec migration: %w", err)
 	}
-	if _, err := d.conn.Exec(`INSERT OR IGNORE INTO distillation_health(id) VALUES ('singleton')`); err != nil {
+	if _, err := tx.Exec(`INSERT OR IGNORE INTO distillation_health(id) VALUES ('singleton')`); err != nil {
 		return fmt.Errorf("init distillation_health singleton: %w", err)
 	}
-	if err := d.maybeRebuildPrinciplesFTS(); err != nil {
+	if err := maybeRebuildPrinciplesFTS(tx); err != nil {
 		return fmt.Errorf("principles fts rebuild: %w", err)
 	}
-	return nil
+	if _, err := tx.Exec(fmt.Sprintf("PRAGMA user_version = %d", schemaVersion)); err != nil {
+		return fmt.Errorf("stamp schema version: %w", err)
+	}
+	return tx.Commit()
 }
 
 // maybeRebuildPrinciplesFTS runs a one-time FTS rebuild to backfill principles
 // that existed before the FTS index was added. Runs exactly once per DB file,
 // tracked in _fts_rebuild_log so it never repeats on subsequent startups.
-func (d *DB) maybeRebuildPrinciplesFTS() error {
+func maybeRebuildPrinciplesFTS(tx *sql.Tx) error {
 	var doneat string
-	_ = d.conn.QueryRow(`SELECT done_at FROM _fts_rebuild_log WHERE name='principles_fts_v1'`).Scan(&doneat)
+	_ = tx.QueryRow(`SELECT done_at FROM _fts_rebuild_log WHERE name='principles_fts_v1'`).Scan(&doneat)
 	if doneat != "" {
 		return nil
 	}
-	if _, err := d.conn.Exec(`INSERT INTO principles_fts(principles_fts) VALUES('rebuild')`); err != nil {
+	if _, err := tx.Exec(`INSERT INTO principles_fts(principles_fts) VALUES('rebuild')`); err != nil {
 		return err
 	}
-	_, err := d.conn.Exec(
+	_, err := tx.Exec(
 		`INSERT OR REPLACE INTO _fts_rebuild_log(name, done_at) VALUES('principles_fts_v1', ?)`,
 		time.Now().UTC().Format(time.RFC3339),
 	)
@@ -364,8 +468,8 @@ func (d *DB) maybeRebuildPrinciplesFTS() error {
 }
 
 // addColumnIfMissing runs ALTER TABLE ADD COLUMN, ignoring duplicate-column errors.
-func (d *DB) addColumnIfMissing(table, column, colDef string) error {
-	_, err := d.conn.Exec(fmt.Sprintf("ALTER TABLE %s ADD COLUMN %s %s", table, column, colDef))
+func addColumnIfMissing(tx *sql.Tx, table, column, colDef string) error {
+	_, err := tx.Exec(fmt.Sprintf("ALTER TABLE %s ADD COLUMN %s %s", table, column, colDef))
 	if err != nil && strings.Contains(err.Error(), "duplicate column name") {
 		return nil
 	}

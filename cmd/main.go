@@ -59,6 +59,8 @@ func main() {
 		runProfile(os.Args[2:])
 	case "knowledge-gap":
 		runKnowledgeGap(os.Args[2:])
+	case "coach":
+		runCoach(os.Args[2:])
 	case "prompt-doctor":
 		runPromptDoctor(os.Args[2:])
 	case "stats":
@@ -122,6 +124,7 @@ func printUsage() {
    steering      Show mid-task redirect rate per session (--path)
    profile       Score builder on 5 axes from local commits/streams/steering (--path)
    knowledge-gap Surface recurring technical knowledge gaps + vocab corrections (--path --all --vocab --json)
+   coach         Review evidence-backed coaching items (status|list|explain|accept|defer|dismiss|review; --json for reads)
    prompt-doctor Surface recurring prompt anti-patterns + SCARF fix suggestions (--path --all --coach --json)
    stats         Fun aggregates: archetype, peak hour, top prompt words, agent-parallelism (--path)
    search <q>    Full-text search on event payloads

@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -73,6 +74,9 @@ func TestHandleToolsListIncludesScopedReadTools(t *testing.T) {
 		"get_project_timeline",
 		"get_external_context",
 		"get_active_failures",
+		"get_coaching_status",
+		"list_coaching_items",
+		"explain_coaching_item",
 	} {
 		if _, ok := names[name]; !ok {
 			t.Fatalf("missing tool %q", name)
@@ -91,6 +95,133 @@ func TestHandleToolsListIncludesScopedReadTools(t *testing.T) {
 		props := names[name].InputSchema["properties"].(map[string]any)
 		if _, ok := props["project_id"]; !ok {
 			t.Fatalf("%s missing project_id schema", name)
+		}
+	}
+
+	if got := names["explain_coaching_item"].InputSchema["required"]; !reflect.DeepEqual(got, []string{"item_id"}) {
+		t.Fatalf("explain_coaching_item required schema = %#v", got)
+	}
+	for _, name := range []string{"get_coaching_status", "list_coaching_items", "explain_coaching_item"} {
+		if _, ok := names[name].InputSchema["properties"].(map[string]any); !ok {
+			t.Fatalf("%s missing properties schema", name)
+		}
+	}
+}
+
+func TestCoachingMCPReadToolsFilterAndExplain(t *testing.T) {
+	database := openTestDB(t)
+	server := New(database)
+
+	alphaObservation := db.Observation{
+		ID: "obs-alpha", ProjectID: "project-alpha", SessionID: "session-alpha", Kind: "verification",
+		SkillKey: "verification.pre_ship", Confidence: 0.91, Severity: "high", Status: "active",
+		Summary: "Add a focused test before shipping.", CreatedAt: "2026-08-13T12:00:00Z",
+	}
+	if err := database.InsertObservation(&alphaObservation); err != nil {
+		t.Fatalf("insert alpha observation: %v", err)
+	}
+	if err := database.AddObservationEvidence(&db.ObservationEvidence{
+		ObservationID: "obs-alpha", SourceType: "test_command", SourceID: "run-1", Role: "supporting", Excerpt: "go test ./... was not run",
+	}); err != nil {
+		t.Fatalf("insert supporting evidence: %v", err)
+	}
+	if err := database.AddObservationEvidence(&db.ObservationEvidence{
+		ObservationID: "obs-alpha", SourceType: "commit", SourceID: "commit-1", Role: "counter", Excerpt: "follow-up commit added coverage",
+	}); err != nil {
+		t.Fatalf("insert counter evidence: %v", err)
+	}
+	if err := database.UpsertSkillState(&db.SkillState{
+		SkillKey: "verification.pre_ship", ScopeType: "project", ScopeID: "project-alpha", State: "suspected_gap",
+		Confidence: 0.91, EvidenceCount: 3, UpdatedAt: "2026-08-13T12:01:00Z",
+	}); err != nil {
+		t.Fatalf("insert alpha skill state: %v", err)
+	}
+	if err := database.InsertCoachingItem(&db.CoachingItem{
+		ID: "item-alpha", ObservationID: "obs-alpha", SkillKey: "verification.pre_ship", ProjectID: "project-alpha",
+		Status: "queued", DeliveryMode: "normal", Question: "What behavior should the test prove?",
+		NextAction: "Run the relevant tests", Lesson: alphaObservation.Summary, CreatedAt: "2026-08-13T12:02:00Z",
+	}); err != nil {
+		t.Fatalf("insert alpha coaching item: %v", err)
+	}
+
+	betaObservation := db.Observation{ID: "obs-beta", ProjectID: "project-beta", SkillKey: "verification.pre_ship", Status: "active", Summary: "beta-only lesson"}
+	if err := database.InsertObservation(&betaObservation); err != nil {
+		t.Fatalf("insert beta observation: %v", err)
+	}
+	if err := database.InsertCoachingItem(&db.CoachingItem{ID: "item-beta", ObservationID: "obs-beta", SkillKey: "verification.pre_ship", ProjectID: "project-beta", Status: "queued", Lesson: "beta-only lesson"}); err != nil {
+		t.Fatalf("insert beta coaching item: %v", err)
+	}
+
+	listText := callToolText(t, server, "list_coaching_items", map[string]any{"project_id": "project-alpha", "limit": 10})
+	var listed struct {
+		ProjectID string `json:"project_id"`
+		Items     []struct {
+			ID string `json:"id"`
+		} `json:"items"`
+	}
+	if err := json.Unmarshal([]byte(listText), &listed); err != nil {
+		t.Fatalf("list JSON: %v (%s)", err, listText)
+	}
+	if listed.ProjectID != "project-alpha" || len(listed.Items) != 1 || listed.Items[0].ID != "item-alpha" {
+		t.Fatalf("unexpected project-filtered list: %+v", listed)
+	}
+	if strings.Contains(listText, "item-beta") {
+		t.Fatalf("cross-project item leaked: %s", listText)
+	}
+
+	statusText := callToolText(t, server, "get_coaching_status", map[string]any{"project_id": "project-alpha"})
+	var status struct {
+		ProjectID string         `json:"project_id"`
+		Total     int            `json:"total"`
+		Counts    map[string]int `json:"counts"`
+	}
+	if err := json.Unmarshal([]byte(statusText), &status); err != nil {
+		t.Fatalf("status JSON: %v (%s)", err, statusText)
+	}
+	if status.ProjectID != "project-alpha" || status.Total != 1 || status.Counts["queued"] != 1 || status.Counts["accepted"] != 0 {
+		t.Fatalf("unexpected coaching status: %+v", status)
+	}
+
+	explainText := callToolText(t, server, "explain_coaching_item", map[string]any{"item_id": "item-alpha", "project_id": "project-alpha"})
+	var explanation struct {
+		Item struct {
+			ID            string  `json:"id"`
+			Confidence    float64 `json:"confidence"`
+			EvidenceCount int     `json:"evidence_count"`
+		} `json:"item"`
+		Observation struct {
+			ID string `json:"id"`
+		} `json:"observation"`
+		SupportingEvidence []db.ObservationEvidence `json:"supporting_evidence"`
+		CounterEvidence    []db.ObservationEvidence `json:"counter_evidence"`
+	}
+	if err := json.Unmarshal([]byte(explainText), &explanation); err != nil {
+		t.Fatalf("explain JSON: %v (%s)", err, explainText)
+	}
+	if explanation.Item.ID != "item-alpha" || explanation.Observation.ID != "obs-alpha" || explanation.Item.Confidence != 0.91 || explanation.Item.EvidenceCount != 3 {
+		t.Fatalf("unexpected explanation: %+v", explanation)
+	}
+	if len(explanation.SupportingEvidence) != 1 || len(explanation.CounterEvidence) != 1 {
+		t.Fatalf("unexpected evidence split: supporting=%d counter=%d", len(explanation.SupportingEvidence), len(explanation.CounterEvidence))
+	}
+}
+
+func TestCoachingMCPUnknownIDsReturnToolErrors(t *testing.T) {
+	server := New(openTestDB(t))
+	for _, args := range []map[string]any{
+		{"item_id": "missing-item"},
+		{"item_id": "missing-item", "project_id": "project-alpha"},
+	} {
+		result := server.handleToolsCall(Request{
+			JSONRPC: "2.0", ID: json.RawMessage("1"),
+			Params: mustMarshal(t, map[string]any{"name": "explain_coaching_item", "arguments": args}),
+		})
+		if result == nil || result.Error != nil {
+			t.Fatalf("unknown coaching item should be a tool error result: %+v", result)
+		}
+		toolResult, ok := result.Result.(ToolResult)
+		if !ok || !toolResult.IsError || len(toolResult.Content) == 0 || !strings.Contains(toolResult.Content[0].Text, "was not found") {
+			t.Fatalf("unexpected unknown-ID result: %+v", result.Result)
 		}
 	}
 }

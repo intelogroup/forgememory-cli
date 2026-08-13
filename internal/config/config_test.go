@@ -145,3 +145,30 @@ func TestSetEnvFromFile_SetsEnvVars(t *testing.T) {
 		t.Fatalf("FORGE_MODEL = %q, want gpt-4o-mini", got)
 	}
 }
+
+func TestCoachModeRoundTripsThroughConfigAndEnvironment(t *testing.T) {
+	for _, mode := range []string{"off", "observe", "quiet", "normal", "strict"} {
+		t.Run(mode, func(t *testing.T) {
+			home := t.TempDir()
+			t.Setenv("HOME", home)
+			t.Setenv("FORGE_COACH_MODE", "")
+
+			if err := Save(Config{CoachMode: mode}); err != nil {
+				t.Fatalf("Save: %v", err)
+			}
+			cfg, err := Load()
+			if err != nil {
+				t.Fatalf("Load: %v", err)
+			}
+			if cfg.CoachMode != mode {
+				t.Fatalf("CoachMode = %q, want %q", cfg.CoachMode, mode)
+			}
+			if err := SetEnvFromFile(); err != nil {
+				t.Fatalf("SetEnvFromFile: %v", err)
+			}
+			if got := os.Getenv("FORGE_COACH_MODE"); got != mode {
+				t.Fatalf("FORGE_COACH_MODE = %q, want %q", got, mode)
+			}
+		})
+	}
+}

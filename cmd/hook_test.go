@@ -8,7 +8,18 @@ import (
 	"github.com/forge/forge/internal/db"
 )
 
-
+func TestAppendCoachSuggestion(t *testing.T) {
+	item := &db.CoachingItem{SkillKey: "verification.pre_ship", Question: "What behavior should the test prove?", NextAction: "Add the narrowest relevant test."}
+	if got := appendCoachSuggestion("existing recall", item); !strings.Contains(got, "Forge coaching (verification.pre_ship)") || !strings.Contains(got, "Add the narrowest relevant test.") {
+		t.Fatalf("appended coaching suggestion = %q, want skill and next action", got)
+	}
+	if got := appendCoachSuggestion("", item); strings.HasPrefix(got, "\n") || !strings.Contains(got, "Forge coaching") {
+		t.Fatalf("empty recall suggestion = %q, want standalone suggestion", got)
+	}
+	if got := appendCoachSuggestion("existing recall", nil); got != "existing recall" {
+		t.Fatalf("nil coaching item changed recall to %q", got)
+	}
+}
 
 func TestBuildSessionRecallOutput_IncludesPromptMatchedLesson(t *testing.T) {
 	out := buildSessionRecallOutput(
@@ -100,8 +111,6 @@ func TestBuildSessionRecallOutput_PrefersOfficialDocsHintOverRepeatedFailureAler
 	}
 }
 
-
-
 func TestBuildSessionRecallOutput_LowConfidenceMatchDropped(t *testing.T) {
 	out := buildSessionRecallOutput(
 		"forgememory-cli",
@@ -172,7 +181,6 @@ func TestLoadSessionRecallContext_FallsBackToGlobalRecentContext(t *testing.T) {
 	if summaries[0].ProjectID != "forgememory-cli" {
 		t.Fatalf("expected fallback summary project_id to be forgememory-cli, got %q", summaries[0].ProjectID)
 	}
-
 
 }
 
