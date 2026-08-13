@@ -9,6 +9,7 @@ on:
 jobs:
   test:
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@v6
 
@@ -20,7 +21,14 @@ jobs:
         run: go build -o forge ./cmd/
 
       - name: Unit tests
-        run: go test ./... -v -count=1
+        # -timeout bounds each package's test binary so a hang panics with a
+        # full goroutine dump instead of silently consuming the job's whole
+        # timeout-minutes budget. timeout-minutes is the hard backstop: a Go
+        # test timeout only panics the test binary itself, it doesn't run
+        # t.Cleanup on a goroutine that's blocked (not merely slow), so a
+        # spawned daemon process can outlive it — the job-level timeout is
+        # what actually reclaims the runner in that case.
+        run: go test ./... -v -count=1 -timeout 300s
 
       - name: Coverage gate (internal/service >= 65%)
         run: |
@@ -71,6 +79,16 @@ jobs:
     permissions:
       contents: read
     runs-on: windows-latest
+    # This job has hung for 35-64 minutes on multiple unrelated commits
+    # (pre-dating any coach/knowledgegap work) before eventually failing —
+    # almost certainly a daemon (or its own spawned subprocess) leaking a
+    # handle that keeps something waiting for EOF that never comes. The
+    # go test -timeout below only bounds the test binary itself; it can't
+    # run a blocked test's t.Cleanup, so it can't guarantee the spawned
+    # daemon process actually gets killed. This is the real backstop: the
+    # runner reclaims the whole job, orphaned processes included, once this
+    # fires.
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v6
 
