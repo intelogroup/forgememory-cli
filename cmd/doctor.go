@@ -52,6 +52,11 @@ func runDoctor(args []string) {
 			cleanSocket()
 			hasIssues = true
 		}
+		if lockPath := distillLockPath(); pathExists(lockPath) && isDistillLockStale(lockPath) {
+			fmt.Println("  - Removing stale distill lock...")
+			_ = os.Remove(lockPath)
+			hasIssues = true
+		}
 
 		// Remove stale forge binaries at managed paths.
 		activeInstallPath := agent.ForgePath()
@@ -136,8 +141,12 @@ func runDoctor(args []string) {
 			fmt.Printf("  [OK] Database file size: %d bytes (%s)\n", info.Size(), database.Path)
 		}
 
+		printDistillationHealth(database, undistilled)
+
 		database.Close()
 	}
+
+	printDistillLockStatus()
 
 	// Check LLM Provider connection
 	fmt.Println("  Checking LLM provider connectivity...")
@@ -193,6 +202,16 @@ func runDoctor(args []string) {
 	fmt.Printf("  [OK] Agents detected: %d\n", len(agents))
 	for _, a := range agents {
 		fmt.Printf("    - %s\n", a)
+	}
+
+	// Check for source/package version skew. A "dev" version means this
+	// binary was built directly from source (e.g. `go build ./cmd/`)
+	// without going through the release process, so it can expose commands
+	// or behavior newer than whatever is published to npm — a source tree
+	// can show a command (e.g. `coach`) that an older installed npm binary
+	// doesn't have yet (issue #43).
+	if version == "dev" {
+		fmt.Println("  [WARN] Build: this is an unreleased dev build (no version tag) — its command set may differ from the npm-installed forge on PATH.")
 	}
 
 	// Check binary installations
@@ -320,6 +339,53 @@ func probeForgeDirWritable() error {
 		return err
 	}
 	return os.Remove(probe)
+}
+
+// printDistillationHealth reports the distillation scheduler's health
+// prominently in `forge doctor` output — including the wedged state
+// (issue #33/#43): 3+ consecutive skips behind a stale/leaked distill lock
+// write a distinct failure record, but `forge status`'s compact view only
+// showed the bare LastStatus/count, not the message explaining why or what
+// to do about it.
+func printDistillationHealth(database *db.DB, undistilled int) {
+	h, err := database.GetDistillationHealth()
+	if err != nil {
+		return
+	}
+	switch {
+	case h.ConsecutiveFailures >= 3:
+		fmt.Printf("  [FAIL] Distillation: wedged after %d consecutive failures — %s\n", h.ConsecutiveFailures, h.LastErrorMessage)
+		fmt.Printf("         %d events undistilled. Repair: forge doctor --repair, or restart the daemon.\n", undistilled)
+	case h.LastStatus == "failed":
+		fmt.Printf("  [WARN] Distillation: last attempt failed — %s\n", h.LastErrorMessage)
+	case h.LastStatus == "" || h.LastStatus == "pending":
+		// No distillation has run yet — nothing to report.
+	default:
+		fmt.Printf("  [OK] Distillation: %s\n", h.LastStatus)
+	}
+}
+
+// printDistillLockStatus flags a distill lock file left behind by a
+// stale/leaked process. acquireDistillLock() already reclaims this
+// automatically on the next distill attempt, so this is a visibility check,
+// not a required repair step — but a stuck lock explains why events are
+// piling up undistilled right now, so it's worth surfacing directly.
+func printDistillLockStatus() {
+	lockPath := distillLockPath()
+	if !pathExists(lockPath) {
+		return
+	}
+	if isDistillLockStale(lockPath) {
+		fmt.Printf("  [FAIL] Distillation lock: stale, held by a dead/expired process (%s)\n", lockPath)
+		fmt.Println("         Repair: forge doctor --repair, or restart the daemon.")
+	} else {
+		fmt.Printf("  [OK] Distillation lock: held by a live process (%s)\n", lockPath)
+	}
+}
+
+func pathExists(path string) bool {
+	_, err := os.Stat(path)
+	return err == nil
 }
 
 type transientIntegrationRef struct {

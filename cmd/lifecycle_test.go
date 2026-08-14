@@ -13,6 +13,7 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/forge/forge/internal/agent"
 	"github.com/forge/forge/internal/db"
@@ -503,6 +504,136 @@ func TestRunHealth_PrintsDistillationSection(t *testing.T) {
 	out := captureStdout(func() { runHealth(nil) })
 	if !strings.Contains(out, "Distillation Health:") {
 		t.Fatalf("expected health heading, got: %q", out)
+	}
+}
+
+// recordWedgedDistillation seeds a distillation_health row matching the
+// scheduler-wedged state (issue #33/#43): 3 consecutive failures behind a
+// stale/leaked distill lock.
+func recordWedgedDistillation(t *testing.T) {
+	t.Helper()
+	database, err := db.Open("")
+	if err != nil {
+		t.Fatalf("db.Open: %v", err)
+	}
+	defer database.Close()
+	for i := 0; i < 3; i++ {
+		if err := database.RecordDistillationFailure(time.Now(), 0, 0, "scheduler wedged: distill lock held by stale/leaked process for 3+ cycles", time.Now()); err != nil {
+			t.Fatalf("RecordDistillationFailure: %v", err)
+		}
+	}
+}
+
+// TestStatusOutput_SurfacesWedgedDistillationMessage guards against issue
+// #43's complaint that the compact `forge status` view showed only
+// "Distillation: failed (N consecutive failures)" with no explanation of why
+// or what to do — the actual wedge message must appear directly in the
+// normal (non---detailed, non-health) status output.
+func TestStatusOutput_SurfacesWedgedDistillationMessage(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	recordWedgedDistillation(t)
+
+	out := captureStdout(statusOutput)
+	if !strings.Contains(out, "scheduler wedged") {
+		t.Errorf("expected wedged distill message in plain status output, got: %q", out)
+	}
+}
+
+// TestRunDoctor_ReportsWedgedDistillation is the regression test for issue
+// #43 item 4: `forge doctor` must report distillation health independently,
+// making a wedged scheduler prominent rather than silent.
+func TestRunDoctor_ReportsWedgedDistillation(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	recordWedgedDistillation(t)
+
+	out := captureStdout(func() { runDoctor([]string{}) })
+	if !strings.Contains(out, "[FAIL] Distillation") {
+		t.Errorf("expected '[FAIL] Distillation' for wedged scheduler, got: %q", out)
+	}
+	if !strings.Contains(out, "scheduler wedged") {
+		t.Errorf("expected the wedge error message in doctor output, got: %q", out)
+	}
+}
+
+// TestRunDoctor_ReportsStaleDistillLock verifies forge doctor surfaces a
+// leaked distill lock file directly, rather than only being visible via the
+// downstream consecutive-failures count once the scheduler eventually
+// notices it's blocked.
+func TestRunDoctor_ReportsStaleDistillLock(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+
+	lockPath := distillLockPath()
+	if err := os.MkdirAll(filepath.Dir(lockPath), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	// PID unlikely to be alive; readLockPID/isProcessAlive will treat this
+	// as a dead/leaked holder regardless of the TTL check.
+	if err := os.WriteFile(lockPath, []byte("999999999"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	out := captureStdout(func() { runDoctor([]string{}) })
+	if !strings.Contains(out, "[FAIL] Distillation lock: stale") {
+		t.Errorf("expected stale distill lock to be reported, got: %q", out)
+	}
+}
+
+// TestRunDoctorRepair_RemovesStaleDistillLock verifies `forge doctor
+// --repair` actually clears a leaked distill lock instead of only reporting
+// it, so the scheduler can resume without waiting out the full TTL.
+func TestRunDoctorRepair_RemovesStaleDistillLock(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+
+	lockPath := distillLockPath()
+	if err := os.MkdirAll(filepath.Dir(lockPath), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(lockPath, []byte("999999999"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	captureStdout(func() { runDoctor([]string{"--repair"}) })
+
+	if _, err := os.Stat(lockPath); err == nil {
+		t.Error("expected stale distill lock to be removed by --repair")
+	}
+}
+
+// TestRunDoctor_WarnsOnDevBuild is the regression test for issue #43 item 5:
+// a source tree built without going through the release process (e.g.
+// `go build ./cmd/`, leaving the ldflags-injected version at its "dev"
+// default) can expose commands newer than whatever is published to npm.
+// forge doctor must call that out so users aren't confused when a command
+// that works from source is missing from their installed npm binary.
+func TestRunDoctor_WarnsOnDevBuild(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+
+	original := version
+	version = "dev"
+	defer func() { version = original }()
+
+	out := captureStdout(func() { runDoctor([]string{}) })
+	if !strings.Contains(out, "[WARN] Build:") {
+		t.Errorf("expected dev-build warning in doctor output, got: %q", out)
+	}
+}
+
+func TestRunDoctor_NoDevBuildWarningOnReleaseVersion(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+
+	original := version
+	version = "0.8.9"
+	defer func() { version = original }()
+
+	out := captureStdout(func() { runDoctor([]string{}) })
+	if strings.Contains(out, "[WARN] Build:") {
+		t.Errorf("did not expect dev-build warning for a tagged release version, got: %q", out)
 	}
 }
 
