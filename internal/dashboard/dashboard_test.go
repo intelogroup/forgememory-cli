@@ -1,6 +1,7 @@
 package dashboard
 
 import (
+	"encoding/base64"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -47,6 +48,31 @@ func TestHandleEvents_ShortEventID(t *testing.T) {
 	}
 }
 
+func TestHandleArtifacts_UploadListAndDownload(t *testing.T) {
+	database := openDashboardTestDB(t)
+	defer database.Close()
+	s := New(database, 0)
+	body := `{"trace_id":"trace-artifact","task_id":"task-1","kind":"diff","media_type":"text/x-diff","content_base64":"` + base64.StdEncoding.EncodeToString([]byte("+fixed\n")) + `"}`
+	upload := httptest.NewRecorder()
+	s.handleArtifacts(upload, httptest.NewRequest(http.MethodPost, "/api/artifacts", strings.NewReader(body)))
+	if upload.Code != http.StatusCreated {
+		t.Fatalf("upload status = %d, body=%s", upload.Code, upload.Body.String())
+	}
+	var artifact db.EvaluationArtifact
+	if err := json.Unmarshal(upload.Body.Bytes(), &artifact); err != nil {
+		t.Fatalf("upload JSON: %v", err)
+	}
+	list := httptest.NewRecorder()
+	s.handleArtifacts(list, httptest.NewRequest(http.MethodGet, "/api/artifacts?trace_id=trace-artifact", nil))
+	if list.Code != http.StatusOK || !strings.Contains(list.Body.String(), artifact.ID) {
+		t.Fatalf("list status=%d body=%s", list.Code, list.Body.String())
+	}
+	download := httptest.NewRecorder()
+	s.handleArtifact(download, httptest.NewRequest(http.MethodGet, "/api/artifacts/"+artifact.ID, nil))
+	if download.Code != http.StatusOK || download.Body.String() != "+fixed\n" {
+		t.Fatalf("download status=%d body=%q", download.Code, download.Body.String())
+	}
+}
 func TestHandlePrinciples_ShortPrincipleID(t *testing.T) {
 	tmp := t.TempDir()
 	database, err := db.Open(filepath.Join(tmp, "test.db"))

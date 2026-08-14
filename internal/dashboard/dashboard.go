@@ -1,26 +1,32 @@
 package dashboard
 
 import (
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"html/template"
+	"io"
 	"net/http"
+	"path/filepath"
 	"strconv"
+	"strings"
 	"time"
 
+	"github.com/forge/forge/internal/artifacts"
 	"github.com/forge/forge/internal/db"
 )
 
 type Server struct {
-	db     *db.DB
-	port   int
-	server *http.Server
+	db        *db.DB
+	port      int
+	server    *http.Server
+	artifacts artifacts.Store
 }
 
 func New(database *db.DB, port int) *Server {
 	return &Server{
-		db:   database,
-		port: port,
+		db: database, port: port,
+		artifacts: artifacts.Store{DB: database, Root: filepath.Join(filepath.Dir(database.Path), "artifacts")},
 	}
 }
 
@@ -28,6 +34,8 @@ func (s *Server) Start() error {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/", s.handleIndex)
 	mux.HandleFunc("/api/events", s.handleEvents)
+	mux.HandleFunc("/api/artifacts", s.handleArtifacts)
+	mux.HandleFunc("/api/artifacts/", s.handleArtifact)
 	mux.HandleFunc("/api/principles", s.handlePrinciples)
 	mux.HandleFunc("/api/stats", s.handleStats)
 	mux.HandleFunc("/api/conflicts", s.handleConflicts)
@@ -41,6 +49,92 @@ func (s *Server) Start() error {
 	}
 
 	return s.server.ListenAndServe()
+}
+
+type artifactUpload struct {
+	TraceID   string `json:"trace_id"`
+	TaskID    string `json:"task_id,omitempty"`
+	Kind      string `json:"kind"`
+	MediaType string `json:"media_type"`
+	Content   string `json:"content_base64"`
+	Metadata  string `json:"metadata,omitempty"`
+}
+
+func (s *Server) handleArtifacts(w http.ResponseWriter, r *http.Request) {
+	switch r.Method {
+	case http.MethodPost:
+		var upload artifactUpload
+		r.Body = http.MaxBytesReader(w, r.Body, 32<<20)
+		if err := json.NewDecoder(r.Body).Decode(&upload); err != nil {
+			http.Error(w, "invalid artifact JSON: "+err.Error(), http.StatusBadRequest)
+			return
+		}
+		if upload.TraceID == "" || upload.Kind == "" || upload.Content == "" {
+			http.Error(w, "trace_id, kind, and content_base64 are required", http.StatusBadRequest)
+			return
+		}
+		content, err := base64.StdEncoding.DecodeString(upload.Content)
+		if err != nil {
+			http.Error(w, "content_base64 is invalid: "+err.Error(), http.StatusBadRequest)
+			return
+		}
+		artifact, err := s.artifacts.Put(upload.TraceID, upload.TaskID, upload.Kind, upload.MediaType, content, upload.Metadata)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusCreated)
+		json.NewEncoder(w).Encode(artifact)
+	case http.MethodGet:
+		limit := 100
+		if l := r.URL.Query().Get("limit"); l != "" {
+			if parsed, err := strconv.Atoi(l); err == nil && parsed > 0 && parsed <= 1000 {
+				limit = parsed
+			}
+		}
+		items, err := s.db.EvaluationArtifacts(r.URL.Query().Get("trace_id"), r.URL.Query().Get("task_id"), limit)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(items)
+	default:
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+	}
+}
+
+func (s *Server) handleArtifact(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	id := strings.TrimPrefix(r.URL.Path, "/api/artifacts/")
+	if id == "" || strings.Contains(id, "/") {
+		http.Error(w, "artifact id is required", http.StatusBadRequest)
+		return
+	}
+	artifact, err := s.db.EvaluationArtifactByID(id)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	if artifact == nil {
+		http.NotFound(w, r)
+		return
+	}
+	reader, err := s.artifacts.Open(*artifact)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusNotFound)
+		return
+	}
+	defer reader.Close()
+	w.Header().Set("Content-Type", artifact.MediaType)
+	w.Header().Set("Content-Length", strconv.FormatInt(artifact.ByteSize, 10))
+	if _, err := io.Copy(w, reader); err != nil {
+		return
+	}
 }
 
 func (s *Server) Stop() error {

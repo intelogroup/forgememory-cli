@@ -98,7 +98,7 @@ func defaultPath() string {
 // schemaVersion is stamped into SQLite's user_version pragma once migrate()
 // has applied the current schema. Bump it whenever migrate()'s statements
 // change.
-const schemaVersion = 1
+const schemaVersion = 2
 
 // migrate applies the full schema, but only once: it runs on every Open(),
 // including every short-lived CLI subprocess invocation and any test that
@@ -295,6 +295,20 @@ func (d *DB) migrate() error {
 		{"principles", "signature", "TEXT DEFAULT ''"},
 	}
 	extraMigrations := []string{
+		`CREATE TABLE IF NOT EXISTS evaluation_artifacts (
+			id          TEXT PRIMARY KEY,
+			created_at  TEXT NOT NULL,
+			trace_id    TEXT NOT NULL DEFAULT '',
+			task_id     TEXT NOT NULL DEFAULT '',
+			kind        TEXT NOT NULL,
+			media_type  TEXT NOT NULL DEFAULT 'application/octet-stream',
+			path        TEXT NOT NULL,
+			sha256      TEXT NOT NULL,
+			byte_size   INTEGER NOT NULL DEFAULT 0,
+			metadata    TEXT NOT NULL DEFAULT '{}'
+		)`,
+		`CREATE INDEX IF NOT EXISTS idx_evaluation_artifacts_trace ON evaluation_artifacts(trace_id, created_at DESC)`,
+		`CREATE INDEX IF NOT EXISTS idx_evaluation_artifacts_task ON evaluation_artifacts(task_id, created_at DESC)`,
 		`CREATE TABLE IF NOT EXISTS skill_definitions (
 			key              TEXT PRIMARY KEY,
 			name             TEXT NOT NULL,
