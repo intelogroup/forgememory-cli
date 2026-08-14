@@ -129,7 +129,7 @@ func printUsage() {
    stats         Fun aggregates: archetype, peak hour, top prompt words, agent-parallelism (--path)
    search <q>    Full-text search on event payloads
    mcp           Start MCP server (stdio transport, for Claude Code)
-   ui            Start memory dashboard web UI (http://localhost:5555)
+   ui            Start memory dashboard web UI (http://localhost:5555; traces, evaluations, artifacts)
    doctor        Self-test: check DB, daemon, agents, binary
      inject-check  Check staged changes against stored principles [--pre-push]
      config        Configure inference provider (--provider --api-key [--model --timeout --retries])
