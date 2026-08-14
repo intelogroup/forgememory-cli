@@ -108,19 +108,34 @@ jobs:
           # "forge start") to inherit the pipe's write handle. Those daemons outlive
           # "go test" and keep the pipe open, blocking PowerShell indefinitely.
           # A temp file has no such "all-writers-must-close" semantics.
-          $tmpLog = [System.IO.Path]::GetTempFileName()
-          try {
-            go test ./... -v -count=1 -p 1 -parallel 1 -timeout 240s > $tmpLog 2>&1
-            $ec = $LASTEXITCODE
-            $captured = Get-Content $tmpLog -Raw
-            Write-Host $captured
-            # Only propagate failure for real test failures — lines like "FAIL\tpkg".
-            # The bare "FAIL" at the end of go test output is not a real test failure.
-            if (($ec -ne 0) -and ($captured -match "(?m)^FAIL\t")) { exit 1 }
-            exit 0
-          } finally {
-            Remove-Item $tmpLog -ErrorAction SilentlyContinue
+          #
+          # Tests run per-package, with a process sweep between each one, rather
+          # than a single "go test ./..." invocation. go test's own -timeout only
+          # kills the test binary; it can't run a blocked test's t.Cleanup, so a
+          # spawned daemon can outlive it and hold a stale socket/port that makes
+          # an UNRELATED later package's tests hang too — turning one leaked
+          # process into what looks like the whole suite stalling for the job's
+          # entire 15-minute budget instead of one package's 240s timeout.
+          $ErrorActionPreference = 'Stop'
+          $packages = go list ./...
+          $failed = $false
+          foreach ($pkg in $packages) {
+            $tmpLog = [System.IO.Path]::GetTempFileName()
+            try {
+              go test $pkg -v -count=1 -parallel 1 -timeout 240s > $tmpLog 2>&1
+              $ec = $LASTEXITCODE
+              $captured = Get-Content $tmpLog -Raw
+              Write-Host $captured
+              # Only propagate failure for real test failures — lines like "FAIL\tpkg".
+              # The bare "FAIL" at the end of go test output is not a real test failure.
+              if (($ec -ne 0) -and ($captured -match "(?m)^FAIL\t")) { $failed = $true }
+            } finally {
+              Remove-Item $tmpLog -ErrorAction SilentlyContinue
+            }
+            Get-Process -Name "forge*" -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
           }
+          if ($failed) { exit 1 }
+          exit 0
 
   integration-windows:
     runs-on: windows-latest
