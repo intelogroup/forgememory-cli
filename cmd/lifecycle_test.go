@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -587,6 +588,27 @@ func TestRunDoctor_ReportsStaleDistillLock(t *testing.T) {
 func TestRunDoctorRepair_RemovesStaleDistillLock(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
+
+	// --repair falls through to ensureDaemonRunning when no live daemon is
+	// found, which would otherwise try to spawn this test binary itself as
+	// a "daemon" subprocess. Fake a live one via a real listener so that
+	// branch is skipped — isDaemonAlive only needs a dialable address, not
+	// an actual forge protocol handshake.
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ln.Close()
+	go func() {
+		for {
+			conn, err := ln.Accept()
+			if err != nil {
+				return
+			}
+			conn.Close()
+		}
+	}()
+	writeAddr(ln.Addr().String())
 
 	lockPath := distillLockPath()
 	if err := os.MkdirAll(filepath.Dir(lockPath), 0o700); err != nil {

@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 
 	"github.com/forge/forge/internal/agent"
 	"github.com/forge/forge/internal/db"
@@ -353,9 +354,26 @@ func probeForgeDirWritable() error {
 // already logs this once (internal/db/principles.go), but a log line most
 // users never read isn't a security warning — this makes it visible in the
 // tool users actually run to check on Forge (issue #43).
+// signingKeyStatusOnce guards the actual GetOrCreateKey() call. A blocked or
+// absent OS keychain backend (e.g. no D-Bus Secret Service) can leave the
+// underlying probe goroutine running past its own timeout — go-keyring's
+// doc comment on GetOrCreateKey calls this cost "bounded by sync.Once",
+// which only holds if every caller in a process shares one Once, not one
+// per call. forge doctor is normally its own fresh process each run, so
+// this doesn't change production behavior, but it matters a lot when many
+// tests call runDoctor in the same test binary.
+var (
+	signingKeyStatusOnce   sync.Once
+	signingKeyUsedFallback bool
+	signingKeyErr          error
+)
+
 func printKeychainStatus() {
+	signingKeyStatusOnce.Do(func() {
+		_, signingKeyUsedFallback, signingKeyErr = security.GetOrCreateKey()
+	})
 	fmt.Print("  ")
-	_, usedFallback, err := security.GetOrCreateKey()
+	usedFallback, err := signingKeyUsedFallback, signingKeyErr
 	switch {
 	case err != nil:
 		fmt.Printf("[FAIL] Signing key: unavailable — principles will be stored unsigned: %v\n", err)
