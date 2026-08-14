@@ -159,6 +159,8 @@ func printUsage() {
    FORGE_SOURCE_TOOL   Source agent: claude/gemini/codex (set by hook)
    FORGE_EVENT_TYPE    Event type: PostToolUse/SessionEnd/UserPromptSubmit (set by hook)
    FORGE_TOOL_NAME     Tool name if applicable (set by hook)
+   FORGE_OBSERVABILITY_MODE  minimal (default), standard, or forensic
+   FORGE_TASK_ID        Optional evaluation task identifier
    FORGE_PIPE_ADDR     Daemon IPC address (set by daemon)
    FORGE_PROVIDER      Inference provider: anthropic/openai/groq/nvidia/ollama/codex
    FORGE_API_KEY       API key for inference provider

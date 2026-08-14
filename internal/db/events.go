@@ -10,17 +10,45 @@ import (
 	"github.com/google/uuid"
 )
 
+const eventSelect = `id, ts, trace_id, span_id, parent_span_id, sequence, duration_ms, status, exit_code, model, task_id, cwd, git_branch, git_commit, files, transcript_path, session_id, project_id, source_tool, event_type, COALESCE(tool_name,''), payload, distilled`
+
+type eventScanner interface {
+	Scan(dest ...any) error
+}
+
+func scanEvent(row eventScanner) (Event, error) {
+	var e Event
+	var distilled int
+	err := row.Scan(&e.ID, &e.TS, &e.TraceID, &e.SpanID, &e.ParentSpanID, &e.Sequence, &e.DurationMS, &e.Status, &e.ExitCode, &e.Model, &e.TaskID, &e.CWD, &e.GitBranch, &e.GitCommit, &e.Files, &e.TranscriptPath, &e.SessionID, &e.ProjectID, &e.SourceTool, &e.EventType, &e.ToolName, &e.Payload, &distilled)
+	e.Distilled = distilled == 1
+	return e, err
+}
+
 // Event represents a raw hook event.
 type Event struct {
-	ID         string `json:"id"`
-	TS         string `json:"ts"`
-	SessionID  string `json:"session_id"`
-	ProjectID  string `json:"project_id"`
-	SourceTool string `json:"source_tool"`
-	EventType  string `json:"event_type"`
-	ToolName   string `json:"tool_name,omitempty"`
-	Payload    string `json:"payload"`
-	Distilled  bool   `json:"distilled"`
+	ID             string `json:"id"`
+	TS             string `json:"ts"`
+	TraceID        string `json:"trace_id"`
+	SpanID         string `json:"span_id"`
+	ParentSpanID   string `json:"parent_span_id,omitempty"`
+	Sequence       int64  `json:"sequence,omitempty"`
+	DurationMS     int64  `json:"duration_ms,omitempty"`
+	Status         string `json:"status,omitempty"`
+	ExitCode       int    `json:"exit_code,omitempty"`
+	Model          string `json:"model,omitempty"`
+	TaskID         string `json:"task_id,omitempty"`
+	CWD            string `json:"cwd,omitempty"`
+	GitBranch      string `json:"git_branch,omitempty"`
+	GitCommit      string `json:"git_commit,omitempty"`
+	Files          string `json:"files,omitempty"`
+	TranscriptPath string `json:"transcript_path,omitempty"`
+	SessionID      string `json:"session_id"`
+	ProjectID      string `json:"project_id"`
+	SourceTool     string `json:"source_tool"`
+	EventType      string `json:"event_type"`
+	ToolName       string `json:"tool_name,omitempty"`
+	Payload        string `json:"payload"`
+	Distilled      bool   `json:"distilled"`
 }
 
 // InsertEvent stores a new event.
@@ -44,13 +72,19 @@ func (d *DB) InsertEvent(e *Event) error {
 	if e.ID == "" {
 		e.ID = uuid.New().String()
 	}
+	if e.TraceID == "" {
+		e.TraceID = e.SessionID
+	}
+	if e.SpanID == "" {
+		e.SpanID = e.ID
+	}
 	if e.TS == "" {
 		e.TS = time.Now().UTC().Format(time.RFC3339)
 	}
 	_, err := d.conn.Exec(
-		`INSERT INTO events (id, ts, session_id, project_id, source_tool, event_type, tool_name, payload, distilled)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0)`,
-		e.ID, e.TS, e.SessionID, e.ProjectID, e.SourceTool, e.EventType, e.ToolName, e.Payload,
+		`INSERT OR IGNORE INTO events (id, ts, trace_id, span_id, parent_span_id, sequence, duration_ms, status, exit_code, model, task_id, cwd, git_branch, git_commit, files, transcript_path, session_id, project_id, source_tool, event_type, tool_name, payload, distilled)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0)`,
+		e.ID, e.TS, e.TraceID, e.SpanID, e.ParentSpanID, e.Sequence, e.DurationMS, e.Status, e.ExitCode, e.Model, e.TaskID, e.CWD, e.GitBranch, e.GitCommit, e.Files, e.TranscriptPath, e.SessionID, e.ProjectID, e.SourceTool, e.EventType, e.ToolName, e.Payload,
 	)
 	return err
 }
@@ -95,7 +129,7 @@ func (d *DB) UndistilledEventsFiltered(limit int, includeUnknown bool) ([]Event,
 	}
 
 	rows, err := d.conn.Query(
-		`SELECT id, ts, session_id, project_id, source_tool, event_type, COALESCE(tool_name,''), payload, distilled
+		`SELECT `+eventSelect+`
 		 FROM events
 		 WHERE distilled=0 AND session_id = ? AND project_id = ?
 		 ORDER BY ts ASC LIMIT ?`, targetSession, targetProject, limit,
@@ -106,12 +140,10 @@ func (d *DB) UndistilledEventsFiltered(limit int, includeUnknown bool) ([]Event,
 	defer rows.Close()
 	var events []Event
 	for rows.Next() {
-		var e Event
-		var distilled int
-		if err := rows.Scan(&e.ID, &e.TS, &e.SessionID, &e.ProjectID, &e.SourceTool, &e.EventType, &e.ToolName, &e.Payload, &distilled); err != nil {
+		e, err := scanEvent(rows)
+		if err != nil {
 			return nil, err
 		}
-		e.Distilled = distilled == 1
 		events = append(events, e)
 	}
 	return events, rows.Err()
@@ -157,7 +189,7 @@ func (d *DB) SearchEvents(query string, limit int) ([]Event, error) {
 	// Escape any embedded double-quotes by doubling them, then phrase-quote the whole thing.
 	ftsQuery := `"` + strings.ReplaceAll(query, `"`, `""`) + `"`
 	rows, err := d.conn.Query(
-		`SELECT e.id, e.ts, e.session_id, e.project_id, e.source_tool, e.event_type, COALESCE(e.tool_name,''), e.payload, e.distilled
+		`SELECT e.id, e.ts, e.trace_id, e.span_id, e.parent_span_id, e.sequence, e.duration_ms, e.status, e.exit_code, e.model, e.task_id, e.cwd, e.git_branch, e.git_commit, e.files, e.transcript_path, e.session_id, e.project_id, e.source_tool, e.event_type, COALESCE(e.tool_name,''), e.payload, e.distilled
 		 FROM events e
 		 JOIN events_fts f ON e.rowid = f.rowid
 		 WHERE events_fts MATCH ?
@@ -170,12 +202,10 @@ func (d *DB) SearchEvents(query string, limit int) ([]Event, error) {
 	defer rows.Close()
 	var events []Event
 	for rows.Next() {
-		var e Event
-		var distilled int
-		if err := rows.Scan(&e.ID, &e.TS, &e.SessionID, &e.ProjectID, &e.SourceTool, &e.EventType, &e.ToolName, &e.Payload, &distilled); err != nil {
+		e, err := scanEvent(rows)
+		if err != nil {
 			return nil, err
 		}
-		e.Distilled = distilled == 1
 		events = append(events, e)
 	}
 	return events, rows.Err()
@@ -189,7 +219,7 @@ func (d *DB) SearchEventsByProject(projectID, query string, limit int) ([]Event,
 	ftsQuery := `"` + strings.ReplaceAll(query, `"`, `""`) + `"`
 	exact, unixLike, windowsLike := projectIDSelectors(projectID)
 	rows, err := d.conn.Query(
-		`SELECT e.id, e.ts, e.session_id, e.project_id, e.source_tool, e.event_type, COALESCE(e.tool_name,''), e.payload, e.distilled
+		`SELECT e.id, e.ts, e.trace_id, e.span_id, e.parent_span_id, e.sequence, e.duration_ms, e.status, e.exit_code, e.model, e.task_id, e.cwd, e.git_branch, e.git_commit, e.files, e.transcript_path, e.session_id, e.project_id, e.source_tool, e.event_type, COALESCE(e.tool_name,''), e.payload, e.distilled
 		 FROM events e
 		 JOIN events_fts f ON e.rowid = f.rowid
 		 WHERE events_fts MATCH ?
@@ -203,12 +233,10 @@ func (d *DB) SearchEventsByProject(projectID, query string, limit int) ([]Event,
 	defer rows.Close()
 	var events []Event
 	for rows.Next() {
-		var e Event
-		var distilled int
-		if err := rows.Scan(&e.ID, &e.TS, &e.SessionID, &e.ProjectID, &e.SourceTool, &e.EventType, &e.ToolName, &e.Payload, &distilled); err != nil {
+		e, err := scanEvent(rows)
+		if err != nil {
 			return nil, err
 		}
-		e.Distilled = distilled == 1
 		events = append(events, e)
 	}
 	return events, rows.Err()
@@ -255,7 +283,7 @@ func (d *DB) MarkSessionDistilled(sessionID string) error {
 // SessionEvents returns the most recent events for a specific session.
 func (d *DB) SessionEvents(sessionID string, limit int) ([]Event, error) {
 	rows, err := d.conn.Query(
-		`SELECT id, ts, session_id, project_id, source_tool, event_type, COALESCE(tool_name,''), payload, distilled
+		`SELECT `+eventSelect+`
 		 FROM events WHERE session_id=? ORDER BY ts DESC LIMIT ?`, sessionID, limit,
 	)
 	if err != nil {
@@ -264,12 +292,30 @@ func (d *DB) SessionEvents(sessionID string, limit int) ([]Event, error) {
 	defer rows.Close()
 	var events []Event
 	for rows.Next() {
-		var e Event
-		var distilled int
-		if err := rows.Scan(&e.ID, &e.TS, &e.SessionID, &e.ProjectID, &e.SourceTool, &e.EventType, &e.ToolName, &e.Payload, &distilled); err != nil {
+		e, err := scanEvent(rows)
+		if err != nil {
 			return nil, err
 		}
-		e.Distilled = distilled == 1
+		events = append(events, e)
+	}
+	return events, rows.Err()
+}
+
+// TraceEvents returns events belonging to one correlated trace.
+func (d *DB) TraceEvents(traceID string, limit int) ([]Event, error) {
+	rows, err := d.conn.Query(
+		`SELECT `+eventSelect+` FROM events WHERE trace_id=? ORDER BY ts ASC LIMIT ?`, traceID, limit,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var events []Event
+	for rows.Next() {
+		e, err := scanEvent(rows)
+		if err != nil {
+			return nil, err
+		}
 		events = append(events, e)
 	}
 	return events, rows.Err()
@@ -279,8 +325,8 @@ func (d *DB) SessionEvents(sessionID string, limit int) ([]Event, error) {
 // capped at a cutoff timestamp. limit > 0 applies LIMIT n; limit == 0 returns
 // all matching events (used by distill-agent for large sessions).
 func (d *DB) SessionEventsUpTo(sessionID, cutoffTS string, limit int) ([]Event, error) {
-	query := `SELECT id, ts, session_id, project_id, source_tool, event_type, COALESCE(tool_name,''), payload, distilled
-		 FROM events WHERE session_id=?`
+	query := `SELECT ` + eventSelect + `
+			 FROM events WHERE session_id=?`
 	args := []any{sessionID}
 	if strings.TrimSpace(cutoffTS) != "" {
 		query += ` AND ts <= ?`
@@ -299,12 +345,10 @@ func (d *DB) SessionEventsUpTo(sessionID, cutoffTS string, limit int) ([]Event, 
 	defer rows.Close()
 	var events []Event
 	for rows.Next() {
-		var e Event
-		var distilled int
-		if err := rows.Scan(&e.ID, &e.TS, &e.SessionID, &e.ProjectID, &e.SourceTool, &e.EventType, &e.ToolName, &e.Payload, &distilled); err != nil {
+		e, err := scanEvent(rows)
+		if err != nil {
 			return nil, err
 		}
-		e.Distilled = distilled == 1
 		events = append(events, e)
 	}
 	return events, rows.Err()
@@ -313,7 +357,7 @@ func (d *DB) SessionEventsUpTo(sessionID, cutoffTS string, limit int) ([]Event, 
 // RecentEvents returns the most recent events.
 func (d *DB) RecentEvents(limit int) ([]Event, error) {
 	rows, err := d.conn.Query(
-		`SELECT id, ts, session_id, project_id, source_tool, event_type, COALESCE(tool_name,''), payload, distilled
+		`SELECT `+eventSelect+`
 		 FROM events ORDER BY ts DESC LIMIT ?`, limit,
 	)
 	if err != nil {
@@ -322,12 +366,10 @@ func (d *DB) RecentEvents(limit int) ([]Event, error) {
 	defer rows.Close()
 	var events []Event
 	for rows.Next() {
-		var e Event
-		var distilled int
-		if err := rows.Scan(&e.ID, &e.TS, &e.SessionID, &e.ProjectID, &e.SourceTool, &e.EventType, &e.ToolName, &e.Payload, &distilled); err != nil {
+		e, err := scanEvent(rows)
+		if err != nil {
 			return nil, err
 		}
-		e.Distilled = distilled == 1
 		events = append(events, e)
 	}
 	return events, rows.Err()

@@ -8,6 +8,41 @@ import (
 	"github.com/forge/forge/internal/db"
 )
 
+func TestObservabilityModeDefaultsToMinimal(t *testing.T) {
+	t.Setenv("FORGE_OBSERVABILITY_MODE", "")
+	if got := observabilityMode(); got != observabilityMinimal {
+		t.Fatalf("observabilityMode() = %q, want %q", got, observabilityMinimal)
+	}
+}
+
+func TestObservabilityModeRecognizesStandardAndForensic(t *testing.T) {
+	for _, mode := range []string{observabilityStandard, observabilityForensic} {
+		t.Setenv("FORGE_OBSERVABILITY_MODE", mode)
+		if got := observabilityMode(); got != mode {
+			t.Fatalf("observabilityMode() = %q, want %q", got, mode)
+		}
+	}
+	t.Setenv("FORGE_OBSERVABILITY_MODE", "invalid")
+	if got := observabilityMode(); got != observabilityMinimal {
+		t.Fatalf("invalid observabilityMode() = %q, want %q", got, observabilityMinimal)
+	}
+}
+
+func TestShouldCapturePostToolUse(t *testing.T) {
+	if shouldCapturePostToolUse(observabilityMinimal, "Read") {
+		t.Fatal("minimal mode captured read-only tool")
+	}
+	if !shouldCapturePostToolUse(observabilityMinimal, "Edit") {
+		t.Fatal("minimal mode dropped write tool")
+	}
+	if !shouldCapturePostToolUse(observabilityStandard, "Read") {
+		t.Fatal("standard mode dropped read-only tool")
+	}
+	if !shouldCapturePostToolUse(observabilityForensic, "Search") {
+		t.Fatal("forensic mode dropped read-only tool")
+	}
+}
+
 func TestAppendCoachSuggestion(t *testing.T) {
 	item := &db.CoachingItem{SkillKey: "verification.pre_ship", Question: "What behavior should the test prove?", NextAction: "Add the narrowest relevant test."}
 	if got := appendCoachSuggestion("existing recall", item); !strings.Contains(got, "Forge coaching (verification.pre_ship)") || !strings.Contains(got, "Add the narrowest relevant test.") {
@@ -254,6 +289,43 @@ func TestParseHookInput_UsesCommonGeminiFields(t *testing.T) {
 	}
 	if input.ToolName != "run_shell_command" {
 		t.Fatalf("ToolName = %q, want run_shell_command", input.ToolName)
+	}
+}
+
+func TestHookEventMetadataExtractsOutcomeAndTiming(t *testing.T) {
+	input := ClaudeHookInput{
+		Status: "",
+		ToolResponse: map[string]any{
+			"exit_code":   2,
+			"duration_ms": 842,
+			"is_error":    true,
+		},
+	}
+
+	status, exitCode, durationMS, _, _, _ := hookEventMetadata(input)
+	if status != "error" {
+		t.Fatalf("status = %q, want error", status)
+	}
+	if exitCode != 2 {
+		t.Fatalf("exitCode = %d, want 2", exitCode)
+	}
+	if durationMS != 842 {
+		t.Fatalf("durationMS = %d, want 842", durationMS)
+	}
+}
+
+func TestHookEventMetadataMarksZeroExitAsSuccess(t *testing.T) {
+	input := ClaudeHookInput{ToolResponse: map[string]any{"exit_code": 0}}
+	status, exitCode, _, _, _, _ := hookEventMetadata(input)
+	if status != "success" || exitCode != 0 {
+		t.Fatalf("status=%q exitCode=%d, want success/0", status, exitCode)
+	}
+}
+
+func TestExtractFilePathsCollectsAndSortsEvidence(t *testing.T) {
+	payload := `{"tool_input":{"file_path":"z.go","files":[{"path":"a.go"},{"filePath":"z.go"}]},"tool_response":{"path":"result.log"}}`
+	if got := extractFilePaths(payload); got != `["a.go","result.log","z.go"]` {
+		t.Fatalf("extractFilePaths() = %s, want sorted unique paths", got)
 	}
 }
 

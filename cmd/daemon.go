@@ -111,6 +111,11 @@ func runDaemon(args []string) {
 
 	log.Printf("Forge daemon listening on %s (pid %d)", addr, os.Getpid())
 	log.Printf("Database: %s", database.Path)
+	if drained, err := ipc.DrainOutbox(ipc.SendRaw); err != nil {
+		log.Printf("Outbox replay stopped after %d message(s): %v", drained, err)
+	} else if drained > 0 {
+		log.Printf("Replayed %d queued event(s) from outbox", drained)
+	}
 
 	// Graceful shutdown
 	shutdown := make(chan os.Signal, 1)
@@ -222,6 +227,7 @@ func handleConn(conn net.Conn, database *db.DB) {
 	defer conn.Close()
 	conn.SetDeadline(time.Now().Add(5 * time.Second))
 	decoder := json.NewDecoder(conn)
+	encoder := json.NewEncoder(conn)
 
 	// Decode into a generic map first to inspect the type field.
 	var raw map[string]json.RawMessage
@@ -240,14 +246,32 @@ func handleConn(conn net.Conn, database *db.DB) {
 
 	switch msgType {
 	case "event":
-		handleEventMsg(raw, database)
+		err := handleEventMsg(raw, database)
+		writeAck(encoder, raw, err)
 	// "query" type reserved for future bidirectional IPC
 	default:
-		handleEventMsg(raw, database)
+		err := handleEventMsg(raw, database)
+		writeAck(encoder, raw, err)
 	}
 }
 
-func handleEventMsg(raw map[string]json.RawMessage, database *db.DB) {
+func writeAck(encoder *json.Encoder, raw map[string]json.RawMessage, err error) {
+	status := "accepted"
+	response := map[string]any{"type": "ack", "status": status}
+	if err != nil {
+		response["status"] = "rejected"
+		response["error"] = err.Error()
+	}
+	if id, ok := raw["id"]; ok {
+		var eventID string
+		if json.Unmarshal(id, &eventID) == nil {
+			response["id"] = eventID
+		}
+	}
+	_ = encoder.Encode(response)
+}
+
+func handleEventMsg(raw map[string]json.RawMessage, database *db.DB) error {
 	extract := func(key string) string {
 		v, ok := raw[key]
 		if !ok {
@@ -259,14 +283,28 @@ func handleEventMsg(raw map[string]json.RawMessage, database *db.DB) {
 	}
 
 	event := &db.Event{
-		ID:         extract("id"),
-		TS:         extract("ts"),
-		SessionID:  extract("session_id"),
-		ProjectID:  extract("project_id"),
-		SourceTool: extract("source_tool"),
-		EventType:  extract("event_type"),
-		ToolName:   extract("tool_name"),
-		Payload:    extract("payload"),
+		ID:             extract("id"),
+		TS:             extract("ts"),
+		TraceID:        extract("trace_id"),
+		SpanID:         extract("span_id"),
+		ParentSpanID:   extract("parent_span_id"),
+		Sequence:       int64Value(extract("sequence")),
+		DurationMS:     int64Value(extract("duration_ms")),
+		Status:         extract("status"),
+		ExitCode:       int(int64Value(extract("exit_code"))),
+		Model:          extract("model"),
+		TaskID:         extract("task_id"),
+		CWD:            extract("cwd"),
+		GitBranch:      extract("git_branch"),
+		GitCommit:      extract("git_commit"),
+		Files:          extract("files"),
+		TranscriptPath: extract("transcript_path"),
+		SessionID:      extract("session_id"),
+		ProjectID:      extract("project_id"),
+		SourceTool:     extract("source_tool"),
+		EventType:      extract("event_type"),
+		ToolName:       extract("tool_name"),
+		Payload:        extract("payload"),
 	}
 	projectRoot := extract("project_root")
 
@@ -276,10 +314,13 @@ func handleEventMsg(raw map[string]json.RawMessage, database *db.DB) {
 	if event.ProjectID == "" {
 		event.ProjectID = "unknown"
 	}
+	if event.TranscriptPath == "" && event.SourceTool == "codex" && isSessionEndEvent(event.EventType) && observabilityMode() != observabilityMinimal {
+		event.TranscriptPath = findCodexTranscript(event.SessionID, event.TS)
+	}
 
 	if err := database.InsertEvent(event); err != nil {
 		log.Printf("Insert event error: %v", err)
-		return
+		return err
 	}
 	if projectRoot != "" {
 		if err := database.UpsertProject(event.ProjectID, projectRoot, event.ProjectID, event.SourceTool); err != nil {
@@ -289,6 +330,17 @@ func handleEventMsg(raw map[string]json.RawMessage, database *db.DB) {
 	if err := detect.ProcessEvent(database, event); err != nil {
 		log.Printf("Failure detection error: %v", err)
 	}
+	if observabilityMode() != observabilityMinimal && isSessionEndEvent(event.EventType) && event.TranscriptPath != "" {
+		go func(parent db.Event) {
+			count, err := ingestTranscript(database, parent)
+			if err != nil {
+				log.Printf("Transcript ingestion stopped after %d turn(s): %v", count, err)
+			} else if count > 0 {
+				log.Printf("Ingested %d transcript turn(s) for trace %s", count, parent.TraceID)
+			}
+		}(*event)
+	}
+	return nil
 }
 
 // distillBackoff returns the minimum interval that must elapse since the last

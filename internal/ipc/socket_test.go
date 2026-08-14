@@ -30,6 +30,7 @@ func TestListenAndSend(t *testing.T) {
 		defer conn.Close()
 		var msg map[string]string
 		json.NewDecoder(conn).Decode(&msg)
+		_ = json.NewEncoder(conn).Encode(map[string]string{"type": "ack", "status": "accepted"})
 		msgCh <- msg
 	}()
 
@@ -117,4 +118,3 @@ func TestIsDaemonAlive(t *testing.T) {
 		t.Error("IsDaemonAlive should return true when daemon is listening")
 	}
 }
-
