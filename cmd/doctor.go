@@ -182,6 +182,11 @@ func runDoctor(args []string) {
 	for _, ref := range findTransientIntegrationRefs(home) {
 		fmt.Printf("  [FAIL] Integration: transient Forge path in %s (%s)\n", ref.path, ref.value)
 	}
+	if ref, stale := findStaleCodexMCPConfig(home); stale {
+		fmt.Println("  [FAIL] Codex MCP: configured executable does not resolve to the active Forge binary")
+		fmt.Printf("         Path: %s (%s)\n", ref.value, ref.path)
+		fmt.Println("         Repair: forge sync-integrations -y")
+	}
 
 	// Check agents
 	agents := agent.DetectAgents(home)
@@ -275,6 +280,9 @@ func runDoctorInline() {
 	for _, ref := range findTransientIntegrationRefs(home) {
 		fmt.Printf("  Integration: transient Forge path in %s (%s)\n", ref.path, ref.value)
 	}
+	if ref, stale := findStaleCodexMCPConfig(home); stale {
+		fmt.Printf("  Codex MCP: configured executable does not resolve to the active Forge binary (%s: %s)\n", ref.path, ref.value)
+	}
 
 	// Check log
 	logPath := filepath.Join(forgeHome(), ".forge", "daemon.log")
@@ -343,6 +351,35 @@ func findTransientIntegrationRefs(home string) []transientIntegrationRef {
 		})
 	}
 	return refs
+}
+
+// findStaleCodexMCPConfig checks whether Codex's native MCP registration
+// (~/.codex/config.toml, managed by `codex mcp add`/`codex mcp get`) still
+// points at the active Forge binary. Unlike findTransientIntegrationRefs
+// (which flags known-ephemeral path substrings in Forge-managed files),
+// config.toml is Codex's own file and can reference an install path that
+// simply no longer exists on disk, so this compares against the current
+// binary directly — the same check checkAndRepairIntegrationPaths uses to
+// decide whether a repair is needed.
+func findStaleCodexMCPConfig(home string) (transientIntegrationRef, bool) {
+	codexHome := os.Getenv("CODEX_HOME")
+	if codexHome == "" {
+		codexHome = filepath.Join(home, ".codex")
+	}
+	configPath := filepath.Join(codexHome, "config.toml")
+
+	cmdPath, ok := codexMCPForgeCommand(configPath)
+	if !ok {
+		return transientIntegrationRef{}, false
+	}
+
+	currentPath := agent.ForgePath()
+	currentReal := resolveRealPath(currentPath)
+	currentHash := fileSHA256(currentPath)
+	if isEquivalentBinary(cmdPath, currentPath, currentReal, currentHash) {
+		return transientIntegrationRef{}, false
+	}
+	return transientIntegrationRef{path: configPath, value: truncate(cmdPath, 120)}, true
 }
 
 func findTransientForgeReference(path string) (string, bool) {
