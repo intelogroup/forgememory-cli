@@ -44,6 +44,28 @@ var (
 	keyringSet     = keyring.Set
 )
 
+// forgeTestKeyringIDEnv, when set, repoints the keychain entry name away
+// from the real "forge-cli" one for this process. It exists so a *separate*
+// process — a real `forge` binary spawned as a subprocess by an integration
+// test (e.g. cmd/integration_test.go's runForgePath) — can be isolated too;
+// SetKeyringIdentityForTests only affects the calling process's own vars,
+// which a subprocess doesn't inherit.
+const forgeTestKeyringIDEnv = "FORGE_TEST_KEYRING_ID"
+
+func init() {
+	applyTestKeyringIDEnv()
+}
+
+// applyTestKeyringIDEnv is init()'s logic, split out so tests can exercise
+// it directly (init() itself only ever runs once, at process start, before
+// t.Setenv could take effect).
+func applyTestKeyringIDEnv() {
+	if id := os.Getenv(forgeTestKeyringIDEnv); id != "" {
+		keyringService = "forge-cli-test-" + id
+		keyringUser = "forge-hmac-key-test-" + id
+	}
+}
+
 const (
 	keyFileName        = "forge.key"
 	keychainMarkerName = "keychain-unavailable"
@@ -144,6 +166,29 @@ func keyringSetWithTimeout(secret string) bool {
 	case <-time.After(keychainTimeout):
 		return false
 	}
+}
+
+// SetKeyringIdentityForTests repoints the OS keychain entry name away from
+// the real "forge-cli"/"forge-hmac-key" entry, for the remaining lifetime of
+// the process, and returns the generated test ID plus a cleanup func that
+// removes the throwaway entry. Call once from TestMain in any package whose
+// tests exercise GetOrCreateKey indirectly (e.g. cmd's `forge doctor`), so
+// they can never read or write a developer's real keychain-stored signing
+// key. The file-fallback path needs no equivalent — it already isolates via
+// HOME, which per-test setup in this repo already overrides.
+//
+// The returned ID should be passed to any real `forge` binary spawned as a
+// test subprocess via the FORGE_TEST_KEYRING_ID env var — a subprocess is a
+// separate process with its own copy of keyringService/keyringUser, so it
+// isn't covered by this process's mutated vars, only by that env var (see
+// the package-level init()).
+func SetKeyringIdentityForTests() (id string, cleanup func()) {
+	suffix := make([]byte, 4)
+	_, _ = rand.Read(suffix)
+	id = hex.EncodeToString(suffix)
+	keyringService = "forge-cli-test-" + id
+	keyringUser = "forge-hmac-key-test-" + id
+	return id, func() { _ = keyring.Delete(keyringService, keyringUser) }
 }
 
 // RotateKey generates a fresh 32-byte key, overwrites the stored key

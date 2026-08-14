@@ -637,6 +637,24 @@ func TestRunDoctor_NoDevBuildWarningOnReleaseVersion(t *testing.T) {
 	}
 }
 
+// TestRunDoctor_ReportsSigningKeyStatus is the regression test for issue
+// #43 item 7: a Keychain-unavailable fallback silently weakens what the
+// HMAC signature protects against, and previously only surfaced via a
+// daemon.log line most users never read. forge doctor must report the
+// signing key's protection status explicitly (OK/WARN/FAIL), regardless of
+// whether this particular host happens to have a working OS keychain —
+// that's environment-dependent, so this only asserts the check ran and
+// reported *something*, not which branch.
+func TestRunDoctor_ReportsSigningKeyStatus(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+
+	out := captureStdout(func() { runDoctor([]string{}) })
+	if !strings.Contains(out, "Signing key:") {
+		t.Errorf("expected a 'Signing key:' status line in doctor output, got: %q", out)
+	}
+}
+
 // ---- runDoctor ----
 
 func TestRunDoctor_DBExists(t *testing.T) {

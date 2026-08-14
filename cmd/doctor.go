@@ -10,6 +10,7 @@ import (
 	"github.com/forge/forge/internal/agent"
 	"github.com/forge/forge/internal/db"
 	"github.com/forge/forge/internal/distill"
+	"github.com/forge/forge/internal/security"
 )
 
 func runDoctor(args []string) {
@@ -113,6 +114,8 @@ func runDoctor(args []string) {
 	} else {
 		fmt.Printf("[OK] Forge home: writable (%s)\n", forgeDataDir())
 	}
+
+	printKeychainStatus()
 
 	// Check database
 	fmt.Print("  ")
@@ -339,6 +342,30 @@ func probeForgeDirWritable() error {
 		return err
 	}
 	return os.Remove(probe)
+}
+
+// printKeychainStatus reports whether the HMAC signing key is protected by
+// the OS keychain (Keychain/Credential Manager/Secret Service) or has fallen
+// back to a plain file under ~/.forge. The fallback is functionally fine —
+// principles still get signed — but it silently weakens what that signature
+// protects against: a local attacker who can read forge.db can, in the
+// fallback case, also read the key sitting right next to it. The daemon
+// already logs this once (internal/db/principles.go), but a log line most
+// users never read isn't a security warning — this makes it visible in the
+// tool users actually run to check on Forge (issue #43).
+func printKeychainStatus() {
+	fmt.Print("  ")
+	_, usedFallback, err := security.GetOrCreateKey()
+	switch {
+	case err != nil:
+		fmt.Printf("[FAIL] Signing key: unavailable — principles will be stored unsigned: %v\n", err)
+	case usedFallback:
+		fmt.Println("[WARN] Signing key: OS keychain unavailable — HMAC key stored in ~/.forge/forge.key instead")
+		fmt.Println("         Signatures only protect against tampering that doesn't also read that file.")
+		fmt.Println("         On headless Linux, install a Secret Service provider (gnome-keyring, kwallet, or keyctl) to restore keychain protection.")
+	default:
+		fmt.Println("[OK] Signing key: protected by OS keychain")
+	}
 }
 
 // printDistillationHealth reports the distillation scheduler's health

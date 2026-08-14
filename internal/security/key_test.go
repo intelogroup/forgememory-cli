@@ -63,6 +63,61 @@ func TestGetOrCreateKeySkipsKeychainAfterPersistentFailure(t *testing.T) {
 	}
 }
 
+// TestSetKeyringIdentityForTests_RepointsAwayFromRealEntry guards the
+// mechanism cmd's TestMain relies on to keep `forge doctor` tests (which
+// call GetOrCreateKey indirectly) from ever touching the real "forge-cli"
+// keychain entry.
+func TestSetKeyringIdentityForTests_RepointsAwayFromRealEntry(t *testing.T) {
+	origService, origUser := keyringService, keyringUser
+	defer func() { keyringService, keyringUser = origService, origUser }()
+
+	id, cleanup := SetKeyringIdentityForTests()
+	defer cleanup()
+
+	if keyringService == "forge-cli" || keyringUser == "forge-hmac-key" {
+		t.Fatalf("SetKeyringIdentityForTests left the real entry name in place: service=%q user=%q", keyringService, keyringUser)
+	}
+	if id == "" {
+		t.Fatal("expected a non-empty test ID")
+	}
+}
+
+// TestKeyringIdentityEnvOverride guards the subprocess-isolation half of the
+// same mechanism: a real `forge` binary spawned by an integration test
+// reads FORGE_TEST_KEYRING_ID at package init and must not fall back to the
+// real "forge-cli"/"forge-hmac-key" entry names when it's set.
+func TestKeyringIdentityEnvOverride(t *testing.T) {
+	origService, origUser := keyringService, keyringUser
+	defer func() { keyringService, keyringUser = origService, origUser }()
+	keyringService, keyringUser = "forge-cli", "forge-hmac-key"
+
+	t.Setenv(forgeTestKeyringIDEnv, "test-env-id-12345")
+	applyTestKeyringIDEnv()
+
+	if keyringService != "forge-cli-test-test-env-id-12345" {
+		t.Errorf("keyringService = %q, want forge-cli-test-test-env-id-12345", keyringService)
+	}
+	if keyringUser != "forge-hmac-key-test-test-env-id-12345" {
+		t.Errorf("keyringUser = %q, want forge-hmac-key-test-test-env-id-12345", keyringUser)
+	}
+}
+
+// TestKeyringIdentityEnvOverride_EmptyLeavesIdentityUnchanged confirms an
+// unset/empty override doesn't clobber a keyringService/keyringUser another
+// test (or SetKeyringIdentityForTests) already set.
+func TestKeyringIdentityEnvOverride_EmptyLeavesIdentityUnchanged(t *testing.T) {
+	origService, origUser := keyringService, keyringUser
+	defer func() { keyringService, keyringUser = origService, origUser }()
+	keyringService, keyringUser = "forge-cli-test-existing", "forge-hmac-key-test-existing"
+
+	t.Setenv(forgeTestKeyringIDEnv, "")
+	applyTestKeyringIDEnv()
+
+	if keyringService != "forge-cli-test-existing" || keyringUser != "forge-hmac-key-test-existing" {
+		t.Errorf("empty env override changed identity: service=%q user=%q", keyringService, keyringUser)
+	}
+}
+
 func TestSignVerifyRoundTrip(t *testing.T) {
 	key := []byte("test-key-not-random-32-bytes!!!!")
 	sig := Sign(key, "title\x00narrative")
