@@ -254,14 +254,19 @@ args = ["mcp"]
 	}
 	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
 
-	checkAndRepairIntegrationPaths(home)
-
-	// Repair re-runs syncIntegrations, which (re)writes the Codex skill file
-	// as a side effect. Its presence confirms the stale config.toml entry
-	// was detected and drove a repair, rather than being silently ignored.
-	skillPath := filepath.Join(codexHome, "skills", "forge.json")
-	if _, err := os.Stat(skillPath); err != nil {
-		t.Errorf("expected stale config.toml to trigger repair (skill file missing): %v", err)
+	// syncIntegrations only (re)writes an agent's skill/settings file for
+	// agents DetectAgents actually finds installed — Codex detection shells
+	// out to a real `codex` binary, which isn't on PATH in CI, so asserting
+	// on the Codex skill file here would depend on the test host having
+	// Codex installed. Assert on checkAndRepairIntegrationPaths' own
+	// detection-and-repair output instead, which is unconditional on which
+	// specific agents happen to be present.
+	out := captureStdout(func() { checkAndRepairIntegrationPaths(home) })
+	if !strings.Contains(out, "Detected stale hook binary") {
+		t.Errorf("expected stale config.toml to be detected, got: %q", out)
+	}
+	if !strings.Contains(out, "Integrations updated to use") {
+		t.Errorf("expected repair (syncIntegrations) to run, got: %q", out)
 	}
 }
 
