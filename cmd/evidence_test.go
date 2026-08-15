@@ -47,8 +47,20 @@ func TestHandleEventMsgPreservesEvidenceMetadataAndCapturesTranscript(t *testing
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(events) != 1 {
-		t.Fatalf("events = %#v, want one event", events)
+	if len(events) != 2 {
+		t.Fatalf("events = %#v, want two events (session-end + transcript turn)", events)
+	}
+	var modelTurn *db.Event
+	for i := range events {
+		if events[i].EventType == "ModelTurn" {
+			modelTurn = &events[i]
+		}
+	}
+	if modelTurn == nil {
+		t.Fatalf("events = %#v, want a ModelTurn transcript turn", events)
+	}
+	if strings.Contains(modelTurn.Payload, "sk-test-secret-12345678901234567890") {
+		t.Fatalf("transcript event was not redacted: %q", modelTurn.Payload)
 	}
 
 	artifacts, err := database.EvaluationArtifacts("session-1", "task-1", 10)
