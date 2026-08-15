@@ -636,3 +636,133 @@ func TestDistillSkipCounter_WedgesAfterThreeAndResets(t *testing.T) {
 		t.Fatalf("expected 0 skips after cycle ran, got %d", got)
 	}
 }
+
+// ---------------------------------------------------------------------------
+// Crash-safe lock release (#51): distillSessionBatch used to release both the
+// filesystem distill lock and the in-process distillInProcess mutex only at
+// the function's tail, not via defer. A panic partway through a batch — e.g.
+// from a provider call — skipped that release entirely and left the
+// in-process mutex locked for the rest of the daemon's life, wedging every
+// later tick regardless of the filesystem lock's own state.
+// ---------------------------------------------------------------------------
+
+func setupWedgeTestSession(t *testing.T, home string) *db.DB {
+	t.Helper()
+	database, err := db.Open(filepath.Join(home, "wedge.db"))
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	t.Cleanup(func() { database.Close() })
+
+	base := time.Date(2026, time.August, 15, 12, 0, 0, 0, time.UTC)
+	insertDaemonCoachEvent(t, database, "wedge-change", base, "PostToolUse", "Edit", `{"file_path":"a.go"}`)
+	insertDaemonCoachEvent(t, database, "wedge-stop", base.Add(time.Minute), "SessionEnd", "", `{}`)
+	return database
+}
+
+func TestDistillSessionBatch_LockReleasedOnPanic(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("FORGE_PROVIDER", "anthropic")
+	t.Setenv("FORGE_API_KEY", "test-key")
+
+	database := setupWedgeTestSession(t, home)
+
+	orig := synthesizeCheckpointForSession
+	t.Cleanup(func() { synthesizeCheckpointForSession = orig })
+	synthesizeCheckpointForSession = func(loopD *distill.Distiller, sessionID, proj, checkpointKey string, events []db.Event) (*db.SessionSummary, error) {
+		panic("simulated provider crash mid-cycle")
+	}
+
+	lastCrossSessionRun := time.Time{}
+	func() {
+		defer func() {
+			if recover() == nil {
+				t.Fatal("expected distillSessionBatch to panic, it didn't")
+			}
+		}()
+		distillSessionBatch(database, time.Minute, &lastCrossSessionRun)
+	}()
+
+	if _, err := os.Stat(distillLockPath()); !os.IsNotExist(err) {
+		t.Errorf("distill lock file should not exist after a panic, stat err = %v", err)
+	}
+
+	// The real proof: the in-process mutex must also be free. If the old
+	// tail-only release were still in place, this would return (nil, nil)
+	// forever — exactly the "scheduler wedged" state from issue #51.
+	lock, err := acquireDistillLock()
+	if err != nil {
+		t.Fatalf("acquireDistillLock after panic: %v", err)
+	}
+	if lock == nil {
+		t.Fatal("distillInProcess mutex still held after panic — lock release is not crash-safe")
+	}
+	lock.Close()
+	cleanDistillLock()
+}
+
+func TestDistillSessionBatch_LockReleasedOnNormalReturn(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("FORGE_PROVIDER", "")
+	t.Setenv("FORGE_API_KEY", "")
+
+	database := setupWedgeTestSession(t, home)
+
+	lastCrossSessionRun := time.Time{}
+	// No provider configured — distillSessionBatch runs its normal control
+	// flow (acquire lock, hit the "no inference provider configured" branch
+	// per session, return) without touching the panic seam at all.
+	if _, err := os.Stat(distillLockPath()); !os.IsNotExist(err) {
+		t.Fatalf("precondition: lock file should not exist yet, stat err = %v", err)
+	}
+	distillSessionBatch(database, time.Minute, &lastCrossSessionRun)
+
+	if _, err := os.Stat(distillLockPath()); !os.IsNotExist(err) {
+		t.Errorf("distill lock file should not exist after a normal return, stat err = %v", err)
+	}
+	lock, err := acquireDistillLock()
+	if err != nil {
+		t.Fatalf("acquireDistillLock after normal return: %v", err)
+	}
+	if lock == nil {
+		t.Fatal("distillInProcess mutex still held after normal return")
+	}
+	lock.Close()
+	cleanDistillLock()
+}
+
+func TestDistillSessionBatch_NoteDistillCycleRanRunsOnSessionError(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("FORGE_PROVIDER", "")
+	t.Setenv("FORGE_API_KEY", "")
+
+	database := setupWedgeTestSession(t, home)
+
+	// Force the skip counter into the wedged state, as if prior ticks had
+	// been blocked by a competing lock holder. Reset first — this counter is
+	// a package-level global other tests in this file also mutate.
+	noteDistillCycleRan()
+	noteDistillSkip()
+	noteDistillSkip()
+	noteDistillSkip()
+	if got := distillSkipCount(); got != 3 {
+		t.Fatalf("precondition: expected skip count 3, got %d", got)
+	}
+
+	lastCrossSessionRun := time.Time{}
+	// No provider configured, so every session in the batch hits
+	// RecordDistillationFailure via the "no inference provider configured"
+	// branch — lastErr is non-nil, but the batch still reaches its tail
+	// normally (no panic, no early return once the lock is held).
+	_, batchErr, _ := distillSessionBatch(database, time.Minute, &lastCrossSessionRun)
+	if batchErr == nil {
+		t.Fatal("expected a session-level error (no provider configured), got nil")
+	}
+
+	if got := distillSkipCount(); got != 0 {
+		t.Errorf("expected skip count reset to 0 once a cycle actually ran (even with a session error), got %d", got)
+	}
+}

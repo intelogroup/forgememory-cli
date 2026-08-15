@@ -130,7 +130,10 @@ func (m *Manager) installLaunchd() error {
     <key>RunAtLoad</key>
     <true/>
     <key>KeepAlive</key>
-    <true/>
+    <dict>
+        <key>SuccessfulExit</key>
+        <false/>
+    </dict>
     <key>StandardOutPath</key>
     <string>%s/.forge/logs/forge.log</string>
     <key>StandardErrorPath</key>

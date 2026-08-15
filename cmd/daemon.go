@@ -457,6 +457,14 @@ func distillBackoff(consecutiveFailures int) time.Duration {
 
 const crossSessionMinSessions = 5
 
+// synthesizeCheckpointForSession wraps Distiller.SynthesizeCheckpoint as a
+// package-level var so tests can substitute a panicking implementation to
+// exercise distillSessionBatch's crash-safety (issue #51) without needing a
+// real provider call to fail in a specific way.
+var synthesizeCheckpointForSession = func(loopD *distill.Distiller, sessionID, proj, checkpointKey string, events []db.Event) (*db.SessionSummary, error) {
+	return loopD.SynthesizeCheckpoint(sessionID, proj, "daemon", checkpointKey, events)
+}
+
 // distillSessionBatch distills one batch of sessions and returns (processed, lastErr, hadWork).
 // Extracted so the loop can call it both on tick and in burst-drain mode.
 func distillSessionBatch(database *db.DB, interval time.Duration, lastCrossSessionRun *time.Time) (int, error, bool) {
@@ -499,6 +507,19 @@ func distillSessionBatch(database *db.DB, interval time.Duration, lastCrossSessi
 		noteDistillSkip()
 		return 0, nil, false
 	}
+	// Deferred, not released at the tail: a panic anywhere below (e.g. inside
+	// SynthesizeCheckpoint/DistillCheckpointSummary/SynthesizeCrossSession)
+	// used to skip straight past the old tail-only lock.Close()/
+	// cleanDistillLock()/noteDistillCycleRan() and leak the in-process
+	// distillInProcess mutex for the rest of this daemon's life — every later
+	// tick would then fail distillInProcess.TryLock() immediately and report
+	// "scheduler wedged" forever, even after the filesystem lock file was
+	// long gone (issue #51). Declared in reverse so LIFO execution order
+	// matches the original tail sequence: lock.Close(), then
+	// cleanDistillLock(), then noteDistillCycleRan().
+	defer noteDistillCycleRan()
+	defer cleanDistillLock()
+	defer lock.Close()
 
 	var lastErr error
 	for _, sessionID := range sessions {
@@ -553,7 +574,7 @@ func distillSessionBatch(database *db.DB, interval time.Duration, lastCrossSessi
 
 		loopD := distill.New(database, loopCfg)
 
-		summary, err := loopD.SynthesizeCheckpoint(sessionID, proj, "daemon", checkpointKey, events)
+		summary, err := synthesizeCheckpointForSession(loopD, sessionID, proj, checkpointKey, events)
 		if err != nil {
 			log.Printf("Distillation: session %s SynthesizeCheckpoint failed: %v", sessionID, err)
 			lastErr = err
@@ -596,10 +617,6 @@ func distillSessionBatch(database *db.DB, interval time.Duration, lastCrossSessi
 		}
 		*lastCrossSessionRun = time.Now()
 	}
-
-	lock.Close()
-	cleanDistillLock()
-	noteDistillCycleRan()
 
 	if lastErr != nil {
 		log.Printf("Distillation error: %v", lastErr)
