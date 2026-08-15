@@ -1,5 +1,14 @@
 # Changelog
 
+## [0.8.12] - 2026-08-15
+
+### Added
+- Transcript ingestion at session end for Claude Code, Codex, opencode, and Antigravity (Gemini CLI): AI responses and tool activity are captured as child span events, idempotent via deterministic span IDs.
+
+### Fixed
+- Codex rollout transcript discovery matches the session ID as a filename suffix.
+- Agent transcript paths resolve through `forgeHome` (HOME-first), so transcript lookups work cross-platform.
+
 ## [0.8.11] - 2026-08-15
 
 ### Added
