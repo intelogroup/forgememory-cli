@@ -1,5 +1,92 @@
 # Changelog
 
+## [0.8.11] - 2026-08-15
+
+### Added
+- `forge coach` command plus coaching over MCP: coaching evidence schema, verification skill-state tracking, knowledge-gap and verification queuing, and background verification-evidence processing.
+- Evaluation-grade agent observability with evaluation evidence artifact storage.
+- Custom runtime agent support via transcript ingestion (e.g. Clixen) — see `docs/CUSTOM_AGENTS.md`.
+- Reliable hook event delivery via an IPC ack/outbox layer.
+
+### Fixed
+- Dashboard server now binds to loopback only, so sensitive memory data is never exposed on a network interface.
+- Schema migration runs in a single transaction and is skipped entirely once current.
+- Unrelated test runs no longer reduce verification confidence.
+- Suppressed repeated keychain probes across daemon spawns.
+
+## [0.8.10] - 2026-08-15
+
+### Added
+- Scoped retrieval lifecycle and agent handoffs.
+- Provenance-aware memory contracts, with scoped provenance and encrypted-memory enforcement.
+- Evaluation evidence artifact storage.
+- Knowledge-gap + verification detector wired into the coach pipeline (#41).
+- Benchmark promotion and longitudinal quality gates.
+
+### Fixed
+- Distillation surfaces the assistant's own stated reasoning on Stop events and keeps the terminal Stop event when capping checkpoint events.
+- Failure detection trusts `tool_response.exit_code` over text matching.
+- `forge doctor` bounds its provider connectivity probe.
+- Keychain-fallback signing key surfaced as a security warning.
+- Wedged distillation surfaced; lifecycle tests isolated; dev builds flagged.
+- Stale Codex native MCP config detected and repaired.
+- Context7 MCP subprocess reads bounded against unbounded memory growth.
+- CI hardened: serialized Ubuntu tests, non-blocking Windows jobs, per-package Windows test sweep.
+
+## [0.8.9] - 2026-08-13
+
+### Changed
+- Bumped `modernc.org/sqlite` 1.48.0 → 1.55.0, promoted `zalando/go-keyring` to a direct dependency, and refreshed transitive deps.
+
+## [0.8.8] - 2026-08-01
+
+### Added
+- `forge prompt-doctor` command (Phase 1).
+
+### Fixed
+- `forge distill --all` no longer stalls on short sessions or bad LLM JSON.
+
+## [0.8.7] - 2026-07-31
+
+### Added
+- `forge knowledge-gap` command.
+
+### Fixed
+- Forced JSON mode for OpenAI-shaped LLM responses.
+
+## [0.8.6] - 2026-07-31
+
+### Added
+- `--all` flag to `forge profile`/`forge stats` for cross-project runs.
+- Low-sample-size output tagged with a confidence caveat.
+
+### Changed
+- `forge profile` scores Engineering and Steering deterministically.
+- Steering-rate ambiguity split into trust vs disengagement labels.
+
+### Fixed
+- Docs/lockfile-only commits excluded from commit-hygiene metrics.
+- Commit-hygiene evidence skipped in the profile prompt for zero-commit repos.
+- `projects` table populated with `git_root` on event/save writes.
+
+## [0.8.5] - 2026-07-31
+
+### Fixed
+- Forced `undici` to 7.x and bumped `uuid` to 11.x in `mastra/`.
+
+## [0.8.4] - 2026-07-31
+
+### Fixed
+- Bumped vulnerable transitive dependencies in `mastra/` via `npm audit fix`.
+
+## [0.8.3] - 2026-07-31
+
+### Added
+- `forge stats` scores a builder on an engineer-vs-vibe-coder axis.
+
+### Fixed
+- Scanning NULL `tool_name` values in events queries instead of erroring.
+
 ## [0.8.2] - 2026-07-27
 
 ### Changed
