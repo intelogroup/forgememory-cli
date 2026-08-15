@@ -465,8 +465,10 @@ func (s *Server) handleToolsCall(req Request) *Response {
 		return errorResponse(req.ID, "Invalid params")
 	}
 
-	// Self-healing: if the daemon is dead, revive it.
-	if !ipc.IsDaemonAlive() {
+	// Self-healing: if the daemon is dead, revive it. Test binaries must not
+	// spawn detached copies of themselves: those children outlive the test
+	// process and can exhaust the runner before the suite completes.
+	if !isTestBinary() && !ipc.IsDaemonAlive() {
 		log.Println("Forge daemon is not running. Starting recovery...")
 		if exe, err := os.Executable(); err == nil {
 			cmd := exec.Command(exe, "start")
@@ -524,6 +526,10 @@ func (s *Server) handleToolsCall(req Request) *Response {
 		ID:      req.ID,
 		Result:  result,
 	}
+}
+
+func isTestBinary() bool {
+	return strings.HasSuffix(filepath.Base(os.Args[0]), ".test")
 }
 
 func (s *Server) getRecentContext(args map[string]any) ToolResult {
