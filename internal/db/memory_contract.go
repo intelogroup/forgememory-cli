@@ -185,6 +185,17 @@ func (d *DB) InsertMemoryRecord(m *MemoryRecord) error {
 	if err := m.Validate(); err != nil {
 		return err
 	}
+	var existingOwner, existingBoundary, existingDigest string
+	lookupErr := d.conn.QueryRow(`SELECT owner_id,boundary_id,content_digest FROM memory_records WHERE id=?`, m.ID).Scan(&existingOwner, &existingBoundary, &existingDigest)
+	if lookupErr == nil {
+		if existingOwner == m.OwnerID && existingBoundary == m.BoundaryID && existingDigest == m.ContentDigest {
+			return nil
+		}
+		return fmt.Errorf("memory id already exists with different scope or content")
+	}
+	if lookupErr != sql.ErrNoRows {
+		return lookupErr
+	}
 	key, _, err := security.GetOrCreateKey()
 	if err != nil {
 		return fmt.Errorf("memory encryption key: %w", err)
