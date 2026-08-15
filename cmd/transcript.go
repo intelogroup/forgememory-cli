@@ -197,8 +197,8 @@ func findCodexTranscript(sessionID, ts string) string {
 	if sessionID == "" || sessionID == "unknown" {
 		return ""
 	}
-	home, err := os.UserHomeDir()
-	if err != nil {
+	home := forgeHome()
+	if home == "" {
 		return ""
 	}
 	when, err := time.Parse(time.RFC3339, ts)
@@ -221,8 +221,8 @@ func transcriptSpanID(traceID string, lineNumber int64, line string) string {
 // opencodeTranscriptDB returns the path to opencode's SQLite store holding
 // the message/part transcript rows.
 func opencodeTranscriptDB() string {
-	home, err := os.UserHomeDir()
-	if err != nil {
+	home := forgeHome()
+	if home == "" {
 		return ""
 	}
 	return filepath.Join(home, ".local", "share", "opencode", "opencode.db")
@@ -441,8 +441,8 @@ func findAntigravityTranscript(sessionID string) string {
 	if sessionID == "" || sessionID == "unknown" {
 		return ""
 	}
-	home, err := os.UserHomeDir()
-	if err != nil {
+	home := forgeHome()
+	if home == "" {
 		return ""
 	}
 	return filepath.Join(home, ".gemini", "antigravity", "brain", sessionID, ".system_generated", "logs", "transcript.jsonl")
