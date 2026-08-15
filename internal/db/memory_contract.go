@@ -9,6 +9,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/forge/forge/internal/security"
 	"github.com/google/uuid"
 )
 
@@ -112,6 +113,10 @@ func memoryDigest(content []byte) string {
 	return hex.EncodeToString(sum[:])
 }
 
+func memoryAAD(ownerID, boundaryID, revisionID, digest string) string {
+	return "memory:v1|owner:" + ownerID + "|boundary:" + boundaryID + "|revision:" + revisionID + "|digest:" + digest
+}
+
 func encodeIDs(ids []string) (string, error) {
 	if ids == nil {
 		ids = []string{}
@@ -180,6 +185,14 @@ func (d *DB) InsertMemoryRecord(m *MemoryRecord) error {
 	if err := m.Validate(); err != nil {
 		return err
 	}
+	key, _, err := security.GetOrCreateKey()
+	if err != nil {
+		return fmt.Errorf("memory encryption key: %w", err)
+	}
+	sealed, err := security.EncryptBound(key, string(m.Content), memoryAAD(m.OwnerID, m.BoundaryID, m.RevisionID, m.ContentDigest))
+	if err != nil {
+		return fmt.Errorf("encrypt memory content: %w", err)
+	}
 	parents, err := encodeIDs(m.ParentRevisionIDs)
 	if err != nil {
 		return err
@@ -195,7 +208,7 @@ func (d *DB) InsertMemoryRecord(m *MemoryRecord) error {
 	_, err = d.conn.Exec(`INSERT INTO memory_records
 		(id,owner_id,boundary_id,kind,revision_id,status,content,content_digest,source_actor,source_type,source_ref,captured_at,observed_at,effective_from,effective_until,parent_revision_ids,supporting_ids,contradicting_ids,derivation_id,confidence,freshness,source_reliability,ambiguity,disagreement,sensitivity,created_at,supersedes_revision_id,artifact_id,spif_envelope)
 		VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
-		m.ID, m.OwnerID, m.BoundaryID, m.Kind, m.RevisionID, m.Status, m.Content, m.ContentDigest, m.SourceActor, m.SourceType, m.SourceRef, m.CapturedAt, m.ObservedAt, m.EffectiveFrom, m.EffectiveUntil, parents, supporting, contradicting, m.DerivationID, m.Confidence, m.Freshness, m.SourceReliability, m.Ambiguity, m.Disagreement, m.Sensitivity, m.CreatedAt, m.SupersedesRevisionID, m.ArtifactID, m.SPIFEnvelope)
+		m.ID, m.OwnerID, m.BoundaryID, m.Kind, m.RevisionID, m.Status, []byte(sealed), m.ContentDigest, m.SourceActor, m.SourceType, m.SourceRef, m.CapturedAt, m.ObservedAt, m.EffectiveFrom, m.EffectiveUntil, parents, supporting, contradicting, m.DerivationID, m.Confidence, m.Freshness, m.SourceReliability, m.Ambiguity, m.Disagreement, m.Sensitivity, m.CreatedAt, m.SupersedesRevisionID, m.ArtifactID, m.SPIFEnvelope)
 	return err
 }
 
@@ -209,6 +222,10 @@ func (d *DB) InsertCorrection(c *CorrectionEvent) error {
 	if c.OwnerID == "" || c.BoundaryID == "" || c.TargetRevisionID == "" || c.ActorID == "" || c.Action == "" || c.ReasonCode == "" || len(c.SPIFEnvelope) == 0 {
 		return fmt.Errorf("correction requires owner, boundary, target, actor, action, reason, and spif_envelope")
 	}
+	validActions := map[string]bool{"amend": true, "retract": true, "narrow_scope": true, "broaden_scope": true, "mark_uncertain": true, "restore": true, "delete": true}
+	if !validActions[c.Action] {
+		return fmt.Errorf("invalid correction action %q", c.Action)
+	}
 	evidence, err := encodeIDs(c.EvidenceIDs)
 	if err != nil {
 		return err
@@ -221,8 +238,12 @@ func (d *DB) InsertCorrection(c *CorrectionEvent) error {
 		return fmt.Errorf("correction crosses owner or boundary")
 	}
 	if c.ReplacementRevisionID != "" {
-		if err := d.conn.QueryRow(`SELECT owner_id FROM memory_records WHERE revision_id=? AND boundary_id=?`, c.ReplacementRevisionID, c.BoundaryID).Scan(&owner); err != nil {
+		var replacementBoundary string
+		if err := d.conn.QueryRow(`SELECT owner_id,boundary_id FROM memory_records WHERE revision_id=?`, c.ReplacementRevisionID).Scan(&owner, &replacementBoundary); err != nil {
 			return fmt.Errorf("replacement revision: %w", err)
+		}
+		if owner != c.OwnerID || replacementBoundary != c.BoundaryID {
+			return fmt.Errorf("replacement crosses owner or boundary")
 		}
 	}
 	_, err = d.conn.Exec(`INSERT INTO memory_corrections (correction_id,owner_id,boundary_id,target_revision_id,replacement_revision_id,action,reason_code,explanation,actor_id,created_at,evidence_ids,spif_envelope) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)`, c.CorrectionID, c.OwnerID, c.BoundaryID, c.TargetRevisionID, c.ReplacementRevisionID, c.Action, c.ReasonCode, c.Explanation, c.ActorID, c.CreatedAt, evidence, c.SPIFEnvelope)
@@ -269,6 +290,15 @@ func (d *DB) MemoryRevision(ownerID, boundaryID, revisionID string) (*MemoryReco
 		return nil, err
 	}
 	m.Kind, m.Status = MemoryKind(kind), MemoryStatus(status)
+	key, _, keyErr := security.GetOrCreateKey()
+	if keyErr != nil {
+		return nil, fmt.Errorf("memory decryption key: %w", keyErr)
+	}
+	plain, decryptErr := security.DecryptBound(key, string(m.Content), memoryAAD(m.OwnerID, m.BoundaryID, m.RevisionID, m.ContentDigest))
+	if decryptErr != nil {
+		return nil, fmt.Errorf("memory content authentication failed: %w", decryptErr)
+	}
+	m.Content = []byte(plain)
 	if err := json.Unmarshal([]byte(parents), &m.ParentRevisionIDs); err != nil {
 		return nil, err
 	}

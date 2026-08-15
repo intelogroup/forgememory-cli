@@ -460,6 +460,14 @@ func (d *DB) migrate() error {
 			feature_snapshot_digest TEXT NOT NULL DEFAULT '', created_at TEXT NOT NULL, outcome TEXT NOT NULL DEFAULT 'unknown', outcome_at TEXT NOT NULL DEFAULT ''
 		)`,
 		`CREATE INDEX IF NOT EXISTS idx_retrieval_events_scope_time ON retrieval_events(owner_id, boundary_id, created_at DESC)`,
+		`CREATE TABLE IF NOT EXISTS provenance_receipts (
+			id TEXT PRIMARY KEY, owner_id TEXT NOT NULL, boundary_id TEXT NOT NULL,
+			artifact_id TEXT NOT NULL, signer_id TEXT NOT NULL, task_id TEXT NOT NULL,
+			attempt INTEGER NOT NULL, nonce TEXT NOT NULL, timestamp INTEGER NOT NULL,
+			envelope BLOB NOT NULL,
+			UNIQUE(owner_id, boundary_id, signer_id, task_id, attempt, nonce)
+		)`,
+		`CREATE INDEX IF NOT EXISTS idx_provenance_receipts_scope ON provenance_receipts(owner_id, boundary_id, timestamp DESC)`,
 	}
 	for _, m := range extraMigrations {
 		if _, err := tx.Exec(m); err != nil {
