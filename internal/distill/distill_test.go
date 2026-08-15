@@ -3,6 +3,7 @@ package distill
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -255,6 +256,63 @@ func TestBuildPrompt_StripsHookMetadataFromUserPrompt(t *testing.T) {
 	}
 	if containsStr(prompt, `"session_id"`) {
 		t.Fatalf("prompt should not include raw hook JSON: %q", prompt)
+	}
+}
+
+func TestSummarizeEventPayload_ExtractsLastAssistantMessageFromStopEvent(t *testing.T) {
+	e := db.Event{
+		EventType: "Stop",
+		Payload:   `{"session_id":"sess-1","hook_event_name":"Stop","last_assistant_message":"I fixed the retry logic by wrapping writes in WithMaxRetries(3)."}`,
+	}
+	got := summarizeEventPayload(e)
+	want := "I fixed the retry logic by wrapping writes in WithMaxRetries(3)."
+	if got != want {
+		t.Fatalf("summarizeEventPayload = %q, want %q", got, want)
+	}
+}
+
+func TestSummarizeEventPayload_FallsBackToSessionBoundaryWhenAbsent(t *testing.T) {
+	cases := []string{
+		`{"session_id":"sess-1","hook_event_name":"Stop"}`,
+		`{"session_id":"sess-1","hook_event_name":"SessionEnd"}`,
+		`not json`,
+	}
+	for _, payload := range cases {
+		e := db.Event{EventType: "Stop", Payload: payload}
+		if got := summarizeEventPayload(e); got != "session boundary" {
+			t.Fatalf("summarizeEventPayload(%q) = %q, want %q", payload, got, "session boundary")
+		}
+	}
+}
+
+func TestSummarizeEventPayload_TruncatesLongLastAssistantMessage(t *testing.T) {
+	long := strings.Repeat("a", 600)
+	e := db.Event{
+		EventType: "Stop",
+		Payload:   fmt.Sprintf(`{"hook_event_name":"Stop","last_assistant_message":%q}`, long),
+	}
+	got := summarizeEventPayload(e)
+	if len(got) != 503 { // 500 chars + "..."
+		t.Fatalf("summarizeEventPayload length = %d, want 503 (500 + '...')", len(got))
+	}
+	if !strings.HasSuffix(got, "...") {
+		t.Fatalf("expected truncated message to end with '...', got %q", got[len(got)-10:])
+	}
+}
+
+func TestBuildPrompt_IncludesLastAssistantMessageFromStopEvent(t *testing.T) {
+	d := &Distiller{}
+	prompt := d.buildPrompt([]db.Event{{
+		SessionID: "sess-1",
+		ProjectID: "proj",
+		EventType: "Stop",
+		Payload:   `{"hook_event_name":"Stop","last_assistant_message":"Switched to WithMaxRetries(3) because the default pgx transport silently drops retries after a TCP reset."}`,
+	}})
+	if !containsStr(prompt, "Switched to WithMaxRetries(3) because the default pgx transport silently drops retries after a TCP reset.") {
+		t.Fatalf("prompt missing extracted assistant message: %q", prompt)
+	}
+	if containsStr(prompt, "session boundary") {
+		t.Fatalf("prompt should not fall back to session boundary when last_assistant_message is present: %q", prompt)
 	}
 }
 

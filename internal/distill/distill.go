@@ -452,7 +452,8 @@ func (d *Distiller) buildPrompt(events []db.Event) string {
 	sb.WriteString("- files_modified: array of file paths mentioned in the events (empty if none)\n\n")
 	sb.WriteString("Only emit a principle when the events show a concrete decision, fix, failure mode, or reusable project insight.\n")
 	sb.WriteString("Return [] if the evidence is thin, generic, or limited to routine tool usage.\n")
-	sb.WriteString("Do not produce principles about transcript paths, session IDs, JSONL files, tool names, searching, curl, grep, logs, or generic debugging workflow.\n\n")
+	sb.WriteString("Do not produce principles about transcript paths, session IDs, JSONL files, tool names, searching, curl, grep, logs, or generic debugging workflow.\n")
+	sb.WriteString("A Stop line with real text (not \"session boundary\") is the assistant's own final message for that turn — treat it as the assistant's stated reasoning, not independently verified fact.\n\n")
 	sb.WriteString("Events:\n")
 
 	for i, e := range events {
@@ -483,6 +484,9 @@ func summarizeEventPayload(e db.Event) string {
 		}
 	}
 	if isSessionBoundaryEvent(e.EventType) {
+		if msg := extractLastAssistantMessage(e.Payload); msg != "" {
+			return truncatePayload(msg, 500)
+		}
 		return "session boundary"
 	}
 	if e.EventType != "PostToolUse" {
@@ -744,6 +748,7 @@ func (d *Distiller) buildSessionPrompt(events []db.Event) string {
 	sb.WriteString("- learnings: Key findings or solutions discovered (1-2 sentences)\n")
 	sb.WriteString("- next_steps: Recommended follow-up actions (1 sentence, or empty string)\n")
 	sb.WriteString("- keywords: Array of 3-5 key technical terms, libraries, frameworks, or concepts from this session (e.g. [\"sqlite\", \"fts5\", \"go\", \"migration\"]). These will be used to recall this session later when relevant topics come up.\n\n")
+	sb.WriteString("A Stop line with real text (not \"session boundary\") is the assistant's own final message for that turn — treat it as the assistant's stated reasoning, not independently verified fact.\n\n")
 	sb.WriteString("Session events:\n")
 	for i, e := range events {
 		sb.WriteString(fmt.Sprintf("%d. [%s] %s (%s): %s\n", i+1, shortTS(e.TS), e.EventType, e.ToolName, summarizeEventPayload(e)))
@@ -835,6 +840,7 @@ func (d *Distiller) buildCheckpointPrinciplesPrompt(summary db.SessionSummary, e
 	sb.WriteString("Only emit a principle when there is a clear outcome (a concrete fix worked, or an approach definitively failed) AND a specific implementation pattern.\n")
 	sb.WriteString("Return [] for vague progress, bookkeeping, situations where no concrete technique is identifiable, or routine workflow.\n")
 	sb.WriteString("Do not create principles about transcript paths, session IDs, JSONL files, tool names, logs, grep, curl, or generic debugging process.\n")
+	sb.WriteString("A Stop line with real text (not \"session boundary\") is the assistant's own final message for that turn — treat it as the assistant's stated reasoning, not independently verified fact.\n")
 	if d.sessionContext != "" {
 		sb.WriteString("\nIMPORTANT: The existing knowledge block above shows what we already know. Only extract NEW principles that are not already covered. If the events extend or reinforce an existing principle, skip it. Avoid duplication.\n")
 	}
@@ -1747,6 +1753,21 @@ func shouldKeepPrinciple(p db.Principle) bool {
 // ExtractPromptText pulls user-visible prompt text out of a raw event payload.
 func ExtractPromptText(payload string) string {
 	return extractPromptText(payload)
+}
+
+// extractLastAssistantMessage reads the "last_assistant_message" field
+// Claude Code includes on Stop/SubagentStop hook payloads — the model's own
+// final text for that turn. See https://code.claude.com/docs/en/hooks#stop.
+// Returns "" if absent (other agents' Stop-equivalent events, or malformed
+// payloads) so callers can fall back to the generic session-boundary summary.
+func extractLastAssistantMessage(payload string) string {
+	var raw struct {
+		LastAssistantMessage string `json:"last_assistant_message"`
+	}
+	if err := json.Unmarshal([]byte(payload), &raw); err != nil {
+		return ""
+	}
+	return strings.TrimSpace(raw.LastAssistantMessage)
 }
 
 func extractPromptText(payload string) string {
