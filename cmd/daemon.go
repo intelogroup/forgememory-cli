@@ -1,14 +1,17 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"log"
 	"math"
 	"net"
 	"os"
+	"os/exec"
 	"os/signal"
 	"path/filepath"
 	"strconv"
@@ -17,6 +20,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/forge/forge/internal/artifacts"
 	"github.com/forge/forge/internal/coach"
 	"github.com/forge/forge/internal/config"
 	"github.com/forge/forge/internal/db"
@@ -269,6 +273,15 @@ func handleEventMsg(raw map[string]json.RawMessage, database *db.DB) {
 		Payload:    extract("payload"),
 	}
 	projectRoot := extract("project_root")
+	context := evidenceContext{
+		TraceID:        extract("trace_id"),
+		TaskID:         extract("task_id"),
+		CWD:            extract("cwd"),
+		GitBranch:      extract("git_branch"),
+		GitCommit:      extract("git_commit"),
+		TranscriptPath: extract("transcript_path"),
+		ProjectRoot:    projectRoot,
+	}
 
 	if event.SessionID == "" {
 		event.SessionID = "unknown"
@@ -281,6 +294,7 @@ func handleEventMsg(raw map[string]json.RawMessage, database *db.DB) {
 		log.Printf("Insert event error: %v", err)
 		return
 	}
+	captureEvidenceArtifacts(database, event, context)
 	if projectRoot != "" {
 		if err := database.UpsertProject(event.ProjectID, projectRoot, event.ProjectID, event.SourceTool); err != nil {
 			log.Printf("Upsert project error: %v", err)
@@ -289,6 +303,141 @@ func handleEventMsg(raw map[string]json.RawMessage, database *db.DB) {
 	if err := detect.ProcessEvent(database, event); err != nil {
 		log.Printf("Failure detection error: %v", err)
 	}
+}
+
+type evidenceContext struct {
+	TraceID        string
+	TaskID         string
+	CWD            string
+	GitBranch      string
+	GitCommit      string
+	TranscriptPath string
+	ProjectRoot    string
+}
+
+const maxEvidenceReadBytes = 32 << 20
+
+func captureEvidenceArtifacts(database *db.DB, event *db.Event, context evidenceContext) {
+	if database == nil || event == nil {
+		return
+	}
+	traceID := context.TraceID
+	if traceID == "" {
+		traceID = event.SessionID
+	}
+	if traceID == "" || traceID == "unknown" {
+		return
+	}
+	metadataBytes, _ := json.Marshal(map[string]string{
+		"event_id":        event.ID,
+		"session_id":      event.SessionID,
+		"project_id":      event.ProjectID,
+		"source_tool":     event.SourceTool,
+		"event_type":      event.EventType,
+		"tool_name":       event.ToolName,
+		"cwd":             context.CWD,
+		"git_branch":      context.GitBranch,
+		"git_commit":      context.GitCommit,
+		"transcript_path": context.TranscriptPath,
+		"project_root":    context.ProjectRoot,
+	})
+	metadata := string(metadataBytes)
+	store := artifacts.Store{DB: database, Root: filepath.Join(filepath.Dir(database.Path), "artifacts")}
+	put := func(kind, mediaType string, content []byte) {
+		if len(content) == 0 {
+			return
+		}
+		if _, err := store.Put(traceID, context.TaskID, kind, mediaType, content, metadata); err != nil {
+			log.Printf("evidence capture (%s): %v", kind, err)
+		}
+	}
+
+	if isSessionEndEvent(event.EventType) && context.TranscriptPath != "" {
+		if content, err := readEvidenceFile(context.TranscriptPath); err == nil {
+			put("transcript", "application/jsonl", content)
+		}
+	}
+	if event.ToolName == "Bash" {
+		kind := "command-log"
+		if isTestCommand(event.Payload) {
+			kind = "test-report"
+		}
+		put(kind, "application/json", []byte(event.Payload))
+	}
+	if isWriteTool(event.ToolName) && context.CWD != "" {
+		if diff := gitEvidenceDiff(context.CWD); len(diff) > 0 {
+			put("diff", "text/x-diff", diff)
+		}
+	}
+}
+
+func readEvidenceFile(path string) ([]byte, error) {
+	file, err := os.Open(path)
+	if err != nil {
+		return nil, err
+	}
+	defer file.Close()
+	content, err := io.ReadAll(io.LimitReader(file, maxEvidenceReadBytes+1))
+	if err != nil {
+		return nil, err
+	}
+	if len(content) > maxEvidenceReadBytes {
+		content = append(content[:maxEvidenceReadBytes], []byte("\n...[TRUNCATED]...")...)
+	}
+	return content, nil
+}
+
+func isTestCommand(payload string) bool {
+	var raw struct {
+		ToolInput struct {
+			Command string `json:"command"`
+		} `json:"tool_input"`
+	}
+	if json.Unmarshal([]byte(payload), &raw) == nil {
+		command := strings.ToLower(raw.ToolInput.Command)
+		for _, token := range []string{"go test", "cargo test", "npm test", "pnpm test", "yarn test", "pytest", "vitest", "jest"} {
+			if strings.Contains(command, token) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func gitEvidenceDiff(cwd string) []byte {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	output := &evidenceLimitWriter{limit: maxEvidenceReadBytes + 1}
+	command := exec.CommandContext(ctx, "git", "-C", cwd, "diff", "--binary", "--no-ext-diff", "HEAD", "--")
+	command.Stdout = output
+	if err := command.Run(); err != nil {
+		return nil
+	}
+	content := output.buf.Bytes()
+	if len(content) > maxEvidenceReadBytes {
+		content = append(content[:maxEvidenceReadBytes], []byte("\n...[TRUNCATED]...\n")...)
+	}
+	return content
+}
+
+type evidenceLimitWriter struct {
+	buf   bytes.Buffer
+	limit int
+}
+
+func (w *evidenceLimitWriter) Write(p []byte) (int, error) {
+	remaining := w.limit - w.buf.Len()
+	if remaining > 0 {
+		if len(p) > remaining {
+			_, _ = w.buf.Write(p[:remaining])
+		} else {
+			_, _ = w.buf.Write(p)
+		}
+	}
+	// Report the full input as consumed so the child process can never block
+	// once the retention limit is reached.
+	return len(p), nil
 }
 
 // distillBackoff returns the minimum interval that must elapse since the last
