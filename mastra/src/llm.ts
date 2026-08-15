@@ -1,7 +1,6 @@
 import { Agent } from "@mastra/core/agent";
 import { createOpenAI } from "@ai-sdk/openai";
 import { createAnthropic } from "@ai-sdk/anthropic";
-import { createOllama } from "ollama-ai-provider";
 import { ProviderConfig } from "./provider.js";
 import { execFile, spawn } from "node:child_process";
 import { promisify } from "node:util";
@@ -51,10 +50,11 @@ function createModel(cfg: ProviderConfig) {
     }
 
     case "ollama": {
-      const ollamaProvider = createOllama({
-        baseURL: cfg.baseURL || undefined,
+      const ollamaProvider = createOpenAI({
+        apiKey: cfg.apiKey || "ollama",
+        baseURL: `${(cfg.baseURL || "http://localhost:11434").replace(/\/$/, "")}/v1`,
       });
-      return ollamaProvider(cfg.model || "llama3:latest");
+      return ollamaProvider.chat(cfg.model || "llama3:latest");
     }
 
     default: {
