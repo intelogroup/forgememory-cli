@@ -85,6 +85,144 @@ func TestFindCodexTranscriptMatchesSuffix(t *testing.T) {
 	}
 }
 
+func TestTranscriptEventTypeCodexToolCalls(t *testing.T) {
+	cases := []struct {
+		raw  map[string]any
+		want string
+	}{
+		{map[string]any{"type": "response_item", "payload": map[string]any{"type": "custom_tool_call", "name": "exec"}}, "TranscriptToolCall"},
+		{map[string]any{"type": "response_item", "payload": map[string]any{"type": "custom_tool_call_output"}}, "TranscriptToolResult"},
+		{map[string]any{"type": "function_call", "payload": map[string]any{"name": "exec"}}, "TranscriptToolCall"},
+		{map[string]any{"type": "function_call_output"}, "TranscriptToolResult"},
+	}
+	for _, c := range cases {
+		if got := transcriptEventType(c.raw); got != c.want {
+			t.Fatalf("transcriptEventType(%v) = %q, want %q", c.raw, got, c.want)
+		}
+	}
+}
+
+func TestIngestTranscriptCodexToolCallExtractsName(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "codex.jsonl")
+	if err := os.WriteFile(path, []byte(`{"type":"response_item","payload":{"type":"custom_tool_call","name":"exec","input":"ls"}}`+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	database, err := db.Open(filepath.Join(t.TempDir(), "trace.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer database.Close()
+	parent := db.Event{ID: "e", TS: "t", TraceID: "tr", SpanID: "s", SessionID: "s1", ProjectID: "p", SourceTool: "codex", TranscriptPath: path}
+	count, err := ingestTranscript(database, parent)
+	if err != nil || count != 1 {
+		t.Fatalf("ingestTranscript count=%d err=%v, want 1", count, err)
+	}
+	events, err := database.TraceEvents("tr", 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(events) != 1 || events[0].EventType != "TranscriptToolCall" || events[0].ToolName != "exec" {
+		t.Fatalf("events = %#v, want a TranscriptToolCall named exec", events)
+	}
+}
+
+func TestAntigravityLines(t *testing.T) {
+	user := antigravityLines(map[string]any{"source": "USER_EXPLICIT", "type": "USER_INPUT", "created_at": "2026-06-05T18:58:06Z", "content": "hello"})
+	if len(user) != 1 {
+		t.Fatalf("antigravityLines(user) = %d lines, want 1", len(user))
+	}
+	var u map[string]any
+	if err := json.Unmarshal([]byte(user[0]), &u); err != nil {
+		t.Fatal(err)
+	}
+	if transcriptEventType(u) != "TranscriptPrompt" {
+		t.Fatalf("user turn classified as %q, want TranscriptPrompt", transcriptEventType(u))
+	}
+
+	plan := antigravityLines(map[string]any{
+		"source": "MODEL", "type": "PLANNER_RESPONSE", "created_at": "2026-06-05T18:58:07Z",
+		"tool_calls": []any{map[string]any{"name": "list_dir", "args": map[string]any{}}, map[string]any{"name": "run_command", "args": map[string]any{}}},
+	})
+	if len(plan) != 2 {
+		t.Fatalf("antigravityLines(plan) = %d lines, want 2", len(plan))
+	}
+
+	result := antigravityLines(map[string]any{"source": "MODEL", "type": "RUN_COMMAND", "status": "DONE", "created_at": "2026-06-05T18:58:26Z", "content": "output"})
+	if len(result) != 1 {
+		t.Fatalf("antigravityLines(result) = %d lines, want 1", len(result))
+	}
+	var r map[string]any
+	if err := json.Unmarshal([]byte(result[0]), &r); err != nil {
+		t.Fatal(err)
+	}
+	if transcriptEventType(r) != "TranscriptToolResult" || r["tool_name"] != "run_command" {
+		t.Fatalf("result turn = %v, want TranscriptToolResult named run_command", r)
+	}
+
+	if got := antigravityLines(map[string]any{"source": "SYSTEM", "type": "CONVERSATION_HISTORY"}); len(got) != 0 {
+		t.Fatalf("antigravityLines(system) = %v, want empty", got)
+	}
+}
+
+func TestFindAntigravityTranscript(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	convID := "abc-123"
+	dir := filepath.Join(home, ".gemini", "antigravity", "brain", convID, ".system_generated", "logs")
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(dir, "transcript.jsonl")
+	if err := os.WriteFile(path, []byte("{}\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if got := findAntigravityTranscript(convID); got != path {
+		t.Fatalf("findAntigravityTranscript() = %q, want %q", got, path)
+	}
+	if got := findAntigravityTranscript("unknown"); got != "" {
+		t.Fatalf("findAntigravityTranscript() = %q, want empty", got)
+	}
+}
+
+func TestIngestAntigravityTranscript(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	convID := "conv-1"
+	dir := filepath.Join(home, ".gemini", "antigravity", "brain", convID, ".system_generated", "logs")
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	content := `{"source":"USER_EXPLICIT","type":"USER_INPUT","created_at":"2026-06-05T18:58:06Z","content":"hello"}` + "\n" +
+		`{"source":"MODEL","type":"PLANNER_RESPONSE","created_at":"2026-06-05T18:58:07Z","tool_calls":[{"name":"list_dir","args":{}}]}` + "\n" +
+		`{"source":"MODEL","type":"LIST_DIRECTORY","status":"DONE","created_at":"2026-06-05T18:58:08Z","content":"listing"}` + "\n"
+	if err := os.WriteFile(filepath.Join(dir, "transcript.jsonl"), []byte(content), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	database, err := db.Open(filepath.Join(home, "trace.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer database.Close()
+
+	parent := db.Event{ID: "e", TS: "2026-06-05T19:00:00Z", TraceID: "trace-ag", SpanID: "s", SessionID: convID, ProjectID: "p", SourceTool: "antigravity"}
+	count, err := ingestAntigravityTranscript(database, parent)
+	if err != nil || count != 3 {
+		t.Fatalf("ingestAntigravityTranscript count=%d err=%v, want 3", count, err)
+	}
+	events, err := database.TraceEvents("trace-ag", 20)
+	if err != nil {
+		t.Fatal(err)
+	}
+	types := map[string]int{}
+	for _, e := range events {
+		types[e.EventType]++
+	}
+	if types["TranscriptPrompt"] != 1 || types["TranscriptToolCall"] != 1 || types["TranscriptToolResult"] != 1 {
+		t.Fatalf("event types = %v, want one prompt + one tool call + one tool result", types)
+	}
+}
+
 func TestIngestOpencodeDBImportsTurns(t *testing.T) {
 	dir := t.TempDir()
 	opencodePath := filepath.Join(dir, "opencode.db")

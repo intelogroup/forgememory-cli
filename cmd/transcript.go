@@ -34,6 +34,8 @@ func ingestSessionTranscript(database *db.DB, event *db.Event) (int, error) {
 	switch event.SourceTool {
 	case "opencode":
 		return ingestOpencodeTranscript(database, *event)
+	case "antigravity", "gemini":
+		return ingestAntigravityTranscript(database, *event)
 	default:
 		parent := *event
 		parent.TranscriptPath = resolveTranscriptPath(&parent)
@@ -113,6 +115,17 @@ func insertTranscriptTurn(database *db.DB, parent db.Event, previousSpan *string
 			status = "error"
 		}
 	}
+	toolName := stringValue(raw["tool_name"])
+	if toolName == "" {
+		if payload, ok := raw["payload"].(map[string]any); ok {
+			toolName = firstStringValue(payload, "name", "tool_name")
+			if toolName == "" {
+				if fn, ok := payload["function"].(map[string]any); ok {
+					toolName = stringValue(fn["name"])
+				}
+			}
+		}
+	}
 	event := &db.Event{
 		ID:             spanID,
 		TS:             ts,
@@ -132,7 +145,7 @@ func insertTranscriptTurn(database *db.DB, parent db.Event, previousSpan *string
 		ProjectID:      parent.ProjectID,
 		SourceTool:     parent.SourceTool,
 		EventType:      kind,
-		ToolName:       stringValue(raw["tool_name"]),
+		ToolName:       toolName,
 		Payload:        line,
 	}
 	if err := database.InsertEvent(event); err != nil {
@@ -151,22 +164,25 @@ func transcriptEventType(raw map[string]any) string {
 	if role == "" {
 		role = strings.ToLower(stringValue(raw["role"]))
 	}
+	innerType := ""
 	if payload, ok := raw["payload"].(map[string]any); ok {
 		if role == "" {
 			role = strings.ToLower(stringValue(payload["role"]))
 		}
-		if typeName == "" {
-			typeName = strings.ToLower(stringValue(payload["type"]))
-		}
+		innerType = strings.ToLower(stringValue(payload["type"]))
+	}
+	// Codex wraps items in response_item with the meaningful type in payload.
+	if typeName == "response_item" && innerType != "" {
+		typeName = innerType
 	}
 	switch {
 	case role == "assistant" || typeName == "assistant":
 		return "ModelTurn"
 	case role == "user" || typeName == "user":
 		return "TranscriptPrompt"
-	case typeName == "tool_use" || typeName == "tool_call":
+	case typeName == "tool_use" || typeName == "tool_call" || typeName == "custom_tool_call" || typeName == "function_call":
 		return "TranscriptToolCall"
-	case typeName == "tool_result" || typeName == "tool_response":
+	case typeName == "tool_result" || typeName == "tool_response" || typeName == "custom_tool_call_output" || typeName == "function_call_output":
 		return "TranscriptToolResult"
 	default:
 		return ""
@@ -417,4 +433,143 @@ func msToRFC3339(ms int64) string {
 		return ""
 	}
 	return time.UnixMilli(ms).UTC().Format(time.RFC3339)
+}
+
+// findAntigravityTranscript resolves the transcript JSONL written by the
+// Antigravity (Gemini CLI) runtime: brain/<conversationID>/.system_generated/logs/transcript.jsonl.
+func findAntigravityTranscript(sessionID string) string {
+	if sessionID == "" || sessionID == "unknown" {
+		return ""
+	}
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return ""
+	}
+	return filepath.Join(home, ".gemini", "antigravity", "brain", sessionID, ".system_generated", "logs", "transcript.jsonl")
+}
+
+// ingestAntigravityTranscript imports Antigravity's transcript.jsonl turns as
+// child span events. Its lines carry source/type instead of role/type, so each
+// line is normalized through antigravityLines before the shared insert path.
+func ingestAntigravityTranscript(database *db.DB, parent db.Event) (int, error) {
+	if parent.SessionID == "" || parent.SessionID == "unknown" {
+		return 0, nil
+	}
+	path := findAntigravityTranscript(parent.SessionID)
+	if path == "" {
+		return 0, nil
+	}
+	if _, err := os.Stat(path); err != nil {
+		return 0, nil
+	}
+
+	file, err := os.Open(path)
+	if err != nil {
+		return 0, nil
+	}
+	defer file.Close()
+
+	scanner := bufio.NewScanner(file)
+	scanner.Buffer(make([]byte, 64*1024), transcriptMaxLineBytes)
+	count := 0
+	lineNumber := int64(0)
+	previousSpan := parent.SpanID
+	for scanner.Scan() {
+		lineNumber++
+		line := strings.TrimSpace(scanner.Text())
+		if line == "" {
+			continue
+		}
+		var raw map[string]any
+		if json.Unmarshal([]byte(line), &raw) != nil {
+			continue
+		}
+		for _, turn := range antigravityLines(raw) {
+			inserted, err := insertTranscriptTurn(database, parent, &previousSpan, turn, lineNumber)
+			if err != nil {
+				return count, err
+			}
+			if inserted {
+				count++
+			}
+		}
+	}
+	return count, nil
+}
+
+// antigravityToolResultTypes is the set of Antigravity MODEL step types that
+// carry an executed-tool result in their content field.
+var antigravityToolResultTypes = map[string]bool{
+	"RUN_COMMAND":    true,
+	"VIEW_FILE":      true,
+	"SEARCH_WEB":     true,
+	"CODE_ACTION":    true,
+	"LIST_DIRECTORY": true,
+	"GREP_SEARCH":    true,
+	"READ_FILE":      true,
+	"WRITE_FILE":     true,
+	"EDIT_FILE":      true,
+	"SEARCH_CODE":    true,
+}
+
+// antigravityLines converts one Antigravity transcript line into zero or more
+// normalized JSONL turns. A PLANNER_RESPONSE line expands to one turn per
+// planned tool call; a tool-execution line becomes a single tool result.
+func antigravityLines(raw map[string]any) []string {
+	source := stringValue(raw["source"])
+	typeName := strings.ToUpper(stringValue(raw["type"]))
+	ts := stringValue(raw["created_at"])
+	status := strings.ToLower(stringValue(raw["status"]))
+
+	switch {
+	case source == "USER_EXPLICIT":
+		turn := map[string]any{
+			"type":      "user",
+			"role":      "user",
+			"timestamp": ts,
+			"message":   map[string]any{"role": "user", "content": stringValue(raw["content"])},
+		}
+		line, err := json.Marshal(turn)
+		if err != nil {
+			return nil
+		}
+		return []string{string(line)}
+
+	case source == "MODEL" && typeName == "PLANNER_RESPONSE":
+		calls, _ := raw["tool_calls"].([]any)
+		lines := make([]string, 0, len(calls))
+		for _, c := range calls {
+			cm, ok := c.(map[string]any)
+			if !ok {
+				continue
+			}
+			turn := map[string]any{
+				"type":      "tool_use",
+				"tool_name": stringValue(cm["name"]),
+				"timestamp": ts,
+				"payload":   map[string]any{"type": "tool_use", "input": cm["args"]},
+			}
+			line, err := json.Marshal(turn)
+			if err == nil {
+				lines = append(lines, string(line))
+			}
+		}
+		return lines
+
+	case source == "MODEL" && antigravityToolResultTypes[typeName] && stringValue(raw["content"]) != "":
+		turn := map[string]any{
+			"type":      "tool_result",
+			"tool_name": strings.ToLower(typeName),
+			"status":    status,
+			"is_error":  status != "" && status != "done",
+			"timestamp": ts,
+			"payload":   map[string]any{"type": "tool_result", "output": stringValue(raw["content"])},
+		}
+		line, err := json.Marshal(turn)
+		if err != nil {
+			return nil
+		}
+		return []string{string(line)}
+	}
+	return nil
 }
