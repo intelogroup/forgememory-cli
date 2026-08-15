@@ -42,7 +42,10 @@ func runSynthesizeSession(args []string) {
 		}
 	}
 
-	events, err := database.SessionEventsUpTo(*sessionID, *cutoffTS, 50)
+	// head+tail split (not a plain 50-event cap) so the terminal Stop/SessionEnd
+	// event — carrying the assistant's last_assistant_message — always survives
+	// truncation on long sessions instead of being silently dropped.
+	events, err := database.SessionEventsForCheckpoint(*sessionID, *cutoffTS, 20, 30)
 	if err != nil {
 		log.Printf("synthesize-session: failed to get session events: %v", err)
 		os.Exit(0)

@@ -310,6 +310,29 @@ func (d *DB) SessionEventsUpTo(sessionID, cutoffTS string, limit int) ([]Event, 
 	return events, rows.Err()
 }
 
+// SessionEventsForCheckpoint returns session events up to cutoffTS for
+// checkpoint synthesis, keeping headLimit events from the start of the
+// session (the initial request/investigation) plus tailLimit events from
+// the end (the outcome, and critically the terminal Stop/SessionEnd event
+// carrying last_assistant_message) when the session has more events than
+// fit in that combined budget. A plain LIMIT (as SessionEventsUpTo applies)
+// always keeps the oldest N events, which silently drops the terminal
+// boundary event — and the assistant's own final message with it — for any
+// session longer than the limit. Result stays in chronological order.
+func (d *DB) SessionEventsForCheckpoint(sessionID, cutoffTS string, headLimit, tailLimit int) ([]Event, error) {
+	all, err := d.SessionEventsUpTo(sessionID, cutoffTS, 0)
+	if err != nil {
+		return nil, err
+	}
+	if len(all) <= headLimit+tailLimit {
+		return all, nil
+	}
+	out := make([]Event, 0, headLimit+tailLimit)
+	out = append(out, all[:headLimit]...)
+	out = append(out, all[len(all)-tailLimit:]...)
+	return out, nil
+}
+
 // RecentEvents returns the most recent events.
 func (d *DB) RecentEvents(limit int) ([]Event, error) {
 	rows, err := d.conn.Query(
