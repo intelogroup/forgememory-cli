@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -123,6 +124,14 @@ func ProcessEvent(database *db.DB, event *db.Event) error {
 }
 
 func observeFailure(event *db.Event) *failureObservation {
+	exitCode, hasExitCode := extractExitCode(event.Payload)
+	if hasExitCode && exitCode == 0 {
+		// The tool itself reported success. Trust that over text matching —
+		// output can legitimately contain words like "error"/"failed" (log
+		// lines, retried-then-succeeded steps) without the command failing.
+		return nil
+	}
+
 	texts := extractStrings(event.Payload)
 	if len(texts) == 0 {
 		texts = []string{event.Payload}
@@ -150,7 +159,16 @@ func observeFailure(event *db.Event) *failureObservation {
 		break
 	}
 	if bestKind == "" {
-		return nil
+		if !hasExitCode {
+			return nil
+		}
+		// Non-zero exit code is authoritative failure evidence on its own,
+		// even when the output doesn't match a known error pattern (e.g. a
+		// custom script that fails silently). Fall back to the first
+		// candidate line so the failure still gets fingerprinted instead of
+		// being silently dropped.
+		bestKind = "tool_error"
+		bestLine = lines[0]
 	}
 
 	normalized := normalizeFailureLine(bestLine)
@@ -279,6 +297,50 @@ func extractCommandFamily(payload string) string {
 	}
 	cmd, _ := input["command"].(string)
 	return commandFamily(strings.TrimSpace(cmd))
+}
+
+// extractExitCode reads tool_response.exit_code from the raw payload. It
+// returns found=false when the payload has no exit_code field (e.g. non-shell
+// tools like Read/Edit/Write, or older hook payloads) so callers can fall
+// back to text-based heuristics.
+func extractExitCode(payload string) (code int, found bool) {
+	var obj map[string]any
+	if err := json.Unmarshal([]byte(payload), &obj); err != nil {
+		return 0, false
+	}
+	resp, ok := obj["tool_response"]
+	if !ok {
+		return 0, false
+	}
+	return nestedExitCode(resp)
+}
+
+func nestedExitCode(value any) (int, bool) {
+	switch node := value.(type) {
+	case map[string]any:
+		if raw, ok := node["exit_code"]; ok {
+			switch code := raw.(type) {
+			case float64:
+				return int(code), true
+			case string:
+				if n, err := strconv.Atoi(strings.TrimSpace(code)); err == nil {
+					return n, true
+				}
+			}
+		}
+		for _, child := range node {
+			if code, found := nestedExitCode(child); found {
+				return code, true
+			}
+		}
+	case []any:
+		for _, child := range node {
+			if code, found := nestedExitCode(child); found {
+				return code, true
+			}
+		}
+	}
+	return 0, false
 }
 
 func candidateLines(texts []string) []string {

@@ -379,6 +379,43 @@ func TestClassifyFailure_IgnoresSourceCodeDeclarations(t *testing.T) {
 	}
 }
 
+func TestObserveFailure_TrustsZeroExitCodeOverErrorLikeText(t *testing.T) {
+	// The command itself reported success (exit_code 0), even though its
+	// output happens to contain the word "error" (e.g. a log line about a
+	// retried-then-recovered step). Exit code should win over text matching.
+	event := &db.Event{
+		SessionID:  "sess-exit0",
+		ProjectID:  "api-service",
+		SourceTool: "codex",
+		ToolName:   "Bash",
+		Payload:    `{"tool_input":{"command":"npm install"},"tool_response":{"exit_code":0,"stdout":"retry 1 failed with error, retrying...\nadded 34 packages"}}`,
+	}
+	if obs := observeFailure(event); obs != nil {
+		t.Fatalf("expected exit_code:0 to suppress failure detection despite error-like text, got %+v", obs)
+	}
+}
+
+func TestObserveFailure_NonZeroExitCodeFlagsFailureWithoutKnownPattern(t *testing.T) {
+	// A custom script fails (non-zero exit) but its output doesn't match any
+	// of the known compiler/package-manager error patterns. The exit code
+	// alone should be enough evidence to flag it instead of silently
+	// dropping the failure.
+	event := &db.Event{
+		SessionID:  "sess-exit1",
+		ProjectID:  "api-service",
+		SourceTool: "codex",
+		ToolName:   "Bash",
+		Payload:    `{"tool_input":{"command":"./deploy.sh"},"tool_response":{"exit_code":1,"stdout":"deploy step 3 did not complete as expected"}}`,
+	}
+	obs := observeFailure(event)
+	if obs == nil {
+		t.Fatalf("expected non-zero exit code to be flagged as a failure even without a known error pattern")
+	}
+	if obs.ErrorKind != "tool_error" {
+		t.Fatalf("ErrorKind = %q, want tool_error", obs.ErrorKind)
+	}
+}
+
 func TestCommandFamily_IgnoresPathLikeText(t *testing.T) {
 	if got := commandFamily("/tmp/api-service"); got != "" {
 		t.Fatalf("commandFamily(path) = %q, want empty", got)
