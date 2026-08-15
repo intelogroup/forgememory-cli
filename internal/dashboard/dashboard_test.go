@@ -8,9 +8,35 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/forge/forge/internal/db"
 )
+
+func TestServer_BindsLoopbackOnly(t *testing.T) {
+	database, err := db.Open(filepath.Join(t.TempDir(), "test.db"))
+	if err != nil {
+		t.Fatalf("db.Open failed: %v", err)
+	}
+	defer database.Close()
+
+	s := New(database, 0)
+	go s.Start()
+	defer s.Stop()
+
+	var addr string
+	for i := 0; i < 100; i++ {
+		if s.server != nil {
+			addr = s.server.Addr
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+
+	if !strings.HasPrefix(addr, "127.0.0.1:") {
+		t.Fatalf("expected dashboard to bind loopback only, got Addr=%q", addr)
+	}
+}
 
 func TestHandleEvents_ShortEventID(t *testing.T) {
 	tmp := t.TempDir()

@@ -42,7 +42,7 @@ func (s *Server) Start() error {
 	mux.HandleFunc("/api/conflicts/resolve", s.handleResolveConflict)
 
 	s.server = &http.Server{
-		Addr:         fmt.Sprintf(":%d", s.port),
+		Addr:         fmt.Sprintf("127.0.0.1:%d", s.port),
 		Handler:      mux,
 		ReadTimeout:  10 * time.Second,
 		WriteTimeout: 10 * time.Second,
