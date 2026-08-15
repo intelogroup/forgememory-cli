@@ -28,7 +28,7 @@ jobs:
         # t.Cleanup on a goroutine that's blocked (not merely slow), so a
         # spawned daemon process can outlive it — the job-level timeout is
         # what actually reclaims the runner in that case.
-        run: go test ./... -v -count=1 -timeout 300s
+        run: go test ./... -v -count=1 -p 1 -parallel 1 -timeout 300s
 
       - name: Coverage gate (internal/service >= 65%)
         run: |
