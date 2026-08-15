@@ -263,23 +263,32 @@ func handleEventMsg(raw map[string]json.RawMessage, database *db.DB) {
 	}
 
 	event := &db.Event{
-		ID:         extract("id"),
-		TS:         extract("ts"),
-		SessionID:  extract("session_id"),
-		ProjectID:  extract("project_id"),
-		SourceTool: extract("source_tool"),
-		EventType:  extract("event_type"),
-		ToolName:   extract("tool_name"),
-		Payload:    extract("payload"),
-	}
-	projectRoot := extract("project_root")
-	context := evidenceContext{
+		ID:             extract("id"),
+		TS:             extract("ts"),
 		TraceID:        extract("trace_id"),
+		SpanID:         extract("span_id"),
+		Model:          extract("model"),
 		TaskID:         extract("task_id"),
 		CWD:            extract("cwd"),
 		GitBranch:      extract("git_branch"),
 		GitCommit:      extract("git_commit"),
+		Files:          extract("files"),
 		TranscriptPath: extract("transcript_path"),
+		SessionID:      extract("session_id"),
+		ProjectID:      extract("project_id"),
+		SourceTool:     extract("source_tool"),
+		EventType:      extract("event_type"),
+		ToolName:       extract("tool_name"),
+		Payload:        extract("payload"),
+	}
+	projectRoot := extract("project_root")
+	context := evidenceContext{
+		TraceID:        event.TraceID,
+		TaskID:         event.TaskID,
+		CWD:            event.CWD,
+		GitBranch:      event.GitBranch,
+		GitCommit:      event.GitCommit,
+		TranscriptPath: event.TranscriptPath,
 		ProjectRoot:    projectRoot,
 	}
 
@@ -302,6 +311,13 @@ func handleEventMsg(raw map[string]json.RawMessage, database *db.DB) {
 	}
 	if err := detect.ProcessEvent(database, event); err != nil {
 		log.Printf("Failure detection error: %v", err)
+	}
+	if isSessionEndEvent(event.EventType) {
+		if n, err := ingestSessionTranscript(database, event); err != nil {
+			log.Printf("Transcript ingestion error: %v", err)
+		} else if n > 0 {
+			log.Printf("Ingested %d transcript turns for session %s", n, event.SessionID)
+		}
 	}
 }
 
