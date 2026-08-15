@@ -152,11 +152,21 @@ func TestInstallLaunchdWritesPlist(t *testing.T) {
 		"com.forge.daemon",
 		"<string>/usr/local/bin/forge</string>",
 		"<string>daemon</string>",
+		"<key>SuccessfulExit</key>",
 		filepath.ToSlash(filepath.Join(home, ".forge", "logs", "forge.log")),
 	} {
 		if !strings.Contains(strings.ReplaceAll(content, "\\", "/"), strings.ReplaceAll(want, "\\", "/")) {
 			t.Fatalf("plist missing %q\ncontent:\n%s", want, content)
 		}
+	}
+	// KeepAlive must be scoped to crash-only respawn (issue #51): a bare
+	// <key>KeepAlive</key><true/> makes launchd relaunch the daemon on ANY
+	// exit, including the clean SIGTERM `forge stop` sends — so `forge stop`
+	// silently loses the race against launchd and the "stopped" daemon comes
+	// right back. SuccessfulExit=false keeps launchd's crash-recovery but lets
+	// a deliberate stop actually stop it.
+	if strings.Contains(content, "<key>KeepAlive</key>\n    <true/>") {
+		t.Fatalf("plist must not use unconditional KeepAlive=true (defeats `forge stop` under launchd)\ncontent:\n%s", content)
 	}
 }
 
