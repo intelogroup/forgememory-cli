@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/forge/forge/internal/agent"
 	"github.com/forge/forge/internal/db"
@@ -159,6 +160,13 @@ func runDoctor(args []string) {
 		fmt.Println("  [FAIL] LLM Provider: no provider configured (run 'forge config' first)")
 	} else {
 		fmt.Printf("  [OK] LLM Provider: %s (model: %s)\n", cfg.Provider, cfg.Model)
+		// Doctor is a diagnostic command and must never inherit an unbounded
+		// distillation retry budget. A stopped local provider or offline host
+		// should produce a useful failure quickly, not hold the CLI/test runner
+		// for minutes while retry backoff sleeps.
+		cfg.Timeout = 5 * time.Second
+		cfg.OllamaTimeout = 5 * time.Second
+		cfg.Retries = 0
 		d := distill.New(nil, cfg)
 		fmt.Print("    Testing connection (sending test token)... ")
 		response, err := d.CallLLM("respond with only the word OK")
