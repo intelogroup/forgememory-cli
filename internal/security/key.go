@@ -77,6 +77,15 @@ const (
 // Secret Service, etc.) it falls back to a chmod-600 file under ~/.forge
 // and reports that fallback via usedFallback so callers can warn the user.
 func GetOrCreateKey() (key []byte, usedFallback bool, err error) {
+	// Integration tests spawn real forge subprocesses. They pass a unique
+	// keyring identity so those processes cannot touch a developer's real
+	// keychain entry. In headless Linux CI, probing Secret Service can still
+	// block inside the D-Bus client even though the caller has a timeout. Test
+	// subprocesses therefore use the already-isolated file fallback directly;
+	// production callers never set this variable.
+	if os.Getenv(forgeTestKeyringIDEnv) != "" {
+		goto fallback
+	}
 	if !keychainRecentlyUnavailable() {
 		// Hook/daemon processes can start together. Only one process may probe
 		// the keychain; peers use the fallback while that probe is in flight.

@@ -118,6 +118,27 @@ func TestKeyringIdentityEnvOverride_EmptyLeavesIdentityUnchanged(t *testing.T) {
 	}
 }
 
+func TestGetOrCreateKey_TestSubprocessUsesFileFallback(t *testing.T) {
+	useIsolatedKeyForTests(t)
+	t.Setenv(forgeTestKeyringIDEnv, "isolated-subprocess")
+
+	origGet, origSet := keyringGet, keyringSet
+	defer func() { keyringGet, keyringSet = origGet, origSet }()
+	keyringGet = func(string, string) (string, error) {
+		t.Fatal("test subprocess key identity must not probe the OS keychain")
+		return "", nil
+	}
+	keyringSet = func(string, string, string) error {
+		t.Fatal("test subprocess key identity must not write the OS keychain")
+		return nil
+	}
+
+	key, usedFallback, err := GetOrCreateKey()
+	if err != nil || !usedFallback || len(key) != 32 {
+		t.Fatalf("GetOrCreateKey = (%d bytes, fallback=%v, err=%v), want isolated file fallback", len(key), usedFallback, err)
+	}
+}
+
 func TestSignVerifyRoundTrip(t *testing.T) {
 	key := []byte("test-key-not-random-32-bytes!!!!")
 	sig := Sign(key, "title\x00narrative")
