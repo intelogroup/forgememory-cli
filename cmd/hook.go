@@ -28,14 +28,22 @@ type HookMessage struct {
 	ID             string `json:"id"`
 	TS             string `json:"ts"`
 	TraceID        string `json:"trace_id,omitempty"`
+	SpanID         string `json:"span_id,omitempty"`
+	ParentSpanID   string `json:"parent_span_id,omitempty"`
+	Sequence       int64  `json:"sequence,omitempty"`
+	DurationMS     int64  `json:"duration_ms,omitempty"`
+	Status         string `json:"status,omitempty"`
+	ExitCode       int    `json:"exit_code,omitempty"`
+	Model          string `json:"model,omitempty"`
 	TaskID         string `json:"task_id,omitempty"`
-	SessionID      string `json:"session_id"`
-	ProjectID      string `json:"project_id"`
-	ProjectRoot    string `json:"project_root,omitempty"`
 	CWD            string `json:"cwd,omitempty"`
 	GitBranch      string `json:"git_branch,omitempty"`
 	GitCommit      string `json:"git_commit,omitempty"`
+	Files          string `json:"files,omitempty"`
 	TranscriptPath string `json:"transcript_path,omitempty"`
+	SessionID      string `json:"session_id"`
+	ProjectID      string `json:"project_id"`
+	ProjectRoot    string `json:"project_root,omitempty"`
 	SourceTool     string `json:"source_tool"`
 	EventType      string `json:"event_type"`
 	ToolName       string `json:"tool_name,omitempty"`
@@ -53,6 +61,13 @@ type ClaudeHookInput struct {
 	ToolName       string `json:"tool_name"`
 	ToolInput      any    `json:"tool_input"`
 	ToolResponse   any    `json:"tool_response,omitempty"`
+	Sequence       int64  `json:"sequence,omitempty"`
+	DurationMS     int64  `json:"duration_ms,omitempty"`
+	Status         string `json:"status,omitempty"`
+	ExitCode       int    `json:"exit_code,omitempty"`
+	Model          string `json:"model,omitempty"`
+	ParentSpanID   string `json:"parent_span_id,omitempty"`
+	exitCodeSet    bool
 }
 
 func (c *ClaudeHookInput) UnmarshalJSON(data []byte) error {
@@ -83,13 +98,169 @@ func (c *ClaudeHookInput) UnmarshalJSON(data []byte) error {
 	}
 	c.ToolInput = raw["tool_input"]
 	c.ToolResponse = raw["tool_response"]
+	c.Sequence = int64Value(raw["sequence"])
+	if c.Sequence == 0 {
+		c.Sequence = int64Value(raw["event_sequence"])
+	}
+	c.DurationMS = int64Value(raw["duration_ms"])
+	if c.DurationMS == 0 {
+		c.DurationMS = int64Value(raw["elapsed_ms"])
+	}
+	c.Status = stringValue(raw["status"])
+	if _, ok := raw["exit_code"]; ok {
+		c.ExitCode = int(int64Value(raw["exit_code"]))
+		c.exitCodeSet = true
+	}
+	c.Model = firstStringValue(raw, "model", "model_name")
+	c.ParentSpanID = firstStringValue(raw, "parent_span_id", "parent_span")
 	return nil
+}
+
+func stringValue(value any) string {
+	s, _ := value.(string)
+	return s
+}
+
+func firstStringValue(values map[string]any, keys ...string) string {
+	for _, key := range keys {
+		if value := stringValue(values[key]); value != "" {
+			return value
+		}
+	}
+	return ""
+}
+
+func int64Value(value any) int64 {
+	switch n := value.(type) {
+	case float64:
+		return int64(n)
+	case float32:
+		return int64(n)
+	case int:
+		return int64(n)
+	case int64:
+		return n
+	case json.Number:
+		parsed, _ := n.Int64()
+		return parsed
+	case string:
+		parsed, _ := strconv.ParseInt(strings.TrimSpace(n), 10, 64)
+		return parsed
+	default:
+		return 0
+	}
+}
+
+func hookEventMetadata(input ClaudeHookInput) (status string, exitCode int, durationMS, sequence int64, model, parentSpanID string) {
+	exitCode = -1
+	hadExitCode := input.exitCodeSet
+	if input.exitCodeSet {
+		exitCode = input.ExitCode
+	}
+	durationMS = input.DurationMS
+	sequence = input.Sequence
+	model = input.Model
+	parentSpanID = input.ParentSpanID
+	status = input.Status
+	if response, ok := input.ToolResponse.(map[string]any); ok {
+		if durationMS == 0 {
+			durationMS = int64Value(response["duration_ms"])
+		}
+		if !input.exitCodeSet {
+			exitCode = int(int64Value(response["exit_code"]))
+			if _, ok := response["exit_code"]; ok {
+				input.exitCodeSet = true
+				hadExitCode = true
+			}
+		}
+		if status == "" {
+			status = stringValue(response["status"])
+			if status == "" {
+				if failed, ok := response["is_error"].(bool); ok && failed {
+					status = "error"
+				}
+			}
+		}
+	}
+	if status == "" && hadExitCode {
+		if exitCode > 0 {
+			status = "error"
+		} else {
+			status = "success"
+		}
+	}
+	return
+}
+
+func extractFilePaths(payload string) string {
+	var root any
+	if json.Unmarshal([]byte(payload), &root) != nil {
+		return "[]"
+	}
+	seen := map[string]bool{}
+	var walk func(any)
+	walk = func(value any) {
+		switch node := value.(type) {
+		case map[string]any:
+			for key, child := range node {
+				if key == "file_path" || key == "filePath" || key == "path" {
+					if path, ok := child.(string); ok && path != "" {
+						seen[path] = true
+					}
+				}
+				walk(child)
+			}
+		case []any:
+			for _, child := range node {
+				walk(child)
+			}
+		}
+	}
+	walk(root)
+	paths := make([]string, 0, len(seen))
+	for path := range seen {
+		paths = append(paths, path)
+	}
+	sort.Strings(paths)
+	encoded, err := json.Marshal(paths)
+	if err != nil {
+		return "[]"
+	}
+	return string(encoded)
 }
 
 // writeTool is the set of tools whose events are worth capturing.
 var writeTool = map[string]bool{
 	"Edit": true, "Write": true, "Bash": true,
 	"NotebookEdit": true, "MultiEdit": true,
+}
+
+const (
+	observabilityMinimal  = "minimal"
+	observabilityStandard = "standard"
+	observabilityForensic = "forensic"
+)
+
+// observabilityMode controls how much agent activity hooks retain.
+// Minimal preserves Forge's historical low-noise behavior. Standard captures
+// every tool result. Forensic additionally retains build/CI payloads so failed
+// evaluations can be reconstructed from raw evidence.
+func observabilityMode() string {
+	switch strings.ToLower(strings.TrimSpace(os.Getenv("FORGE_OBSERVABILITY_MODE"))) {
+	case observabilityStandard:
+		return observabilityStandard
+	case observabilityForensic:
+		return observabilityForensic
+	default:
+		return observabilityMinimal
+	}
+}
+
+func shouldCapturePostToolUse(mode, toolName string) bool {
+	if mode == observabilityStandard || mode == observabilityForensic {
+		return true
+	}
+	return toolName == "" || isWriteTool(toolName)
 }
 
 // privatePattern matches <private>...</private> blocks (case-insensitive, dotall).
@@ -224,13 +395,16 @@ func runHook(args []string) {
 	// Read and strip private data from payload
 	payload := stripPrivate(string(readStdin()))
 
-	// Skip build/deploy noise — Docker logs, CI output pollutes memory.
-	if isNoisePayload(payload) {
+	mode := observabilityMode()
+	// Skip build/deploy noise in normal modes. Forensic mode keeps it so an
+	// evaluation can reconstruct failures that would otherwise be discarded.
+	if mode != observabilityForensic && isNoisePayload(payload) {
 		os.Exit(0)
 	}
 
 	// Parse hook input to extract session/tool metadata.
 	input, eventType := parseHookInput(payload, eventType)
+	status, exitCode, durationMS, sequence, model, parentSpanID := hookEventMetadata(input)
 
 	sessionID := input.SessionID
 	if sessionID == "" {
@@ -243,6 +417,7 @@ func runHook(args []string) {
 	}
 
 	projectID, projectRoot := resolveProjectRoot(input.CWD)
+	gitBranch, gitCommit := gitState(projectRoot)
 
 	// Session end: synthesize summary asynchronously then forward event.
 	if isSessionEndEvent(eventType) {
@@ -250,8 +425,9 @@ func runHook(args []string) {
 		// Fall through — still record the stop event
 	}
 
-	// For PostToolUse, only capture write-type tools
-	if eventType == "PostToolUse" && toolName != "" && !isWriteTool(toolName) {
+	// Minimal mode captures write-type tools; standard and forensic modes capture
+	// every PostToolUse event.
+	if eventType == "PostToolUse" && !shouldCapturePostToolUse(mode, toolName) {
 		os.Exit(0)
 	}
 
@@ -259,14 +435,22 @@ func runHook(args []string) {
 		Type:           "event",
 		ID:             uuid.New().String(),
 		TS:             time.Now().UTC().Format(time.RFC3339),
-		TraceID:        envOr("FORGE_TRACE_ID", sessionID),
-		TaskID:         envOr("FORGE_TASK_ID", ""),
+		TraceID:        sessionID,
+		SpanID:         uuid.New().String(),
+		ParentSpanID:   parentSpanID,
+		Sequence:       sequence,
+		DurationMS:     durationMS,
+		Status:         status,
+		ExitCode:       exitCode,
+		Model:          model,
+		TaskID:         os.Getenv("FORGE_TASK_ID"),
+		CWD:            input.CWD,
+		GitBranch:      gitBranch,
+		GitCommit:      gitCommit,
+		Files:          extractFilePaths(payload),
+		TranscriptPath: input.TranscriptPath,
 		ProjectID:      projectID,
 		ProjectRoot:    projectRoot,
-		CWD:            input.CWD,
-		GitBranch:      envOr("FORGE_GIT_BRANCH", ""),
-		GitCommit:      envOr("FORGE_GIT_COMMIT", ""),
-		TranscriptPath: input.TranscriptPath,
 		SourceTool:     sourceTool,
 		EventType:      eventType,
 		SessionID:      sessionID,
@@ -275,7 +459,12 @@ func runHook(args []string) {
 	}
 
 	if err := ipc.Send(msg); err != nil {
-		// Silent failure — daemon is down, hook exits in <1ms
+		// Preserve the event locally when the daemon is down. The hook still exits
+		// quickly; the daemon replays the outbox on its next startup.
+		if queueErr := ipc.Enqueue(msg); queueErr != nil {
+			// Keep the hook best-effort if the local filesystem is unavailable.
+			// The failure is intentionally silent to avoid disrupting the agent.
+		}
 		if eventType != "UserPromptSubmit" {
 			os.Exit(0)
 		}

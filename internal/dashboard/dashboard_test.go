@@ -74,6 +74,68 @@ func TestHandleEvents_ShortEventID(t *testing.T) {
 	}
 }
 
+func TestHandleTraces_ReturnsEventsTaskAndEvaluations(t *testing.T) {
+	database := openDashboardTestDB(t)
+	defer database.Close()
+
+	if err := database.UpsertEvaluationTask(&db.EvaluationTask{ID: "task-1", Name: "task", Prompt: "fix it"}); err != nil {
+		t.Fatalf("UpsertEvaluationTask: %v", err)
+	}
+	if err := database.InsertEvent(&db.Event{ID: "event-1", TraceID: "trace-1", TaskID: "task-1", SessionID: "s", ProjectID: "p", SourceTool: "codex", EventType: "PostToolUse", Payload: "{}"}); err != nil {
+		t.Fatalf("InsertEvent: %v", err)
+	}
+	if err := database.InsertTraceEvaluation(&db.TraceEvaluation{TraceID: "trace-1", TaskID: "task-1", Evaluator: "grader", TaskSuccess: true, Score: 1}); err != nil {
+		t.Fatalf("InsertTraceEvaluation: %v", err)
+	}
+
+	s := New(database, 0)
+	rr := httptest.NewRecorder()
+	s.handleTraces(rr, httptest.NewRequest(http.MethodGet, "/api/traces?trace_id=trace-1", nil))
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", rr.Code)
+	}
+	var out struct {
+		TraceID     string               `json:"trace_id"`
+		Task        *db.EvaluationTask   `json:"task"`
+		Events      []db.Event           `json:"events"`
+		Evaluations []db.TraceEvaluation `json:"evaluations"`
+	}
+	if err := json.Unmarshal(rr.Body.Bytes(), &out); err != nil {
+		t.Fatalf("invalid JSON response: %v", err)
+	}
+	if out.TraceID != "trace-1" || out.Task == nil || len(out.Events) != 1 || len(out.Evaluations) != 1 || !out.Evaluations[0].TaskSuccess {
+		t.Fatalf("unexpected trace response: %+v", out)
+	}
+}
+
+func TestHandleEvaluationTaskAndEvaluation_PostsResults(t *testing.T) {
+	database := openDashboardTestDB(t)
+	defer database.Close()
+	s := New(database, 0)
+
+	taskBody := `{"id":"task-api","prompt":"fix the bug","rubric_version":"r2"}`
+	taskResponse := httptest.NewRecorder()
+	s.handleEvaluationTask(taskResponse, httptest.NewRequest(http.MethodPost, "/api/tasks", strings.NewReader(taskBody)))
+	if taskResponse.Code != http.StatusCreated {
+		t.Fatalf("task status = %d, want 201", taskResponse.Code)
+	}
+
+	evalBody := `{"trace_id":"trace-api","task_id":"task-api","evaluator":"grader-v2","task_success":true,"score":0.9}`
+	evalResponse := httptest.NewRecorder()
+	s.handleEvaluation(evalResponse, httptest.NewRequest(http.MethodPost, "/api/evaluations", strings.NewReader(evalBody)))
+	if evalResponse.Code != http.StatusCreated {
+		t.Fatalf("evaluation status = %d, want 201", evalResponse.Code)
+	}
+	evaluations, err := database.TraceEvaluations("trace-api")
+	if err != nil || len(evaluations) != 1 || !evaluations[0].TaskSuccess {
+		t.Fatalf("stored evaluations = %#v, err=%v", evaluations, err)
+	}
+	reportResponse := httptest.NewRecorder()
+	s.handleEvaluationReport(reportResponse, httptest.NewRequest(http.MethodGet, "/api/evaluations/report?task_id=task-api", nil))
+	if reportResponse.Code != http.StatusOK || !strings.Contains(reportResponse.Body.String(), `"runs":1`) {
+		t.Fatalf("report response status=%d body=%s", reportResponse.Code, reportResponse.Body.String())
+	}
+}
 func TestHandleArtifacts_UploadListAndDownload(t *testing.T) {
 	database := openDashboardTestDB(t)
 	defer database.Close()

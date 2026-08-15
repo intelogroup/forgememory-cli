@@ -31,12 +31,23 @@ func TestInsertEvent(t *testing.T) {
 	defer db.Close()
 
 	event := &Event{
-		SessionID:  "test-session",
-		ProjectID:  "test-project",
-		SourceTool: "claude",
-		EventType:  "PostToolUse",
-		ToolName:   "Bash",
-		Payload:    `{"command":"echo hello"}`,
+		SessionID:      "test-session",
+		ProjectID:      "test-project",
+		SourceTool:     "claude",
+		EventType:      "PostToolUse",
+		ToolName:       "Bash",
+		Payload:        `{"command":"echo hello"}`,
+		Sequence:       7,
+		DurationMS:     842,
+		Status:         "error",
+		ExitCode:       2,
+		Model:          "test-model",
+		TaskID:         "eval-task-1",
+		CWD:            "/tmp/project",
+		GitBranch:      "main",
+		GitCommit:      "abc123",
+		Files:          `["main.go"]`,
+		TranscriptPath: "/tmp/transcript.jsonl",
 	}
 
 	if err := db.InsertEvent(event); err != nil {
@@ -45,6 +56,22 @@ func TestInsertEvent(t *testing.T) {
 
 	if event.ID == "" {
 		t.Error("InsertEvent should set ID")
+	}
+	if event.TraceID != event.SessionID {
+		t.Errorf("TraceID = %q, want session ID %q", event.TraceID, event.SessionID)
+	}
+	if event.SpanID != event.ID {
+		t.Errorf("SpanID = %q, want event ID %q", event.SpanID, event.ID)
+	}
+	loaded, err := db.RecentEvents(1)
+	if err != nil {
+		t.Fatalf("RecentEvents failed: %v", err)
+	}
+	if len(loaded) != 1 || loaded[0].TraceID != event.TraceID || loaded[0].SpanID != event.SpanID {
+		t.Fatalf("loaded trace identity = %#v, want trace=%q span=%q", loaded, event.TraceID, event.SpanID)
+	}
+	if loaded[0].Sequence != event.Sequence || loaded[0].DurationMS != event.DurationMS || loaded[0].Status != event.Status || loaded[0].ExitCode != event.ExitCode || loaded[0].Model != event.Model || loaded[0].TaskID != event.TaskID || loaded[0].CWD != event.CWD || loaded[0].GitBranch != event.GitBranch || loaded[0].GitCommit != event.GitCommit || loaded[0].Files != event.Files || loaded[0].TranscriptPath != event.TranscriptPath {
+		t.Fatalf("loaded outcome metadata = %#v, want sequence=%d duration=%d status=%q exit=%d model=%q task=%q cwd=%q branch=%q commit=%q files=%q transcript=%q", loaded[0], event.Sequence, event.DurationMS, event.Status, event.ExitCode, event.Model, event.TaskID, event.CWD, event.GitBranch, event.GitCommit, event.Files, event.TranscriptPath)
 	}
 
 	total, undistilled, err := db.EventCount()

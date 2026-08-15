@@ -38,3 +38,21 @@ func resolveProjectRoot(cwd string) (id, gitRoot string) {
 	}
 	return filepath.Base(cwd), cwd
 }
+
+func gitState(gitRoot string) (branch, commit string) {
+	if gitRoot == "" {
+		return "", ""
+	}
+	out, err := exec.Command("git", "-C", gitRoot, "rev-parse", "--abbrev-ref", "HEAD", "HEAD").Output()
+	if err != nil {
+		return "", ""
+	}
+	lines := strings.Split(strings.TrimSpace(string(out)), "\n")
+	if len(lines) > 0 {
+		branch = strings.TrimSpace(lines[0])
+	}
+	if len(lines) > 1 {
+		commit = strings.TrimSpace(lines[1])
+	}
+	return branch, commit
+}

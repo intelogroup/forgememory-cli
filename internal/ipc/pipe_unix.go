@@ -34,7 +34,24 @@ func Send(msg any) error {
 	}
 	defer conn.Close()
 	conn.SetDeadline(time.Now().Add(50 * time.Millisecond))
-	return json.NewEncoder(conn).Encode(msg)
+	if err := json.NewEncoder(conn).Encode(msg); err != nil {
+		return err
+	}
+	return awaitAck(conn)
+}
+
+// SendRaw sends an already encoded JSON message to the daemon.
+func SendRaw(payload []byte) error {
+	conn, err := net.DialTimeout("unix", socketPath(), 50*time.Millisecond)
+	if err != nil {
+		return err
+	}
+	defer conn.Close()
+	conn.SetDeadline(time.Now().Add(50 * time.Millisecond))
+	if _, err = conn.Write(append(payload, '\n')); err != nil {
+		return err
+	}
+	return awaitAck(conn)
 }
 
 // IsDaemonAlive checks if the daemon is currently responding to Unix socket connection.

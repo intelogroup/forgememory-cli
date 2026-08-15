@@ -98,7 +98,7 @@ func defaultPath() string {
 // schemaVersion is stamped into SQLite's user_version pragma once migrate()
 // has applied the current schema. Bump it whenever migrate()'s statements
 // change.
-const schemaVersion = 2
+const schemaVersion = 7
 
 // migrate applies the full schema, but only once: it runs on every Open(),
 // including every short-lived CLI subprocess invocation and any test that
@@ -129,6 +129,20 @@ func (d *DB) migrate() error {
 		`CREATE TABLE IF NOT EXISTS events (
 			id          TEXT PRIMARY KEY,
 			ts          TEXT NOT NULL,
+			trace_id    TEXT NOT NULL DEFAULT '',
+			span_id     TEXT NOT NULL DEFAULT '',
+			parent_span_id TEXT NOT NULL DEFAULT '',
+			sequence    INTEGER NOT NULL DEFAULT 0,
+			duration_ms INTEGER NOT NULL DEFAULT 0,
+			status      TEXT NOT NULL DEFAULT '',
+			exit_code   INTEGER NOT NULL DEFAULT -1,
+			model       TEXT NOT NULL DEFAULT '',
+			task_id     TEXT NOT NULL DEFAULT '',
+			cwd         TEXT NOT NULL DEFAULT '',
+			git_branch  TEXT NOT NULL DEFAULT '',
+			git_commit  TEXT NOT NULL DEFAULT '',
+			files       TEXT NOT NULL DEFAULT '[]',
+			transcript_path TEXT NOT NULL DEFAULT '',
 			session_id  TEXT NOT NULL,
 			project_id  TEXT NOT NULL,
 			source_tool TEXT NOT NULL,
@@ -283,6 +297,20 @@ func (d *DB) migrate() error {
 		{"session_summaries", "checkpoint_key", "TEXT DEFAULT ''"},
 		{"session_summaries", "keywords", "TEXT DEFAULT ''"},
 		{"events", "git_root", "TEXT DEFAULT ''"},
+		{"events", "trace_id", "TEXT NOT NULL DEFAULT ''"},
+		{"events", "span_id", "TEXT NOT NULL DEFAULT ''"},
+		{"events", "parent_span_id", "TEXT NOT NULL DEFAULT ''"},
+		{"events", "sequence", "INTEGER NOT NULL DEFAULT 0"},
+		{"events", "duration_ms", "INTEGER NOT NULL DEFAULT 0"},
+		{"events", "status", "TEXT NOT NULL DEFAULT ''"},
+		{"events", "exit_code", "INTEGER NOT NULL DEFAULT -1"},
+		{"events", "model", "TEXT NOT NULL DEFAULT ''"},
+		{"events", "task_id", "TEXT NOT NULL DEFAULT ''"},
+		{"events", "cwd", "TEXT NOT NULL DEFAULT ''"},
+		{"events", "git_branch", "TEXT NOT NULL DEFAULT ''"},
+		{"events", "git_commit", "TEXT NOT NULL DEFAULT ''"},
+		{"events", "files", "TEXT NOT NULL DEFAULT '[]'"},
+		{"events", "transcript_path", "TEXT NOT NULL DEFAULT ''"},
 		{"failure_signatures", "command_family", "TEXT DEFAULT ''"},
 		{"external_context_summaries", "summary_kind", "TEXT DEFAULT ''"},
 		{"external_context_summaries", "hint", "TEXT DEFAULT ''"},
@@ -295,6 +323,34 @@ func (d *DB) migrate() error {
 		{"principles", "signature", "TEXT DEFAULT ''"},
 	}
 	extraMigrations := []string{
+		`CREATE TABLE IF NOT EXISTS evaluation_tasks (
+			id              TEXT PRIMARY KEY,
+			created_at      TEXT NOT NULL,
+			project_id      TEXT NOT NULL DEFAULT '',
+			name            TEXT NOT NULL DEFAULT '',
+			prompt          TEXT NOT NULL DEFAULT '',
+			baseline_commit TEXT NOT NULL DEFAULT '',
+			expected_tests  TEXT NOT NULL DEFAULT '',
+			rubric_version  TEXT NOT NULL DEFAULT '1',
+			metadata        TEXT NOT NULL DEFAULT '{}'
+		)`,
+		`CREATE INDEX IF NOT EXISTS idx_evaluation_tasks_project ON evaluation_tasks(project_id, created_at DESC)`,
+		`CREATE TABLE IF NOT EXISTS trace_evaluations (
+			id               TEXT PRIMARY KEY,
+			created_at       TEXT NOT NULL,
+			trace_id         TEXT NOT NULL,
+			task_id          TEXT NOT NULL DEFAULT '',
+			evaluator        TEXT NOT NULL,
+			rubric_version   TEXT NOT NULL DEFAULT '1',
+			task_success     INTEGER NOT NULL DEFAULT 0,
+			score            REAL NOT NULL DEFAULT 0,
+			failure_category TEXT NOT NULL DEFAULT '',
+			rationale        TEXT NOT NULL DEFAULT '',
+			evidence_spans  TEXT NOT NULL DEFAULT '[]',
+			UNIQUE(trace_id, evaluator, rubric_version)
+		)`,
+		`CREATE INDEX IF NOT EXISTS idx_trace_evaluations_trace ON trace_evaluations(trace_id, created_at DESC)`,
+		`CREATE INDEX IF NOT EXISTS idx_trace_evaluations_task ON trace_evaluations(task_id, created_at DESC)`,
 		`CREATE TABLE IF NOT EXISTS evaluation_artifacts (
 			id          TEXT PRIMARY KEY,
 			created_at  TEXT NOT NULL,
@@ -483,6 +539,9 @@ func (d *DB) migrate() error {
 	if _, err := tx.Exec(
 		`CREATE INDEX IF NOT EXISTS idx_principles_status ON principles(project_id, status)`,
 	); err != nil {
+		return fmt.Errorf("exec migration: %w", err)
+	}
+	if _, err := tx.Exec(`CREATE INDEX IF NOT EXISTS idx_events_trace ON events(trace_id, ts)`); err != nil {
 		return fmt.Errorf("exec migration: %w", err)
 	}
 	if _, err := tx.Exec(`INSERT OR IGNORE INTO distillation_health(id) VALUES ('singleton')`); err != nil {
