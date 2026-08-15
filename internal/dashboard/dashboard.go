@@ -247,7 +247,6 @@ func (s *Server) handleTraces(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(response)
 }
-
 func (s *Server) Stop() error {
 	if s.server != nil {
 		return s.server.Close()

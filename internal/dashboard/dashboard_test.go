@@ -110,7 +110,6 @@ func TestHandleEvaluationTaskAndEvaluation_PostsResults(t *testing.T) {
 		t.Fatalf("report response status=%d body=%s", reportResponse.Code, reportResponse.Body.String())
 	}
 }
-
 func TestHandleArtifacts_UploadListAndDownload(t *testing.T) {
 	database := openDashboardTestDB(t)
 	defer database.Close()
@@ -136,7 +135,6 @@ func TestHandleArtifacts_UploadListAndDownload(t *testing.T) {
 		t.Fatalf("download status=%d body=%q", download.Code, download.Body.String())
 	}
 }
-
 func TestHandlePrinciples_ShortPrincipleID(t *testing.T) {
 	tmp := t.TempDir()
 	database, err := db.Open(filepath.Join(tmp, "test.db"))

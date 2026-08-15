@@ -1,14 +1,17 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"log"
 	"math"
 	"net"
 	"os"
+	"os/exec"
 	"os/signal"
 	"path/filepath"
 	"strconv"
@@ -17,6 +20,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/forge/forge/internal/artifacts"
 	"github.com/forge/forge/internal/coach"
 	"github.com/forge/forge/internal/config"
 	"github.com/forge/forge/internal/db"
@@ -111,11 +115,6 @@ func runDaemon(args []string) {
 
 	log.Printf("Forge daemon listening on %s (pid %d)", addr, os.Getpid())
 	log.Printf("Database: %s", database.Path)
-	if drained, err := ipc.DrainOutbox(ipc.SendRaw); err != nil {
-		log.Printf("Outbox replay stopped after %d message(s): %v", drained, err)
-	} else if drained > 0 {
-		log.Printf("Replayed %d queued event(s) from outbox", drained)
-	}
 
 	// Graceful shutdown
 	shutdown := make(chan os.Signal, 1)
@@ -227,7 +226,6 @@ func handleConn(conn net.Conn, database *db.DB) {
 	defer conn.Close()
 	conn.SetDeadline(time.Now().Add(5 * time.Second))
 	decoder := json.NewDecoder(conn)
-	encoder := json.NewEncoder(conn)
 
 	// Decode into a generic map first to inspect the type field.
 	var raw map[string]json.RawMessage
@@ -246,32 +244,14 @@ func handleConn(conn net.Conn, database *db.DB) {
 
 	switch msgType {
 	case "event":
-		err := handleEventMsg(raw, database)
-		writeAck(encoder, raw, err)
+		handleEventMsg(raw, database)
 	// "query" type reserved for future bidirectional IPC
 	default:
-		err := handleEventMsg(raw, database)
-		writeAck(encoder, raw, err)
+		handleEventMsg(raw, database)
 	}
 }
 
-func writeAck(encoder *json.Encoder, raw map[string]json.RawMessage, err error) {
-	status := "accepted"
-	response := map[string]any{"type": "ack", "status": status}
-	if err != nil {
-		response["status"] = "rejected"
-		response["error"] = err.Error()
-	}
-	if id, ok := raw["id"]; ok {
-		var eventID string
-		if json.Unmarshal(id, &eventID) == nil {
-			response["id"] = eventID
-		}
-	}
-	_ = encoder.Encode(response)
-}
-
-func handleEventMsg(raw map[string]json.RawMessage, database *db.DB) error {
+func handleEventMsg(raw map[string]json.RawMessage, database *db.DB) {
 	extract := func(key string) string {
 		v, ok := raw[key]
 		if !ok {
@@ -283,30 +263,25 @@ func handleEventMsg(raw map[string]json.RawMessage, database *db.DB) error {
 	}
 
 	event := &db.Event{
-		ID:             extract("id"),
-		TS:             extract("ts"),
+		ID:         extract("id"),
+		TS:         extract("ts"),
+		SessionID:  extract("session_id"),
+		ProjectID:  extract("project_id"),
+		SourceTool: extract("source_tool"),
+		EventType:  extract("event_type"),
+		ToolName:   extract("tool_name"),
+		Payload:    extract("payload"),
+	}
+	projectRoot := extract("project_root")
+	context := evidenceContext{
 		TraceID:        extract("trace_id"),
-		SpanID:         extract("span_id"),
-		ParentSpanID:   extract("parent_span_id"),
-		Sequence:       int64Value(extract("sequence")),
-		DurationMS:     int64Value(extract("duration_ms")),
-		Status:         extract("status"),
-		ExitCode:       int(int64Value(extract("exit_code"))),
-		Model:          extract("model"),
 		TaskID:         extract("task_id"),
 		CWD:            extract("cwd"),
 		GitBranch:      extract("git_branch"),
 		GitCommit:      extract("git_commit"),
-		Files:          extract("files"),
 		TranscriptPath: extract("transcript_path"),
-		SessionID:      extract("session_id"),
-		ProjectID:      extract("project_id"),
-		SourceTool:     extract("source_tool"),
-		EventType:      extract("event_type"),
-		ToolName:       extract("tool_name"),
-		Payload:        extract("payload"),
+		ProjectRoot:    projectRoot,
 	}
-	projectRoot := extract("project_root")
 
 	if event.SessionID == "" {
 		event.SessionID = "unknown"
@@ -314,14 +289,12 @@ func handleEventMsg(raw map[string]json.RawMessage, database *db.DB) error {
 	if event.ProjectID == "" {
 		event.ProjectID = "unknown"
 	}
-	if event.TranscriptPath == "" && event.SourceTool == "codex" && isSessionEndEvent(event.EventType) && observabilityMode() != observabilityMinimal {
-		event.TranscriptPath = findCodexTranscript(event.SessionID, event.TS)
-	}
 
 	if err := database.InsertEvent(event); err != nil {
 		log.Printf("Insert event error: %v", err)
-		return err
+		return
 	}
+	captureEvidenceArtifacts(database, event, context)
 	if projectRoot != "" {
 		if err := database.UpsertProject(event.ProjectID, projectRoot, event.ProjectID, event.SourceTool); err != nil {
 			log.Printf("Upsert project error: %v", err)
@@ -330,17 +303,141 @@ func handleEventMsg(raw map[string]json.RawMessage, database *db.DB) error {
 	if err := detect.ProcessEvent(database, event); err != nil {
 		log.Printf("Failure detection error: %v", err)
 	}
-	if observabilityMode() != observabilityMinimal && isSessionEndEvent(event.EventType) && event.TranscriptPath != "" {
-		go func(parent db.Event) {
-			count, err := ingestTranscript(database, parent)
-			if err != nil {
-				log.Printf("Transcript ingestion stopped after %d turn(s): %v", count, err)
-			} else if count > 0 {
-				log.Printf("Ingested %d transcript turn(s) for trace %s", count, parent.TraceID)
-			}
-		}(*event)
+}
+
+type evidenceContext struct {
+	TraceID        string
+	TaskID         string
+	CWD            string
+	GitBranch      string
+	GitCommit      string
+	TranscriptPath string
+	ProjectRoot    string
+}
+
+const maxEvidenceReadBytes = 32 << 20
+
+func captureEvidenceArtifacts(database *db.DB, event *db.Event, context evidenceContext) {
+	if database == nil || event == nil {
+		return
 	}
-	return nil
+	traceID := context.TraceID
+	if traceID == "" {
+		traceID = event.SessionID
+	}
+	if traceID == "" || traceID == "unknown" {
+		return
+	}
+	metadataBytes, _ := json.Marshal(map[string]string{
+		"event_id":        event.ID,
+		"session_id":      event.SessionID,
+		"project_id":      event.ProjectID,
+		"source_tool":     event.SourceTool,
+		"event_type":      event.EventType,
+		"tool_name":       event.ToolName,
+		"cwd":             context.CWD,
+		"git_branch":      context.GitBranch,
+		"git_commit":      context.GitCommit,
+		"transcript_path": context.TranscriptPath,
+		"project_root":    context.ProjectRoot,
+	})
+	metadata := string(metadataBytes)
+	store := artifacts.Store{DB: database, Root: filepath.Join(filepath.Dir(database.Path), "artifacts")}
+	put := func(kind, mediaType string, content []byte) {
+		if len(content) == 0 {
+			return
+		}
+		if _, err := store.Put(traceID, context.TaskID, kind, mediaType, content, metadata); err != nil {
+			log.Printf("evidence capture (%s): %v", kind, err)
+		}
+	}
+
+	if isSessionEndEvent(event.EventType) && context.TranscriptPath != "" {
+		if content, err := readEvidenceFile(context.TranscriptPath); err == nil {
+			put("transcript", "application/jsonl", content)
+		}
+	}
+	if event.ToolName == "Bash" {
+		kind := "command-log"
+		if isTestCommand(event.Payload) {
+			kind = "test-report"
+		}
+		put(kind, "application/json", []byte(event.Payload))
+	}
+	if isWriteTool(event.ToolName) && context.CWD != "" {
+		if diff := gitEvidenceDiff(context.CWD); len(diff) > 0 {
+			put("diff", "text/x-diff", diff)
+		}
+	}
+}
+
+func readEvidenceFile(path string) ([]byte, error) {
+	file, err := os.Open(path)
+	if err != nil {
+		return nil, err
+	}
+	defer file.Close()
+	content, err := io.ReadAll(io.LimitReader(file, maxEvidenceReadBytes+1))
+	if err != nil {
+		return nil, err
+	}
+	if len(content) > maxEvidenceReadBytes {
+		content = append(content[:maxEvidenceReadBytes], []byte("\n...[TRUNCATED]...")...)
+	}
+	return content, nil
+}
+
+func isTestCommand(payload string) bool {
+	var raw struct {
+		ToolInput struct {
+			Command string `json:"command"`
+		} `json:"tool_input"`
+	}
+	if json.Unmarshal([]byte(payload), &raw) == nil {
+		command := strings.ToLower(raw.ToolInput.Command)
+		for _, token := range []string{"go test", "cargo test", "npm test", "pnpm test", "yarn test", "pytest", "vitest", "jest"} {
+			if strings.Contains(command, token) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func gitEvidenceDiff(cwd string) []byte {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	output := &evidenceLimitWriter{limit: maxEvidenceReadBytes + 1}
+	command := exec.CommandContext(ctx, "git", "-C", cwd, "diff", "--binary", "--no-ext-diff", "HEAD", "--")
+	command.Stdout = output
+	if err := command.Run(); err != nil {
+		return nil
+	}
+	content := output.buf.Bytes()
+	if len(content) > maxEvidenceReadBytes {
+		content = append(content[:maxEvidenceReadBytes], []byte("\n...[TRUNCATED]...\n")...)
+	}
+	return content
+}
+
+type evidenceLimitWriter struct {
+	buf   bytes.Buffer
+	limit int
+}
+
+func (w *evidenceLimitWriter) Write(p []byte) (int, error) {
+	remaining := w.limit - w.buf.Len()
+	if remaining > 0 {
+		if len(p) > remaining {
+			_, _ = w.buf.Write(p[:remaining])
+		} else {
+			_, _ = w.buf.Write(p)
+		}
+	}
+	// Report the full input as consumed so the child process can never block
+	// once the retention limit is reached.
+	return len(p), nil
 }
 
 // distillBackoff returns the minimum interval that must elapse since the last
@@ -872,6 +969,16 @@ func statusOutput() {
 		fmt.Printf(" (%d consecutive failures)", report.Distillation.ConsecutiveFailures)
 	}
 	fmt.Println()
+	// A bare "failed (N consecutive failures)" line doesn't say why or what
+	// to do about it — surface the actual error (e.g. the wedged-behind-a-
+	// stale-lock message) directly instead of requiring `forge health` or
+	// `--detailed` to find it (issue #43).
+	if report.Distillation.LastErrorMessage != "" && report.Distillation.ConsecutiveFailures > 0 {
+		fmt.Printf("  -> %s\n", report.Distillation.LastErrorMessage)
+		if report.Events.Undistilled > 0 {
+			fmt.Printf("  -> %d events undistilled. Run 'forge doctor' to diagnose or 'forge doctor --repair' to fix.\n", report.Events.Undistilled)
+		}
+	}
 }
 
 func statusOutputJSON() {

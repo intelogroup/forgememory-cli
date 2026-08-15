@@ -32,6 +32,15 @@ FORGE="${FORGE:-./forge}"
 PASS=0; FAIL=0
 FAILED_TESTS=()
 
+# ── isolated scratch HOME ────────────────────────────────────────────────────
+# Never touch the real developer's ~/.forge: everything this script runs
+# against (daemon, DB, sockets) resolves relative to $HOME, so point HOME at a
+# throwaway directory instead of killing a real "forge daemon" process or
+# deleting a real forge.db (issue #43).
+SCRATCH_HOME="$(mktemp -d)"
+export HOME="$SCRATCH_HOME"
+trap 'rm -rf "$SCRATCH_HOME"' EXIT
+
 GREEN='\033[0;32m'; RED='\033[0;31m'; YELLOW='\033[1;33m'; CYAN='\033[0;36m'; NC='\033[0m'
 ok()   { echo -e "${GREEN}  ✓ $*${NC}"; PASS=$((PASS+1)); }
 fail() { echo -e "${RED}  ✗ $*${NC}"; FAIL=$((FAIL+1)); FAILED_TESTS+=("$*"); }
@@ -70,10 +79,7 @@ principles_count() { $FORGE status 2>/dev/null | grep "Principles:" | grep -oE '
 
 # ── clean slate ───────────────────────────────────────────────────────────────
 step 0 "Clean slate"
-$FORGE stop 2>/dev/null || true; sleep 1
-pkill -f "forge daemon" 2>/dev/null || true; sleep 0.5
-rm -f ~/.forge/forge.db ~/.forge/forge.db-wal ~/.forge/forge.db-shm \
-      ~/.forge/forge.sock ~/.forge/forge.addr ~/.forge/forge.pid
+ok "Using isolated HOME=$HOME"
 $FORGE init >/dev/null 2>&1
 $FORGE start; sleep 1.5
 OUT=$($FORGE doctor 2>&1)

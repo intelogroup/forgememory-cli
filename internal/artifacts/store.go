@@ -44,7 +44,7 @@ func (s Store) Put(traceID, taskID, kind, mediaType string, content []byte, meta
 	if !allowedKinds[kind] {
 		return db.EvaluationArtifact{}, fmt.Errorf("unsupported artifact kind %q", kind)
 	}
-	if strings.HasPrefix(strings.ToLower(mediaType), "text/") || mediaType == "application/json" || mediaType == "application/xml" {
+	if strings.HasPrefix(strings.ToLower(mediaType), "text/") || mediaType == "application/json" || mediaType == "application/jsonl" || mediaType == "application/xml" {
 		content = []byte(sanitize.ScrubSecrets(string(content)))
 	}
 	if metadata == "" {

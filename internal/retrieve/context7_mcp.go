@@ -19,11 +19,71 @@ import (
 	"github.com/forge/forge/internal/db"
 )
 
+const (
+	// maxMCPLineBytes bounds a single readMessage line (a raw JSON message or
+	// a header line). ReadString has no such cap: if the subprocess on the
+	// other end of the pipe never sends a newline — a stuck, confused, or
+	// runaway process — it grows without bound and can exhaust the runner's
+	// memory outright rather than merely hanging.
+	maxMCPLineBytes = 1 << 20 // 1MiB
+	// maxMCPBodyBytes bounds a Content-Length-framed message body. Without
+	// this, a malformed or hostile Content-Length header drives a single
+	// make([]byte, length) allocation of whatever size it names.
+	maxMCPBodyBytes = 8 << 20 // 8MiB
+	// maxMCPStderrBytes bounds retained stderr. It's only used for
+	// error-message context, so silently dropping excess beyond this is
+	// safe — the alternative (an unbounded bytes.Buffer as the exec.Cmd
+	// stderr writer) grows without limit if the subprocess produces
+	// runaway output.
+	maxMCPStderrBytes = 64 << 10 // 64KiB
+)
+
+// boundedBuffer caps how much of a Write stream it retains, discarding the
+// rest rather than growing unboundedly.
+type boundedBuffer struct {
+	buf   bytes.Buffer
+	limit int
+}
+
+func (b *boundedBuffer) Write(p []byte) (int, error) {
+	if remaining := b.limit - b.buf.Len(); remaining > 0 {
+		if len(p) > remaining {
+			b.buf.Write(p[:remaining])
+		} else {
+			b.buf.Write(p)
+		}
+	}
+	return len(p), nil
+}
+
+func (b *boundedBuffer) String() string { return b.buf.String() }
+
+// readBoundedLine reads up to '\n' like bufio.Reader.ReadString, but caps how
+// much it will buffer instead of growing without bound when no delimiter
+// ever appears.
+func readBoundedLine(r *bufio.Reader, max int) (string, error) {
+	var buf bytes.Buffer
+	for {
+		chunk, err := r.ReadSlice('\n')
+		buf.Write(chunk)
+		if buf.Len() > max {
+			return "", fmt.Errorf("mcp message line exceeds %d bytes without a newline", max)
+		}
+		if err == nil {
+			return buf.String(), nil
+		}
+		if err == bufio.ErrBufferFull {
+			continue
+		}
+		return buf.String(), err
+	}
+}
+
 type context7MCPClient struct {
 	cmd    *exec.Cmd
 	stdin  io.WriteCloser
 	stdout *bufio.Reader
-	stderr bytes.Buffer
+	stderr boundedBuffer
 	nextID int
 }
 
@@ -43,6 +103,7 @@ func newContext7MCPClient(ctx context.Context) (*context7MCPClient, error) {
 		cmd:    cmd,
 		stdin:  stdin,
 		stdout: bufio.NewReader(stdout),
+		stderr: boundedBuffer{limit: maxMCPStderrBytes},
 		nextID: 1,
 	}
 	cmd.Stderr = &client.stderr
@@ -174,7 +235,7 @@ func (c *context7MCPClient) write(payload map[string]any) error {
 
 func (c *context7MCPClient) readMessage() (map[string]any, error) {
 	for {
-		line, err := c.stdout.ReadString('\n')
+		line, err := readBoundedLine(c.stdout, maxMCPLineBytes)
 		if err != nil {
 			return nil, context7MCPErrorf(c, "read message", err)
 		}
@@ -194,7 +255,7 @@ func (c *context7MCPClient) readMessage() (map[string]any, error) {
 		parts := strings.SplitN(trimmed, ":", 2)
 		headers[strings.ToLower(strings.TrimSpace(parts[0]))] = strings.TrimSpace(parts[1])
 		for {
-			headerLine, err := c.stdout.ReadString('\n')
+			headerLine, err := readBoundedLine(c.stdout, maxMCPLineBytes)
 			if err != nil {
 				return nil, context7MCPErrorf(c, "read header", err)
 			}
@@ -216,6 +277,9 @@ func (c *context7MCPClient) readMessage() (map[string]any, error) {
 		length, err := strconv.Atoi(lengthValue)
 		if err != nil || length < 0 {
 			return nil, fmt.Errorf("context7 mcp invalid content-length %q", lengthValue)
+		}
+		if length > maxMCPBodyBytes {
+			return nil, fmt.Errorf("context7 mcp content-length %d exceeds max %d", length, maxMCPBodyBytes)
 		}
 		body := make([]byte, length)
 		if _, err := io.ReadFull(c.stdout, body); err != nil {

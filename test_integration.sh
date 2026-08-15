@@ -6,10 +6,19 @@ set -e
 FORGE="${FORGE:-./forge}"
 BUILT_FORGE=0
 
+# ── isolated scratch HOME ────────────────────────────────────────────────────
+# Never touch the real developer's ~/.forge: everything this script runs
+# against (daemon, DB, sockets) resolves relative to $HOME, so point HOME at a
+# throwaway directory instead of stopping a real daemon or deleting a real
+# forge.db (issue #43).
+SCRATCH_HOME="$(mktemp -d)"
+export HOME="$SCRATCH_HOME"
+
 cleanup() {
   if [ "$BUILT_FORGE" -eq 1 ]; then
     rm -f "$FORGE"
   fi
+  rm -rf "$SCRATCH_HOME"
 }
 trap cleanup EXIT
 
@@ -22,9 +31,7 @@ fi
 echo "=== Forge Integration Test ==="
 echo ""
 
-# Clean slate
-$FORGE stop > /dev/null 2>&1 || true
-rm -f ~/.forge/forge.db ~/.forge/forge.db-shm ~/.forge/forge.db-wal ~/.forge/forge.sock
+# Clean slate — using isolated HOME=$HOME, so there's no real state to remove.
 $FORGE init > /dev/null 2>&1
 
 # Start daemon

@@ -411,6 +411,11 @@ func TestSetupCodex_CreatesSkillFile(t *testing.T) {
 	if err := os.MkdirAll(filepath.Join(home, ".codex"), 0o700); err != nil {
 		t.Fatalf("mkdir .codex: %v", err)
 	}
+	// setupCodex unconditionally shells out to the real `codex` CLI if one is
+	// on PATH. Pin CODEX_HOME so that, if present, it registers against this
+	// sandboxed home instead of silently mutating the developer's real
+	// ~/.codex/config.toml.
+	t.Setenv("CODEX_HOME", filepath.Join(home, ".codex"))
 
 	installedPath, err := setupCodex(home)
 	if err != nil {
@@ -501,6 +506,9 @@ func TestSetupCodex_PermissionDenied(t *testing.T) {
 		t.Fatalf("mkdir skills read-only: %v", err)
 	}
 	defer os.Chmod(skillDir, 0o700)
+	// See TestSetupCodex_CreatesSkillFile: pin CODEX_HOME so a real `codex`
+	// CLI on PATH can't write to the developer's actual config.
+	t.Setenv("CODEX_HOME", codexHome)
 
 	_, err := setupCodex(home)
 	if err == nil {

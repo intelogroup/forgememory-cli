@@ -42,7 +42,6 @@ func TestShouldCapturePostToolUse(t *testing.T) {
 		t.Fatal("forensic mode dropped read-only tool")
 	}
 }
-
 func TestAppendCoachSuggestion(t *testing.T) {
 	item := &db.CoachingItem{SkillKey: "verification.pre_ship", Question: "What behavior should the test prove?", NextAction: "Add the narrowest relevant test."}
 	if got := appendCoachSuggestion("existing recall", item); !strings.Contains(got, "Forge coaching (verification.pre_ship)") || !strings.Contains(got, "Add the narrowest relevant test.") {
