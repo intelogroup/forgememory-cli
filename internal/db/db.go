@@ -433,6 +433,41 @@ func (d *DB) migrate() error {
 		)`,
 		`CREATE INDEX IF NOT EXISTS idx_session_commits_session ON session_commits(session_id)`,
 		`CREATE INDEX IF NOT EXISTS idx_session_commits_project ON session_commits(project_id, commit_ts DESC)`,
+		`CREATE TABLE IF NOT EXISTS memory_records (
+			id TEXT PRIMARY KEY, owner_id TEXT NOT NULL, boundary_id TEXT NOT NULL,
+			kind TEXT NOT NULL CHECK(kind IN ('evidence','assertion','belief','resource')),
+			revision_id TEXT NOT NULL, status TEXT NOT NULL CHECK(status IN ('active','superseded','disputed','retracted','deleted','expired')),
+			content BLOB NOT NULL, content_digest TEXT NOT NULL,
+			source_actor TEXT NOT NULL, source_type TEXT NOT NULL, source_ref TEXT NOT NULL DEFAULT '',
+			captured_at TEXT NOT NULL, observed_at TEXT NOT NULL DEFAULT '', effective_from TEXT NOT NULL DEFAULT '', effective_until TEXT NOT NULL DEFAULT '',
+			parent_revision_ids TEXT NOT NULL DEFAULT '[]', supporting_ids TEXT NOT NULL DEFAULT '[]', contradicting_ids TEXT NOT NULL DEFAULT '[]',
+			derivation_id TEXT NOT NULL DEFAULT '', confidence REAL NOT NULL DEFAULT 0, freshness REAL NOT NULL DEFAULT 0,
+			source_reliability REAL NOT NULL DEFAULT 0, ambiguity REAL NOT NULL DEFAULT 0, disagreement REAL NOT NULL DEFAULT 0,
+			sensitivity TEXT NOT NULL DEFAULT 'private', created_at TEXT NOT NULL, supersedes_revision_id TEXT NOT NULL DEFAULT '',
+			artifact_id TEXT NOT NULL DEFAULT '', spif_envelope BLOB NOT NULL, UNIQUE(owner_id, boundary_id, revision_id)
+		)`,
+		`CREATE INDEX IF NOT EXISTS idx_memory_records_scope_status ON memory_records(owner_id, boundary_id, status, created_at DESC)`,
+		`CREATE TABLE IF NOT EXISTS memory_corrections (
+			correction_id TEXT PRIMARY KEY, owner_id TEXT NOT NULL, boundary_id TEXT NOT NULL, target_revision_id TEXT NOT NULL,
+			replacement_revision_id TEXT NOT NULL DEFAULT '', action TEXT NOT NULL,
+			reason_code TEXT NOT NULL, explanation TEXT NOT NULL DEFAULT '', actor_id TEXT NOT NULL, created_at TEXT NOT NULL,
+			evidence_ids TEXT NOT NULL DEFAULT '[]', spif_envelope BLOB NOT NULL
+		)`,
+		`CREATE INDEX IF NOT EXISTS idx_memory_corrections_target ON memory_corrections(owner_id, boundary_id, target_revision_id, created_at DESC)`,
+		`CREATE TABLE IF NOT EXISTS retrieval_events (
+			retrieval_id TEXT PRIMARY KEY, owner_id TEXT NOT NULL, boundary_id TEXT NOT NULL, query_digest TEXT NOT NULL,
+			candidate_revision_ids TEXT NOT NULL DEFAULT '[]', selected_revision_ids TEXT NOT NULL DEFAULT '[]', ranking_version TEXT NOT NULL,
+			feature_snapshot_digest TEXT NOT NULL DEFAULT '', created_at TEXT NOT NULL, outcome TEXT NOT NULL DEFAULT 'unknown', outcome_at TEXT NOT NULL DEFAULT ''
+		)`,
+		`CREATE INDEX IF NOT EXISTS idx_retrieval_events_scope_time ON retrieval_events(owner_id, boundary_id, created_at DESC)`,
+		`CREATE TABLE IF NOT EXISTS provenance_receipts (
+			id TEXT PRIMARY KEY, owner_id TEXT NOT NULL, boundary_id TEXT NOT NULL,
+			artifact_id TEXT NOT NULL, signer_id TEXT NOT NULL, task_id TEXT NOT NULL,
+			attempt INTEGER NOT NULL, nonce TEXT NOT NULL, timestamp INTEGER NOT NULL,
+			envelope BLOB NOT NULL,
+			UNIQUE(owner_id, boundary_id, signer_id, task_id, attempt, nonce)
+		)`,
+		`CREATE INDEX IF NOT EXISTS idx_provenance_receipts_scope ON provenance_receipts(owner_id, boundary_id, timestamp DESC)`,
 	}
 	for _, m := range extraMigrations {
 		if _, err := tx.Exec(m); err != nil {

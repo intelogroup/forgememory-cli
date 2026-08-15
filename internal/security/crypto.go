@@ -31,6 +31,13 @@ func deriveEncKey(key []byte) []byte {
 // returned unchanged — nothing to hide, and it keeps empty-narrative rows
 // from round-tripping through AES for no reason.
 func Encrypt(key []byte, plaintext string) (string, error) {
+	return EncryptBound(key, plaintext, "")
+}
+
+// EncryptBound seals plaintext and authenticates the supplied context. The
+// context is not secret; it binds ciphertext to its owner, boundary, record,
+// or purpose so valid ciphertext cannot be attached elsewhere.
+func EncryptBound(key []byte, plaintext, associatedData string) (string, error) {
 	if plaintext == "" {
 		return "", nil
 	}
@@ -42,13 +49,18 @@ func Encrypt(key []byte, plaintext string) (string, error) {
 	if _, err := io.ReadFull(rand.Reader, nonce); err != nil {
 		return "", err
 	}
-	sealed := gcm.Seal(nonce, nonce, []byte(plaintext), nil)
+	sealed := gcm.Seal(nonce, nonce, []byte(plaintext), []byte(associatedData))
 	return EncPrefix + base64.StdEncoding.EncodeToString(sealed), nil
 }
 
 // Decrypt reverses Encrypt. A value without EncPrefix is returned as-is:
 // legacy plaintext from before encryption was enabled.
 func Decrypt(key []byte, stored string) (string, error) {
+	return DecryptBound(key, stored, "")
+}
+
+// DecryptBound reverses EncryptBound and rejects context rebinding.
+func DecryptBound(key []byte, stored, associatedData string) (string, error) {
 	if stored == "" || !strings.HasPrefix(stored, EncPrefix) {
 		return stored, nil
 	}
@@ -64,7 +76,7 @@ func Decrypt(key []byte, stored string) (string, error) {
 		return "", errors.New("ciphertext too short")
 	}
 	nonce, ct := raw[:gcm.NonceSize()], raw[gcm.NonceSize():]
-	plain, err := gcm.Open(nil, nonce, ct, nil)
+	plain, err := gcm.Open(nil, nonce, ct, []byte(associatedData))
 	if err != nil {
 		return "", err
 	}
