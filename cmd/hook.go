@@ -367,7 +367,7 @@ func runHook(args []string) {
 	fs := flag.NewFlagSet("hook", flag.ContinueOnError)
 	fs.SetOutput(io.Discard)
 	eventFlag := fs.String("event", "", "")
-	sourceFlag := fs.String("source", "", "")
+	sourceFlag := fs.String("source", "", "source tool emitting this event: claude, codex, gemini, opencode, antigravity, or a custom runtime agent name (e.g. clixen)")
 	_ = fs.Parse(args)
 
 	sourceTool := envOr("FORGE_SOURCE_TOOL", "")
