@@ -24,16 +24,22 @@ import (
 
 // HookMessage is the message sent by hooks to the daemon.
 type HookMessage struct {
-	Type        string `json:"type"` // always "event"
-	ID          string `json:"id"`
-	TS          string `json:"ts"`
-	SessionID   string `json:"session_id"`
-	ProjectID   string `json:"project_id"`
-	ProjectRoot string `json:"project_root,omitempty"`
-	SourceTool  string `json:"source_tool"`
-	EventType   string `json:"event_type"`
-	ToolName    string `json:"tool_name,omitempty"`
-	Payload     string `json:"payload"`
+	Type           string `json:"type"` // always "event"
+	ID             string `json:"id"`
+	TS             string `json:"ts"`
+	TraceID        string `json:"trace_id,omitempty"`
+	TaskID         string `json:"task_id,omitempty"`
+	SessionID      string `json:"session_id"`
+	ProjectID      string `json:"project_id"`
+	ProjectRoot    string `json:"project_root,omitempty"`
+	CWD            string `json:"cwd,omitempty"`
+	GitBranch      string `json:"git_branch,omitempty"`
+	GitCommit      string `json:"git_commit,omitempty"`
+	TranscriptPath string `json:"transcript_path,omitempty"`
+	SourceTool     string `json:"source_tool"`
+	EventType      string `json:"event_type"`
+	ToolName       string `json:"tool_name,omitempty"`
+	Payload        string `json:"payload"`
 }
 
 // ClaudeHookInput is the common JSON structure used by Claude and Gemini hooks.
@@ -250,16 +256,22 @@ func runHook(args []string) {
 	}
 
 	msg := HookMessage{
-		Type:        "event",
-		ID:          uuid.New().String(),
-		TS:          time.Now().UTC().Format(time.RFC3339),
-		ProjectID:   projectID,
-		ProjectRoot: projectRoot,
-		SourceTool:  sourceTool,
-		EventType:   eventType,
-		SessionID:   sessionID,
-		ToolName:    toolName,
-		Payload:     payload,
+		Type:           "event",
+		ID:             uuid.New().String(),
+		TS:             time.Now().UTC().Format(time.RFC3339),
+		TraceID:        envOr("FORGE_TRACE_ID", sessionID),
+		TaskID:         envOr("FORGE_TASK_ID", ""),
+		ProjectID:      projectID,
+		ProjectRoot:    projectRoot,
+		CWD:            input.CWD,
+		GitBranch:      envOr("FORGE_GIT_BRANCH", ""),
+		GitCommit:      envOr("FORGE_GIT_COMMIT", ""),
+		TranscriptPath: input.TranscriptPath,
+		SourceTool:     sourceTool,
+		EventType:      eventType,
+		SessionID:      sessionID,
+		ToolName:       toolName,
+		Payload:        payload,
 	}
 
 	if err := ipc.Send(msg); err != nil {
