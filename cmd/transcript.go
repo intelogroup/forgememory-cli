@@ -175,7 +175,8 @@ func transcriptEventType(raw map[string]any) string {
 
 // findCodexTranscript resolves the rollout JSONL written by Codex when its
 // hook payload does not include transcript_path. It is intentionally bounded
-// to the event's calendar day and exact session prefix.
+// to the event's calendar day; Codex names the file rollout-<ts>-<sessionID>.jsonl
+// so the session ID is matched as a filename suffix, not a prefix.
 func findCodexTranscript(sessionID, ts string) string {
 	if sessionID == "" || sessionID == "unknown" {
 		return ""
@@ -189,7 +190,7 @@ func findCodexTranscript(sessionID, ts string) string {
 		when = time.Now()
 	}
 	day := filepath.Join(home, ".codex", "sessions", fmt.Sprintf("%d/%02d/%02d", when.Year(), when.Month(), when.Day()))
-	matches, err := filepath.Glob(filepath.Join(day, sessionID+"*.jsonl"))
+	matches, err := filepath.Glob(filepath.Join(day, "*"+sessionID+".jsonl"))
 	if err != nil || len(matches) == 0 {
 		return ""
 	}

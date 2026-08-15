@@ -64,6 +64,27 @@ func TestResolveTranscriptPath(t *testing.T) {
 	}
 }
 
+func TestFindCodexTranscriptMatchesSuffix(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	sessID := "019ff278-e026-7272-855f-ff0adcdf5a36"
+	day := filepath.Join(home, ".codex", "sessions", "2026", "08", "11")
+	if err := os.MkdirAll(day, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	filename := filepath.Join(day, "rollout-2026-08-11T16-17-15-"+sessID+".jsonl")
+	if err := os.WriteFile(filename, []byte("{}\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if got := findCodexTranscript(sessID, "2026-08-11T20:18:15.829Z"); got != filename {
+		t.Fatalf("findCodexTranscript() = %q, want %q", got, filename)
+	}
+	// Bounded to the calendar day: a different day must not match.
+	if got := findCodexTranscript(sessID, "2026-08-12T00:00:00.000Z"); got != "" {
+		t.Fatalf("findCodexTranscript() = %q, want empty for different day", got)
+	}
+}
+
 func TestIngestOpencodeDBImportsTurns(t *testing.T) {
 	dir := t.TempDir()
 	opencodePath := filepath.Join(dir, "opencode.db")
