@@ -820,6 +820,16 @@ func statusOutput() {
 		fmt.Printf(" (%d consecutive failures)", report.Distillation.ConsecutiveFailures)
 	}
 	fmt.Println()
+	// A bare "failed (N consecutive failures)" line doesn't say why or what
+	// to do about it — surface the actual error (e.g. the wedged-behind-a-
+	// stale-lock message) directly instead of requiring `forge health` or
+	// `--detailed` to find it (issue #43).
+	if report.Distillation.LastErrorMessage != "" && report.Distillation.ConsecutiveFailures > 0 {
+		fmt.Printf("  -> %s\n", report.Distillation.LastErrorMessage)
+		if report.Events.Undistilled > 0 {
+			fmt.Printf("  -> %d events undistilled. Run 'forge doctor' to diagnose or 'forge doctor --repair' to fix.\n", report.Events.Undistilled)
+		}
+	}
 }
 
 func statusOutputJSON() {

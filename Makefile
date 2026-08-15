@@ -7,7 +7,14 @@ build:
 	go build $(LDFLAGS) -o forge ./cmd/
 
 test:
-	go test ./... -v -count=1
+	# -p caps how many packages' test binaries run concurrently. Several
+	# packages (mcp, retrieve, distill) spawn real subprocesses/listeners in
+	# their tests; at the default (NumCPU) package parallelism this can
+	# exhaust macOS's low default process/fd ulimits ("resource temporarily
+	# unavailable"), causing MCP/retrieval/distillation tests to hang or
+	# time out (issue #43). Within a package, tests already run serially —
+	# nothing in this repo calls t.Parallel().
+	go test ./... -v -count=1 -p 4
 
 lint:
 	go vet ./...

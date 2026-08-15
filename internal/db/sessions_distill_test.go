@@ -101,6 +101,48 @@ func TestSessionEventsUpTo_OrderChronological(t *testing.T) {
 	}
 }
 
+func TestSessionEventsForCheckpoint_UnderBudget_ReturnsAllUnchanged(t *testing.T) {
+	database := openTestDB(t)
+	const sessionID = "sess-small"
+	seedSessionEvents(t, database, sessionID, 10, true) // 10 PostToolUse + 1 SessionEnd = 11
+
+	events, err := database.SessionEventsForCheckpoint(sessionID, "", 20, 30)
+	if err != nil {
+		t.Fatalf("SessionEventsForCheckpoint: %v", err)
+	}
+	if len(events) != 11 {
+		t.Fatalf("len(events) = %d, want 11 (under head+tail budget)", len(events))
+	}
+	if events[len(events)-1].EventType != "SessionEnd" {
+		t.Fatalf("last event = %q, want SessionEnd", events[len(events)-1].EventType)
+	}
+}
+
+func TestSessionEventsForCheckpoint_OverBudget_KeepsTerminalBoundaryEvent(t *testing.T) {
+	database := openTestDB(t)
+	const sessionID = "sess-long"
+	// 80 PostToolUse events + a terminal Stop far past the head+tail budget of 50.
+	seedSessionEvents(t, database, sessionID, 80, false)
+	base := time.Date(2026, 1, 1, 12, 0, 0, 0, time.UTC)
+	insertSessionEvent(t, database, sessionID, "Stop", base.Add(80*time.Minute))
+
+	events, err := database.SessionEventsForCheckpoint(sessionID, "", 20, 30)
+	if err != nil {
+		t.Fatalf("SessionEventsForCheckpoint: %v", err)
+	}
+	if len(events) != 50 {
+		t.Fatalf("len(events) = %d, want 50 (head 20 + tail 30)", len(events))
+	}
+	if events[len(events)-1].EventType != "Stop" {
+		t.Fatalf("last event = %q, want Stop — the terminal boundary event must survive truncation", events[len(events)-1].EventType)
+	}
+	for i := 1; i < len(events); i++ {
+		if events[i].TS < events[i-1].TS {
+			t.Fatalf("events not in ASC order at %d: %q before %q", i, events[i].TS, events[i-1].TS)
+		}
+	}
+}
+
 func TestUndistilledCompletedSessions_ReturnsSessionWithStop(t *testing.T) {
 	database := openTestDB(t)
 	base := time.Date(2026, 4, 1, 12, 0, 0, 0, time.UTC)

@@ -299,7 +299,22 @@ func checkAndRepairIntegrationPaths(home string) {
 		}
 	}
 
-	// 5. OpenCode plugins/forge.js or opencode.json
+	// 5. Codex native MCP registration (~/.codex/config.toml). This is the
+	// file Codex's own CLI manages via `codex mcp add`/`codex mcp get`,
+	// separate from the forge.json skill file above. It can end up pointing
+	// at a Forge binary that no longer exists (e.g. a stale install path),
+	// so — like the OpenCode check below — compare against the current
+	// binary directly rather than scanning for known-ephemeral substrings.
+	codexConfigTomlPath := filepath.Join(codexHome, "config.toml")
+	if !staleDetected {
+		if cmdPath, ok := codexMCPForgeCommand(codexConfigTomlPath); ok {
+			if !isEquivalentBinary(cmdPath, currentPath, currentReal, currentHash) {
+				staleDetected = true
+			}
+		}
+	}
+
+	// 6. OpenCode plugins/forge.js or opencode.json
 	opencodeConfigDir := func() string {
 		if xdg := os.Getenv("XDG_CONFIG_HOME"); xdg != "" {
 			return filepath.Join(xdg, "opencode")
@@ -420,6 +435,38 @@ func isEquivalentBinary(registeredPath, currentPath, currentReal, currentHash st
 		}
 	}
 	return false
+}
+
+// codexMCPForgeCommand extracts the "command" value from the
+// [mcp_servers.forge] table in a Codex config.toml file. Codex has no Go
+// client library in this module, so this is a minimal hand-rolled scan
+// rather than a full TOML parser — it only needs to find one key inside one
+// known table. Returns ("", false) if the file, table, or key is missing.
+func codexMCPForgeCommand(path string) (string, bool) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return "", false
+	}
+	inForgeTable := false
+	for _, line := range strings.Split(string(data), "\n") {
+		trimmed := strings.TrimSpace(line)
+		if strings.HasPrefix(trimmed, "[") {
+			inForgeTable = trimmed == "[mcp_servers.forge]"
+			continue
+		}
+		if !inForgeTable {
+			continue
+		}
+		key, val, ok := strings.Cut(trimmed, "=")
+		if !ok || strings.TrimSpace(key) != "command" {
+			continue
+		}
+		val = strings.Trim(strings.TrimSpace(val), `"'`)
+		if val != "" {
+			return val, true
+		}
+	}
+	return "", false
 }
 
 func normalizePath(p string) string {

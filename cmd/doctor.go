@@ -6,10 +6,13 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
+	"time"
 
 	"github.com/forge/forge/internal/agent"
 	"github.com/forge/forge/internal/db"
 	"github.com/forge/forge/internal/distill"
+	"github.com/forge/forge/internal/security"
 )
 
 func runDoctor(args []string) {
@@ -50,6 +53,11 @@ func runDoctor(args []string) {
 		if isStaleSocket() {
 			fmt.Println("  - Removing stale socket file...")
 			cleanSocket()
+			hasIssues = true
+		}
+		if lockPath := distillLockPath(); pathExists(lockPath) && isDistillLockStale(lockPath) {
+			fmt.Println("  - Removing stale distill lock...")
+			_ = os.Remove(lockPath)
 			hasIssues = true
 		}
 
@@ -109,6 +117,8 @@ func runDoctor(args []string) {
 		fmt.Printf("[OK] Forge home: writable (%s)\n", forgeDataDir())
 	}
 
+	printKeychainStatus()
+
 	// Check database
 	fmt.Print("  ")
 	database, err := db.Open("")
@@ -136,8 +146,12 @@ func runDoctor(args []string) {
 			fmt.Printf("  [OK] Database file size: %d bytes (%s)\n", info.Size(), database.Path)
 		}
 
+		printDistillationHealth(database, undistilled)
+
 		database.Close()
 	}
+
+	printDistillLockStatus()
 
 	// Check LLM Provider connection
 	fmt.Println("  Checking LLM provider connectivity...")
@@ -146,6 +160,13 @@ func runDoctor(args []string) {
 		fmt.Println("  [FAIL] LLM Provider: no provider configured (run 'forge config' first)")
 	} else {
 		fmt.Printf("  [OK] LLM Provider: %s (model: %s)\n", cfg.Provider, cfg.Model)
+		// Doctor is a diagnostic command and must never inherit an unbounded
+		// distillation retry budget. A stopped local provider or offline host
+		// should produce a useful failure quickly, not hold the CLI/test runner
+		// for minutes while retry backoff sleeps.
+		cfg.Timeout = 5 * time.Second
+		cfg.OllamaTimeout = 5 * time.Second
+		cfg.Retries = 0
 		d := distill.New(nil, cfg)
 		fmt.Print("    Testing connection (sending test token)... ")
 		response, err := d.CallLLM("respond with only the word OK")
@@ -182,12 +203,27 @@ func runDoctor(args []string) {
 	for _, ref := range findTransientIntegrationRefs(home) {
 		fmt.Printf("  [FAIL] Integration: transient Forge path in %s (%s)\n", ref.path, ref.value)
 	}
+	if ref, stale := findStaleCodexMCPConfig(home); stale {
+		fmt.Println("  [FAIL] Codex MCP: configured executable does not resolve to the active Forge binary")
+		fmt.Printf("         Path: %s (%s)\n", ref.value, ref.path)
+		fmt.Println("         Repair: forge sync-integrations -y")
+	}
 
 	// Check agents
 	agents := agent.DetectAgents(home)
 	fmt.Printf("  [OK] Agents detected: %d\n", len(agents))
 	for _, a := range agents {
 		fmt.Printf("    - %s\n", a)
+	}
+
+	// Check for source/package version skew. A "dev" version means this
+	// binary was built directly from source (e.g. `go build ./cmd/`)
+	// without going through the release process, so it can expose commands
+	// or behavior newer than whatever is published to npm — a source tree
+	// can show a command (e.g. `coach`) that an older installed npm binary
+	// doesn't have yet (issue #43).
+	if version == "dev" {
+		fmt.Println("  [WARN] Build: this is an unreleased dev build (no version tag) — its command set may differ from the npm-installed forge on PATH.")
 	}
 
 	// Check binary installations
@@ -275,6 +311,9 @@ func runDoctorInline() {
 	for _, ref := range findTransientIntegrationRefs(home) {
 		fmt.Printf("  Integration: transient Forge path in %s (%s)\n", ref.path, ref.value)
 	}
+	if ref, stale := findStaleCodexMCPConfig(home); stale {
+		fmt.Printf("  Codex MCP: configured executable does not resolve to the active Forge binary (%s: %s)\n", ref.path, ref.value)
+	}
 
 	// Check log
 	logPath := filepath.Join(forgeHome(), ".forge", "daemon.log")
@@ -314,6 +353,94 @@ func probeForgeDirWritable() error {
 	return os.Remove(probe)
 }
 
+// printKeychainStatus reports whether the HMAC signing key is protected by
+// the OS keychain (Keychain/Credential Manager/Secret Service) or has fallen
+// back to a plain file under ~/.forge. The fallback is functionally fine —
+// principles still get signed — but it silently weakens what that signature
+// protects against: a local attacker who can read forge.db can, in the
+// fallback case, also read the key sitting right next to it. The daemon
+// already logs this once (internal/db/principles.go), but a log line most
+// users never read isn't a security warning — this makes it visible in the
+// tool users actually run to check on Forge (issue #43).
+// signingKeyStatusOnce guards the actual GetOrCreateKey() call. A blocked or
+// absent OS keychain backend (e.g. no D-Bus Secret Service) can leave the
+// underlying probe goroutine running past its own timeout — go-keyring's
+// doc comment on GetOrCreateKey calls this cost "bounded by sync.Once",
+// which only holds if every caller in a process shares one Once, not one
+// per call. forge doctor is normally its own fresh process each run, so
+// this doesn't change production behavior, but it matters a lot when many
+// tests call runDoctor in the same test binary.
+var (
+	signingKeyStatusOnce   sync.Once
+	signingKeyUsedFallback bool
+	signingKeyErr          error
+)
+
+func printKeychainStatus() {
+	signingKeyStatusOnce.Do(func() {
+		_, signingKeyUsedFallback, signingKeyErr = security.GetOrCreateKey()
+	})
+	fmt.Print("  ")
+	usedFallback, err := signingKeyUsedFallback, signingKeyErr
+	switch {
+	case err != nil:
+		fmt.Printf("[FAIL] Signing key: unavailable — principles will be stored unsigned: %v\n", err)
+	case usedFallback:
+		fmt.Println("[WARN] Signing key: OS keychain unavailable — HMAC key stored in ~/.forge/forge.key instead")
+		fmt.Println("         Signatures only protect against tampering that doesn't also read that file.")
+		fmt.Println("         On headless Linux, install a Secret Service provider (gnome-keyring, kwallet, or keyctl) to restore keychain protection.")
+	default:
+		fmt.Println("[OK] Signing key: protected by OS keychain")
+	}
+}
+
+// printDistillationHealth reports the distillation scheduler's health
+// prominently in `forge doctor` output — including the wedged state
+// (issue #33/#43): 3+ consecutive skips behind a stale/leaked distill lock
+// write a distinct failure record, but `forge status`'s compact view only
+// showed the bare LastStatus/count, not the message explaining why or what
+// to do about it.
+func printDistillationHealth(database *db.DB, undistilled int) {
+	h, err := database.GetDistillationHealth()
+	if err != nil {
+		return
+	}
+	switch {
+	case h.ConsecutiveFailures >= 3:
+		fmt.Printf("  [FAIL] Distillation: wedged after %d consecutive failures — %s\n", h.ConsecutiveFailures, h.LastErrorMessage)
+		fmt.Printf("         %d events undistilled. Repair: forge doctor --repair, or restart the daemon.\n", undistilled)
+	case h.LastStatus == "failed":
+		fmt.Printf("  [WARN] Distillation: last attempt failed — %s\n", h.LastErrorMessage)
+	case h.LastStatus == "" || h.LastStatus == "pending":
+		// No distillation has run yet — nothing to report.
+	default:
+		fmt.Printf("  [OK] Distillation: %s\n", h.LastStatus)
+	}
+}
+
+// printDistillLockStatus flags a distill lock file left behind by a
+// stale/leaked process. acquireDistillLock() already reclaims this
+// automatically on the next distill attempt, so this is a visibility check,
+// not a required repair step — but a stuck lock explains why events are
+// piling up undistilled right now, so it's worth surfacing directly.
+func printDistillLockStatus() {
+	lockPath := distillLockPath()
+	if !pathExists(lockPath) {
+		return
+	}
+	if isDistillLockStale(lockPath) {
+		fmt.Printf("  [FAIL] Distillation lock: stale, held by a dead/expired process (%s)\n", lockPath)
+		fmt.Println("         Repair: forge doctor --repair, or restart the daemon.")
+	} else {
+		fmt.Printf("  [OK] Distillation lock: held by a live process (%s)\n", lockPath)
+	}
+}
+
+func pathExists(path string) bool {
+	_, err := os.Stat(path)
+	return err == nil
+}
+
 type transientIntegrationRef struct {
 	path  string
 	value string
@@ -343,6 +470,35 @@ func findTransientIntegrationRefs(home string) []transientIntegrationRef {
 		})
 	}
 	return refs
+}
+
+// findStaleCodexMCPConfig checks whether Codex's native MCP registration
+// (~/.codex/config.toml, managed by `codex mcp add`/`codex mcp get`) still
+// points at the active Forge binary. Unlike findTransientIntegrationRefs
+// (which flags known-ephemeral path substrings in Forge-managed files),
+// config.toml is Codex's own file and can reference an install path that
+// simply no longer exists on disk, so this compares against the current
+// binary directly — the same check checkAndRepairIntegrationPaths uses to
+// decide whether a repair is needed.
+func findStaleCodexMCPConfig(home string) (transientIntegrationRef, bool) {
+	codexHome := os.Getenv("CODEX_HOME")
+	if codexHome == "" {
+		codexHome = filepath.Join(home, ".codex")
+	}
+	configPath := filepath.Join(codexHome, "config.toml")
+
+	cmdPath, ok := codexMCPForgeCommand(configPath)
+	if !ok {
+		return transientIntegrationRef{}, false
+	}
+
+	currentPath := agent.ForgePath()
+	currentReal := resolveRealPath(currentPath)
+	currentHash := fileSHA256(currentPath)
+	if isEquivalentBinary(cmdPath, currentPath, currentReal, currentHash) {
+		return transientIntegrationRef{}, false
+	}
+	return transientIntegrationRef{path: configPath, value: truncate(cmdPath, 120)}, true
 }
 
 func findTransientForgeReference(path string) (string, bool) {

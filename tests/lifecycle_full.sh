@@ -10,6 +10,18 @@ FORGE="${FORGE:-./forge}"
 PASS=0; FAIL=0
 FAILED_TESTS=()
 
+# ── isolated scratch HOME ────────────────────────────────────────────────────
+# Never touch the real developer's ~/.forge: everything this script runs
+# against (daemon, DB, sockets) resolves relative to $HOME, so point HOME at a
+# throwaway directory instead of killing a real "forge daemon" process or
+# deleting a real forge.db (issue #43).
+SCRATCH_HOME="$(mktemp -d)"
+export HOME="$SCRATCH_HOME"
+trap 'rm -rf "$SCRATCH_HOME"' EXIT
+# Claude Code detection just checks for ~/.claude, so stub it in the scratch
+# home to keep the "Configured claude" assertion below meaningful.
+mkdir -p "$HOME/.claude"
+
 # ── colour helpers ───────────────────────────────────────────────────────────
 GREEN='\033[0;32m'; RED='\033[0;31m'; YELLOW='\033[1;33m'; NC='\033[0m'
 ok()   { echo -e "${GREEN}  ✓ $*${NC}"; PASS=$((PASS+1)); }
@@ -37,15 +49,7 @@ assert_ge() {
 
 # ── clean slate ──────────────────────────────────────────────────────────────
 step 0 "Clean slate"
-$FORGE stop 2>/dev/null || true
-sleep 1
-# Kill any stray daemon processes
-pkill -f "forge daemon" 2>/dev/null || true
-sleep 0.5
-# Remove all forge state including SQLite WAL sidecar files
-rm -f ~/.forge/forge.db ~/.forge/forge.db-wal ~/.forge/forge.db-shm \
-      ~/.forge/forge.sock ~/.forge/forge.addr ~/.forge/forge.pid
-ok "Cleaned ~/.forge state"
+ok "Using isolated HOME=$HOME"
 
 # ── 1. init ──────────────────────────────────────────────────────────────────
 step 1 "forge init"

@@ -21,6 +21,7 @@ import (
 	"time"
 
 	"github.com/forge/forge/internal/db"
+	"github.com/forge/forge/internal/security"
 )
 
 // forgeBin is the path to the compiled test binary, set by TestMain.
@@ -71,10 +72,23 @@ func shortHome(t *testing.T) string {
 }
 
 func TestMain(m *testing.M) {
+	// Some cmd tests exercise `forge doctor`, which reads/creates the HMAC
+	// signing key via security.GetOrCreateKey(). That key's OS-keychain entry
+	// is identified by a fixed name ("forge-cli"), not by HOME, so per-test
+	// HOME isolation alone doesn't protect it — repoint it once for the whole
+	// binary so no cmd test can ever touch a developer's real keychain entry.
+	// Also propagate it via env so real `forge` subprocesses spawned by
+	// runForge/runForgePath (a separate process, not covered by the vars
+	// mutated above) are isolated too.
+	keyringTestID, cleanupKeyring := security.SetKeyringIdentityForTests()
+	os.Setenv("FORGE_TEST_KEYRING_ID", keyringTestID)
+
 	// When invoked as a subprocess for os.Exit capture (see lifecycle_test.go),
 	// skip binary build — forgeBin is unused in that context.
 	if os.Getenv("FORGE_TEST_SUBPROCESS") != "" {
-		os.Exit(m.Run())
+		code := m.Run()
+		cleanupKeyring()
+		os.Exit(code)
 	}
 
 	tmp, err := os.MkdirTemp("", "forge-install-*")
@@ -95,7 +109,9 @@ func TestMain(m *testing.M) {
 		os.Exit(1)
 	}
 
-	os.Exit(m.Run())
+	code := m.Run()
+	cleanupKeyring()
+	os.Exit(code)
 }
 
 // baseEnv returns os.Environ() without FORGE_* and HOME variables.
@@ -104,7 +120,15 @@ func TestMain(m *testing.M) {
 func baseEnv() []string {
 	var env []string
 	for _, e := range os.Environ() {
-		if strings.HasPrefix(e, "FORGE_") || strings.HasPrefix(e, "HOME=") {
+		if strings.HasPrefix(e, "HOME=") {
+			continue
+		}
+		// FORGE_TEST_KEYRING_ID must reach subprocess `forge` binaries so
+		// they never touch the real OS keychain entry (see TestMain and
+		// security.SetKeyringIdentityForTests) — every other FORGE_* var is
+		// stripped so a stray one set in the developer's real shell can't
+		// leak into the isolated test environment.
+		if strings.HasPrefix(e, "FORGE_") && !strings.HasPrefix(e, "FORGE_TEST_KEYRING_ID=") {
 			continue
 		}
 		env = append(env, e)
