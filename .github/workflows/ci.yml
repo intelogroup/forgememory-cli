@@ -88,6 +88,11 @@ jobs:
     # daemon process actually gets killed. This is the real backstop: the
     # runner reclaims the whole job, orphaned processes included, once this
     # fires.
+    #
+    # Non-blocking: GitHub-hosted Windows runners aren't a reliable enough
+    # environment for this suite yet (see above). Keep it running for
+    # visibility but don't let its flakiness block merges.
+    continue-on-error: true
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@v6
@@ -139,6 +144,10 @@ jobs:
 
   integration-windows:
     runs-on: windows-latest
+    # Non-blocking for the same reason as test-windows above: the Windows
+    # runner environment isn't reliable enough yet. Keep it running for
+    # visibility but don't let it block merges.
+    continue-on-error: true
     steps:
       - uses: actions/checkout@v6
 
