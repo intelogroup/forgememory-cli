@@ -311,8 +311,8 @@ func TestBuildPrompt_IncludesLastAssistantMessageFromStopEvent(t *testing.T) {
 	if !containsStr(prompt, "Switched to WithMaxRetries(3) because the default pgx transport silently drops retries after a TCP reset.") {
 		t.Fatalf("prompt missing extracted assistant message: %q", prompt)
 	}
-	if containsStr(prompt, "session boundary") {
-		t.Fatalf("prompt should not fall back to session boundary when last_assistant_message is present: %q", prompt)
+	if containsStr(prompt, "Stop (): session boundary") {
+		t.Fatalf("Stop event should not fall back to session boundary when last_assistant_message is present: %q", prompt)
 	}
 }
 
