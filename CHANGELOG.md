@@ -1,5 +1,10 @@
 # Changelog
 
+## [0.8.13] - 2026-08-15
+
+### Added
+- `FORGE_DISABLE_KEY` environment toggle to store principles unsigned & unencrypted. When set (1/true/yes/on), `forge doctor` reports the signing key as `[OFF]`, `forge harden rotate-key` refuses, and existing encrypted rows are dropped on read (unreadable without the key).
+
 ## [0.8.12] - 2026-08-15
 
 ### Added
