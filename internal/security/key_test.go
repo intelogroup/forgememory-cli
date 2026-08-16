@@ -162,6 +162,43 @@ func TestVerifyRejectsWrongKey(t *testing.T) {
 	}
 }
 
+func TestDisabledKeyFeatureReturnsNilKey(t *testing.T) {
+	useIsolatedKeyForTests(t)
+	t.Setenv("FORGE_DISABLE_KEY", "1")
+
+	if !Disabled() {
+		t.Fatal("Disabled() = false, want true with FORGE_DISABLE_KEY=1")
+	}
+	key, usedFallback, err := GetOrCreateKey()
+	if err != nil {
+		t.Fatalf("GetOrCreateKey: %v", err)
+	}
+	if key != nil {
+		t.Fatalf("GetOrCreateKey returned a %d-byte key, want nil when disabled", len(key))
+	}
+	if usedFallback {
+		t.Fatal("usedFallback = true, want false when disabled")
+	}
+	if _, err := RotateKey(); err == nil {
+		t.Fatal("RotateKey succeeded, want error when disabled")
+	}
+}
+
+func TestDisabledKeyFeatureAcceptsTruthyValues(t *testing.T) {
+	for _, v := range []string{"1", "true", "yes", "on", " TRUE "} {
+		t.Run(v, func(t *testing.T) {
+			t.Setenv("FORGE_DISABLE_KEY", v)
+			if !Disabled() {
+				t.Fatalf("Disabled() = false for %q, want true", v)
+			}
+		})
+	}
+	t.Setenv("FORGE_DISABLE_KEY", "0")
+	if Disabled() {
+		t.Fatal("Disabled() = true for \"0\", want false")
+	}
+}
+
 func TestRotateKeyChangesTheStoredKey(t *testing.T) {
 	useIsolatedKeyForTests(t)
 

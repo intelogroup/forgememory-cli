@@ -377,6 +377,10 @@ var (
 )
 
 func printKeychainStatus() {
+	if security.Disabled() {
+		fmt.Println("[OFF] Signing key: disabled (FORGE_DISABLE_KEY set) — principles stored unsigned & unencrypted")
+		return
+	}
 	signingKeyStatusOnce.Do(func() {
 		_, signingKeyUsedFallback, signingKeyErr = security.GetOrCreateKey()
 	})

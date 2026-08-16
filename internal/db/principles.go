@@ -274,6 +274,11 @@ func scanPrinciples(rows *sql.Rows) ([]Principle, error) {
 				log.Printf("forge: dropping principle %s — narrative decryption failed (tampered ciphertext or wrong key): %v", p.ID, err)
 				continue
 			}
+		} else if strings.HasPrefix(p.Narrative, security.EncPrefix) {
+			// Key feature disabled (FORGE_DISABLE_KEY) — encrypted rows are
+			// unreadable without the key, so drop them rather than leak ciphertext.
+			log.Printf("forge: dropping principle %s — encrypted but signing key feature disabled", p.ID)
+			continue
 		}
 		if key != nil && p.Signature != "" {
 			if !security.Verify(key, signedPayload(p.Title, p.Narrative), p.Signature) {

@@ -15,6 +15,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/zalando/go-keyring"
@@ -56,6 +57,21 @@ func init() {
 	applyTestKeyringIDEnv()
 }
 
+// Disabled reports whether the HMAC signing/encryption key feature is
+// disabled via the FORGE_DISABLE_KEY environment variable. When disabled,
+// GetOrCreateKey returns a nil key, Sign/Verify become no-ops, and
+// Encrypt/Decrypt pass plaintext through untouched — principles and memory
+// are stored unsigned and unencrypted. Existing signed/encrypted rows are
+// dropped on read (they cannot be opened without the key).
+func Disabled() bool {
+	switch strings.ToLower(strings.TrimSpace(os.Getenv("FORGE_DISABLE_KEY"))) {
+	case "1", "true", "yes", "on":
+		return true
+	default:
+		return false
+	}
+}
+
 // applyTestKeyringIDEnv is init()'s logic, split out so tests can exercise
 // it directly (init() itself only ever runs once, at process start, before
 // t.Setenv could take effect).
@@ -77,6 +93,9 @@ const (
 // Secret Service, etc.) it falls back to a chmod-600 file under ~/.forge
 // and reports that fallback via usedFallback so callers can warn the user.
 func GetOrCreateKey() (key []byte, usedFallback bool, err error) {
+	if Disabled() {
+		return nil, false, nil
+	}
 	// Integration tests spawn real forge subprocesses. They pass a unique
 	// keyring identity so those processes cannot touch a developer's real
 	// keychain entry. In headless Linux CI, probing Secret Service can still
@@ -205,6 +224,9 @@ func SetKeyringIdentityForTests() (id string, cleanup func()) {
 // returns it so the caller can re-sign existing data before the old key is
 // gone for good. Unlike GetOrCreateKey this never reuses an existing key.
 func RotateKey() ([]byte, error) {
+	if Disabled() {
+		return nil, fmt.Errorf("signing key feature is disabled (FORGE_DISABLE_KEY set)")
+	}
 	newKey := make([]byte, 32)
 	if _, err := rand.Read(newKey); err != nil {
 		return nil, fmt.Errorf("generate key: %w", err)

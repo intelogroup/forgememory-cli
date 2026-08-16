@@ -42,6 +42,10 @@ Subcommands:
 }
 
 func runHardenRotateKey() {
+	if security.Disabled() {
+		fmt.Fprintln(os.Stderr, "Error: signing key feature is disabled (FORGE_DISABLE_KEY set) — nothing to rotate")
+		os.Exit(1)
+	}
 	database, err := db.Open("")
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Error: failed to open DB: %v\n", err)

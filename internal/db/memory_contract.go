@@ -200,9 +200,13 @@ func (d *DB) InsertMemoryRecord(m *MemoryRecord) error {
 	if err != nil {
 		return fmt.Errorf("memory encryption key: %w", err)
 	}
-	sealed, err := security.EncryptBound(key, string(m.Content), memoryAAD(m.OwnerID, m.BoundaryID, m.RevisionID, m.ContentDigest))
-	if err != nil {
-		return fmt.Errorf("encrypt memory content: %w", err)
+	sealed := string(m.Content)
+	if key != nil {
+		var encErr error
+		sealed, encErr = security.EncryptBound(key, string(m.Content), memoryAAD(m.OwnerID, m.BoundaryID, m.RevisionID, m.ContentDigest))
+		if encErr != nil {
+			return fmt.Errorf("encrypt memory content: %w", encErr)
+		}
 	}
 	parents, err := encodeIDs(m.ParentRevisionIDs)
 	if err != nil {
@@ -305,11 +309,16 @@ func (d *DB) MemoryRevision(ownerID, boundaryID, revisionID string) (*MemoryReco
 	if keyErr != nil {
 		return nil, fmt.Errorf("memory decryption key: %w", keyErr)
 	}
-	plain, decryptErr := security.DecryptBound(key, string(m.Content), memoryAAD(m.OwnerID, m.BoundaryID, m.RevisionID, m.ContentDigest))
-	if decryptErr != nil {
-		return nil, fmt.Errorf("memory content authentication failed: %w", decryptErr)
+	if key != nil {
+		plain, decryptErr := security.DecryptBound(key, string(m.Content), memoryAAD(m.OwnerID, m.BoundaryID, m.RevisionID, m.ContentDigest))
+		if decryptErr != nil {
+			return nil, fmt.Errorf("memory content authentication failed: %w", decryptErr)
+		}
+		m.Content = []byte(plain)
+	} else if strings.HasPrefix(string(m.Content), security.EncPrefix) {
+		// Key feature disabled — encrypted rows are unreadable without it.
+		return nil, fmt.Errorf("memory content unreadable: signing key feature disabled (FORGE_DISABLE_KEY set)")
 	}
-	m.Content = []byte(plain)
 	if err := json.Unmarshal([]byte(parents), &m.ParentRevisionIDs); err != nil {
 		return nil, err
 	}

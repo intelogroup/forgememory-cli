@@ -168,5 +168,6 @@ func printUsage() {
    FORGE_TIMEOUT       Inference timeout (e.g. 30s)
    FORGE_RETRIES       Retry attempts for transient failures
    FORGE_DISTILL_INTERVAL Daemon distillation interval (e.g. 10m)
+   FORGE_DISABLE_KEY  Set to 1 to store principles unsigned & unencrypted
  `)
 }
