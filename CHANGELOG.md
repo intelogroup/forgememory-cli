@@ -1,5 +1,21 @@
 # Changelog
 
+## [0.8.14] - 2026-08-23
+
+### Refactored
+- Tokenizer dedup: `internal/tokens` shared `TokenSet/Tokenize/SortedKeys` + `CommonStopWords` centralizes `cmd/hook` + `internal/distill` + `internal/mcp` (identical stop-word set, 12-cap + sort), -81 loc, 5 tests.
+- `cmd/hook.go` 1286 → 654 + `cmd/hook_recall.go` 647: extracted 24 recall/scoring helpers (`loadSessionRecallContext`, `findBestPromptRecall`, `scorePrompt*`, `recentnessScore`).
+- `internal/mcp/server.go` 1592 → 1080 + `server_coaching.go` 209 + `server_status.go` 331: extracted coaching and distillation/forge status helpers.
+- `internal/distill`: unify Groq/Nvidia/Openrouter into `callOpenAI` (`internal/distill/distill.go:1115`), handle 429 as rate-limit, `callGroq`/`callNvidia` as thin delegates.
+
+### Changed
+- `internal/distill`: per-field config priority via `firstNonEmptyEnv` so `FORGE_BASE_URL` correctly overrides `FORGE_API_URL` without duplication.
+- `internal/db`: `PRAGMA user_version` `schemaVersion 7` already skips migrate with no write lock when current (no contention on polling `Open()`).
+
+### Chore
+- `system.html` untracked (generated 29K), `.gitignore` + `git rm --cached`.
+- `gofmt -w` lint clean (22 files).
+
 ## [0.8.13] - 2026-08-15
 
 ### Added
