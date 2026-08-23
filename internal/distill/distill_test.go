@@ -245,7 +245,7 @@ func TestBuildPrompt_StripsHookMetadataFromUserPrompt(t *testing.T) {
 		SessionID: "sess-1",
 		ProjectID: "proj",
 		EventType: "UserPromptSubmit",
-		Payload: `{"session_id":"sess-1","transcript_path":"/tmp/transcript.jsonl","message":"Fix Cisco Umbrella bypass via Cloudflare Worker using ApplicationBuilder.base_url()","cwd":"/tmp/repo"}`,
+		Payload:   `{"session_id":"sess-1","transcript_path":"/tmp/transcript.jsonl","message":"Fix Cisco Umbrella bypass via Cloudflare Worker using ApplicationBuilder.base_url()","cwd":"/tmp/repo"}`,
 	}})
 
 	if !containsStr(prompt, "Fix Cisco Umbrella bypass via Cloudflare Worker using ApplicationBuilder.base_url()") {

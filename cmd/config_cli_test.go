@@ -98,4 +98,3 @@ func TestRunConfig_DistillBatchSizeBelowMinimum(t *testing.T) {
 		t.Fatalf("unexpected error output: %s", out)
 	}
 }
-

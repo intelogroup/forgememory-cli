@@ -71,7 +71,6 @@ func runInjectCheck(args []string) {
 	sb.WriteString("---\n")
 	context := sb.String()
 
-
 	switch sourceAgent {
 	case "gemini":
 		// Gemini CLI: JSON with additionalContext for SessionStart/BeforeAgent hooks
@@ -116,14 +115,14 @@ func runPrePushCheck() int {
 	}
 
 	var hits []struct {
-		p    db.Principle
+		p     db.Principle
 		files []string
 	}
 	for _, p := range principles {
 		matched := intersectStrings(pushFiles, p.FilesModified)
 		if len(matched) > 0 && p.ImpactScore >= 0.5 {
 			hits = append(hits, struct {
-				p    db.Principle
+				p     db.Principle
 				files []string
 			}{p, matched})
 		}

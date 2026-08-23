@@ -78,4 +78,3 @@ func isParentAlive(parentPID int) bool {
 	syscall.CloseHandle(h)
 	return err == nil && code == 259
 }
-

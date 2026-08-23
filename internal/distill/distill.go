@@ -15,9 +15,9 @@ import (
 	"path/filepath"
 	"regexp"
 	"runtime"
+	"sort"
 	"strconv"
 	"strings"
-	"sort"
 	"syscall"
 	"time"
 	"unicode"
@@ -31,10 +31,10 @@ import (
 type Provider string
 
 const (
-	ProviderOllama      Provider = "ollama"
-	ProviderOpenAI      Provider = "openai"
-	ProviderAnthropic   Provider = "anthropic"
-	ProviderCodex       Provider = "codex"
+	ProviderOllama    Provider = "ollama"
+	ProviderOpenAI    Provider = "openai"
+	ProviderAnthropic Provider = "anthropic"
+	ProviderCodex     Provider = "codex"
 
 	ProviderGroq        Provider = "groq"
 	ProviderNvidia      Provider = "nvidia"
@@ -60,7 +60,7 @@ var (
 func UserMessage(err error) string {
 	switch {
 	case errors.Is(err, ErrNoProvider):
-		return 		"No inference provider configured. Set FORGE_PROVIDER (anthropic/openai/groq/nvidia/ollama/codex) and run 'forge config' to configure."
+		return "No inference provider configured. Set FORGE_PROVIDER (anthropic/openai/groq/nvidia/ollama/codex) and run 'forge config' to configure."
 	case errors.Is(err, ErrProviderInvalid):
 		return "Invalid provider or credentials. Check your FORGE_PROVIDER setting and any required login or API key."
 	case errors.Is(err, ErrProviderUnreachable):
@@ -109,10 +109,10 @@ func DiagnosticHints(cfg Config, err error) []string {
 
 // Config holds distillation configuration.
 type Config struct {
-	Provider          Provider
-	APIKey            string
-	Model             string
-	BaseURL           string
+	Provider Provider
+	APIKey   string
+	Model    string
+	BaseURL  string
 
 	Timeout           time.Duration
 	Retries           int
@@ -670,10 +670,10 @@ func (d *Distiller) parseCrossSessionPatterns(response, projectID string, summar
 	}
 
 	var raw []struct {
-		Pattern               string  `json:"pattern"`
-		PatternType           string  `json:"pattern_type"`
-		Confidence            float64 `json:"confidence"`
-		EvidenceSessionIndices []int  `json:"evidence_session_indices"`
+		Pattern                string  `json:"pattern"`
+		PatternType            string  `json:"pattern_type"`
+		Confidence             float64 `json:"confidence"`
+		EvidenceSessionIndices []int   `json:"evidence_session_indices"`
 	}
 	if err := json.Unmarshal([]byte(response), &raw); err != nil {
 		return nil, fmt.Errorf("parse JSON: %w", err)
@@ -1077,7 +1077,6 @@ func cleanFilePath(p string) string {
 	p = strings.TrimPrefix(p, "./")
 	return strings.ToLower(p)
 }
-
 
 // DetectProjectID resolves the project identifier.
 // Priority: hint arg > FORGE_PROJECT_ID env > git repo root > ""

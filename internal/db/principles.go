@@ -11,8 +11,8 @@ import (
 	"sync"
 	"time"
 
-	"github.com/google/uuid"
 	"github.com/forge/forge/internal/security"
+	"github.com/google/uuid"
 )
 
 // AllowedConcepts is the whitelist of concept tags for principles.
@@ -593,4 +593,3 @@ func (d *DB) IncrementPrincipleUsage(id string) error {
 	)
 	return err
 }
-

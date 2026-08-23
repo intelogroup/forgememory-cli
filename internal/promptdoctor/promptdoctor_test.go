@@ -12,7 +12,7 @@ func mkPrompt(text string, offsetSec int) Prompt {
 func TestGroupChains(t *testing.T) {
 	prompts := []Prompt{
 		mkPrompt("fix the bug", 0),
-		mkPrompt("fix the bug now", 30), // within 90s -> same chain
+		mkPrompt("fix the bug now", 30),         // within 90s -> same chain
 		mkPrompt("unrelated later prompt", 500), // >90s gap -> new chain
 	}
 	chains := GroupChains("sess1", prompts)

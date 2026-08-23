@@ -117,4 +117,3 @@ func TestOpenAI401SurfacesAsProviderInvalid(t *testing.T) {
 		t.Fatalf("err = %v, want 'Invalid OpenAI API key' — wrong path or wrong status mapping", err)
 	}
 }
-

@@ -559,4 +559,3 @@ func TestPrincipleScoreAndUsage(t *testing.T) {
 		t.Error("expected last used ts to be set")
 	}
 }
-

@@ -201,7 +201,6 @@ func (c *Client) CallToolWithTimeout(name string, args map[string]any, timeout t
 	}
 }
 
-
 // Close shuts down the MCP subprocess by closing stdin and waiting for exit.
 func (c *Client) Close() error {
 	var err error

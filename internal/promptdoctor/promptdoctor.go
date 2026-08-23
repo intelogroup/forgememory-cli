@@ -28,16 +28,16 @@ type Chain struct {
 
 // Finding is one detected anti-pattern instance within a chain.
 type Finding struct {
-	ChainID      string
-	AntiPattern  string // "rephrase_loop" | "degenerate" | "vague_verb"
-	Prompt       string
+	ChainID     string
+	AntiPattern string // "rephrase_loop" | "degenerate" | "vague_verb"
+	Prompt      string
 }
 
 // Signals is the local evidence digest fed to the LLM.
 type Signals struct {
-	ProjectID string
-	Findings  []Finding
-	SteeredRate float64 // fraction of prompts that interrupted an in-progress turn
+	ProjectID    string
+	Findings     []Finding
+	SteeredRate  float64 // fraction of prompts that interrupted an in-progress turn
 	TotalPrompts int
 }
 

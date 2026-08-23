@@ -21,12 +21,12 @@ var (
 	lineNumPattern    = regexp.MustCompile(`:\d+(?::\d+)?`)
 	longNumberPattern = regexp.MustCompile(`\b\d{2,}\b`)
 
-	rustCodePattern     = regexp.MustCompile(`error\[(e\d{4})\]`)
-	npmErrPattern       = regexp.MustCompile(`npm err!?`)
-	pnpmErrPattern      = regexp.MustCompile(` err_pnpm_[a-z0-9_]+`)
-	goUndefinedPattern  = regexp.MustCompile(`undefined: [a-z0-9_./*]+`)
-	pythonTracePattern  = regexp.MustCompile(`traceback \(most recent call last\):`)
-	genericFailPattern  = regexp.MustCompile(`(?i)\b(error|failed|failure|panic|exception|fatal|undefined:|could not compile|cannot find|not found|timed out)\b`)
+	rustCodePattern    = regexp.MustCompile(`error\[(e\d{4})\]`)
+	npmErrPattern      = regexp.MustCompile(`npm err!?`)
+	pnpmErrPattern     = regexp.MustCompile(` err_pnpm_[a-z0-9_]+`)
+	goUndefinedPattern = regexp.MustCompile(`undefined: [a-z0-9_./*]+`)
+	pythonTracePattern = regexp.MustCompile(`traceback \(most recent call last\):`)
+	genericFailPattern = regexp.MustCompile(`(?i)\b(error|failed|failure|panic|exception|fatal|undefined:|could not compile|cannot find|not found|timed out)\b`)
 	// sourceCodeDeclPattern matches source code declaration lines that carry
 	// identifiers or parameters named "error"/"errors" but are not runtime failures.
 	sourceCodeDeclPattern = regexp.MustCompile(`(?i)^\s*(def |async def |func |fn |pub fn |class |public |private |protected )`)

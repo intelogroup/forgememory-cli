@@ -58,4 +58,3 @@ func isParentAlive(parentPID int) bool {
 	err = proc.Signal(syscall.Signal(0))
 	return err == nil
 }
-

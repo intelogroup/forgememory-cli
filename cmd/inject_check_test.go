@@ -292,13 +292,13 @@ func forgeDBPath(home string) string {
 func insertPrinciple(t *testing.T, database *db.DB, projectID, title string, impact float64, files []string) {
 	t.Helper()
 	_, err := database.InsertPrinciple(&db.Principle{
-		ID:           fmt.Sprintf("%s-%s", projectID, title),
-		TS:           time.Now().UTC().Format(time.RFC3339),
-		Type:         "pattern",
-		Title:        title,
-		Narrative:    "Test narrative for: " + title,
-		ImpactScore:  impact,
-		ProjectID:    projectID,
+		ID:            fmt.Sprintf("%s-%s", projectID, title),
+		TS:            time.Now().UTC().Format(time.RFC3339),
+		Type:          "pattern",
+		Title:         title,
+		Narrative:     "Test narrative for: " + title,
+		ImpactScore:   impact,
+		ProjectID:     projectID,
 		FilesModified: files,
 	})
 	if err != nil {

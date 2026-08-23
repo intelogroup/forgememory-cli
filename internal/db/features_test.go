@@ -307,7 +307,7 @@ func TestInsertPrincipleDuplicateIgnored(t *testing.T) {
 
 	p := &Principle{
 		Type: "pattern", Title: "Always use connection pooling",
-		Narrative: "Reuse DB connections to reduce overhead.",
+		Narrative:   "Reuse DB connections to reduce overhead.",
 		ImpactScore: 0.8, ProjectID: "proj",
 	}
 
@@ -322,7 +322,7 @@ func TestInsertPrincipleDuplicateIgnored(t *testing.T) {
 	// Same title + project but different narrative and ID — should be ignored.
 	dup := &Principle{
 		Type: "pattern", Title: "Always use connection pooling",
-		Narrative: "Different explanation but same title.",
+		Narrative:   "Different explanation but same title.",
 		ImpactScore: 0.5, ProjectID: "proj",
 	}
 	inserted2, err := db.InsertPrinciple(dup)

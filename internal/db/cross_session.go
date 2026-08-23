@@ -9,14 +9,14 @@ import (
 
 // CrossSessionPattern is a pattern mined across multiple work sessions.
 type CrossSessionPattern struct {
-	ID                 string   `json:"id"`
-	TS                 string   `json:"ts"`
-	ProjectID          string   `json:"project_id"`
-	Pattern            string   `json:"pattern"`
-	PatternType        string   `json:"pattern_type"`
-	EvidenceSessionIDs string   `json:"evidence_session_ids"`
-	Confidence         float64  `json:"confidence"`
-	Synthesized        bool     `json:"synthesized"`
+	ID                 string  `json:"id"`
+	TS                 string  `json:"ts"`
+	ProjectID          string  `json:"project_id"`
+	Pattern            string  `json:"pattern"`
+	PatternType        string  `json:"pattern_type"`
+	EvidenceSessionIDs string  `json:"evidence_session_ids"`
+	Confidence         float64 `json:"confidence"`
+	Synthesized        bool    `json:"synthesized"`
 }
 
 // InsertCrossSessionPattern stores a new cross-session pattern.

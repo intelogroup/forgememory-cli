@@ -5,8 +5,8 @@ import (
 	"fmt"
 	"os"
 
-	"github.com/forge/forge/internal/db"
 	"github.com/forge/forge/internal/dashboard"
+	"github.com/forge/forge/internal/db"
 )
 
 func runDashboard(args []string) {

@@ -47,4 +47,3 @@ func ScrubSecrets(payload string) string {
 
 	return payload
 }
-

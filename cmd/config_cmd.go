@@ -303,7 +303,7 @@ func runConfigInteractive(providerFlag, apiKeyFlag, modelFlag, timeoutFlag *stri
 	reader := bufio.NewReader(os.Stdin)
 	isTTY := false
 	if fi, err := os.Stdin.Stat(); err == nil {
-		isTTY = (fi.Mode()&os.ModeCharDevice) != 0
+		isTTY = (fi.Mode() & os.ModeCharDevice) != 0
 	}
 	if !isTTY {
 		return
@@ -469,5 +469,3 @@ func defaultBaseURLForProvider(provider string) string {
 		return ""
 	}
 }
-
-

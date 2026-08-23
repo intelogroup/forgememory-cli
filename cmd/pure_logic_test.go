@@ -154,7 +154,7 @@ func TestTransientForgeString_Slice(t *testing.T) {
 }
 
 func TestCheckProviderModelCompat(t *testing.T) {
-	ok := ""         // empty string = no error expected
+	ok := "" // empty string = no error expected
 	const defaultOpenAI = "https://api.openai.com"
 	const defaultGroq = "https://api.groq.com/openai"
 	const customURL = "http://localhost:8080"

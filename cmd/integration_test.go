@@ -1685,7 +1685,7 @@ func TestBinary_MCPSelfHealing(t *testing.T) {
 	// Start MCP subprocess
 	cmd := exec.Command(forgeBin, "mcp")
 	cmd.Env = append(baseEnv(), "HOME="+home)
-	
+
 	stdin, err := cmd.StdinPipe()
 	if err != nil {
 		t.Fatalf("stdin pipe: %v", err)
@@ -1694,11 +1694,11 @@ func TestBinary_MCPSelfHealing(t *testing.T) {
 	if err != nil {
 		t.Fatalf("stdout pipe: %v", err)
 	}
-	
+
 	if err := cmd.Start(); err != nil {
 		t.Fatalf("start mcp server: %v", err)
 	}
-	
+
 	defer func() {
 		_ = stdin.Close()
 		killProcessTree(cmd.Process.Pid)
@@ -1738,4 +1738,3 @@ func TestBinary_MCPSelfHealing(t *testing.T) {
 		t.Fatal("Daemon failed to recover automatically after MCP tool call")
 	}
 }
-
