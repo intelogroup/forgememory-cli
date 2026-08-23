@@ -1112,20 +1112,14 @@ func (d *Distiller) callLLM(prompt string) (string, error) {
 	switch d.config.Provider {
 	case ProviderOllama:
 		return d.callOllama(prompt)
-	case ProviderOpenAI:
+	case ProviderOpenAI, ProviderGroq, ProviderNvidia, ProviderOpenrouter:
 		return d.callOpenAI(prompt)
 	case ProviderAnthropic:
 		return d.callAnthropic(prompt)
 	case ProviderCodex:
 		return d.callCodex(prompt)
-	case ProviderGroq:
-		return d.callGroq(prompt)
-	case ProviderNvidia:
-		return d.callNvidia(prompt)
 	case ProviderAntigravity:
 		return d.callAntigravity(prompt)
-	case ProviderOpenrouter:
-		return d.callOpenAI(prompt)
 	default:
 		return "", fmt.Errorf("%w: unsupported provider %q", ErrNoProvider, d.config.Provider)
 	}
@@ -1242,6 +1236,9 @@ func (d *Distiller) callOpenAI(prompt string) (string, error) {
 	if resp.StatusCode == 403 {
 		return "", fmt.Errorf("%w: %s access forbidden", ErrProviderInvalid, displayProvider)
 	}
+	if resp.StatusCode == 429 {
+		return "", fmt.Errorf("%w: %s rate limit exceeded", ErrProviderUnreachable, displayProvider)
+	}
 	if resp.StatusCode == 404 {
 		return "", fmt.Errorf("%w: %s returned status 404 (model not found or endpoint invalid)", ErrProviderUnreachable, displayProvider)
 	}
@@ -1277,61 +1274,8 @@ func (d *Distiller) callOpenAI(prompt string) (string, error) {
 }
 
 func (d *Distiller) callGroq(prompt string) (string, error) {
-	url := normalizeOpenAIBase(d.config.BaseURL) + "/v1/chat/completions"
-
-	body := map[string]any{
-		"model": d.config.Model,
-		"messages": []map[string]string{
-			{"role": "user", "content": prompt},
-		},
-	}
-	jsonBody, _ := json.Marshal(body)
-
-	req, _ := http.NewRequest("POST", url, bytes.NewReader(jsonBody))
-	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("Authorization", "Bearer "+d.config.APIKey)
-
-	resp, err := d.client.Do(req)
-	if err != nil {
-		if isProviderUnreachableError(err) {
-			return "", fmt.Errorf("%w: %v", ErrProviderUnreachable, err)
-		}
-		return "", err
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode == 401 {
-		return "", fmt.Errorf("%w: Invalid Groq API key", ErrProviderInvalid)
-	}
-	if resp.StatusCode == 429 {
-		return "", fmt.Errorf("%w: Groq rate limit exceeded", ErrProviderUnreachable)
-	}
-	if resp.StatusCode >= 400 {
-		body, _ := io.ReadAll(resp.Body)
-		return "", fmt.Errorf("%w: Groq returned status %d: %s", ErrProviderInvalid, resp.StatusCode, string(body))
-	}
-
-	data, _ := io.ReadAll(resp.Body)
-	var result struct {
-		Choices []struct {
-			Message struct {
-				Content string `json:"content"`
-			} `json:"message"`
-		} `json:"choices"`
-		Usage struct {
-			PromptTokens     int `json:"prompt_tokens"`
-			CompletionTokens int `json:"completion_tokens"`
-			TotalTokens      int `json:"total_tokens"`
-		} `json:"usage"`
-	}
-	json.Unmarshal(data, &result)
-	d.Usage.PromptTokens += result.Usage.PromptTokens
-	d.Usage.CompletionTokens += result.Usage.CompletionTokens
-	d.Usage.TotalTokens += result.Usage.TotalTokens
-	if len(result.Choices) > 0 {
-		return result.Choices[0].Message.Content, nil
-	}
-	return "", fmt.Errorf("no response from Groq")
+	// Groq is OpenAI-compatible; reuse the shared path (429 handled above as rate limit).
+	return d.callOpenAI(prompt)
 }
 
 func (d *Distiller) callAnthropic(prompt string) (string, error) {
