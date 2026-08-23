@@ -133,27 +133,20 @@ func LoadConfig() Config {
 		fileLoaded = true
 	}
 
-	// 2. Resolve provider and credentials, prioritizing the config file.
-	// If the config file is successfully loaded and has a provider, use it.
-	// Otherwise, fall back to environment variables.
-	var provider string
-	var apiKey string
-	var model string
+	// 2. Resolve provider and credentials, prioritizing the config file per-field.
+	// file field wins if non-empty, otherwise env (FORGE_BASE_URL > FORGE_API_URL legacy).
+	envBaseURL := os.Getenv("FORGE_BASE_URL")
+	if envBaseURL == "" {
+		envBaseURL = os.Getenv("FORGE_API_URL")
+	}
+	provider := firstNonEmptyEnv(fileLoaded, fileCfg.Provider, os.Getenv("FORGE_PROVIDER"))
+	apiKey := firstNonEmptyEnv(fileLoaded, fileCfg.APIKey, os.Getenv("FORGE_API_KEY"))
+	model := firstNonEmptyEnv(fileLoaded, fileCfg.Model, os.Getenv("FORGE_MODEL"))
 	var baseURL string
-
-	if fileLoaded && fileCfg.Provider != "" {
-		provider = fileCfg.Provider
-		apiKey = fileCfg.APIKey
-		model = fileCfg.Model
+	if fileLoaded && fileCfg.BaseURL != "" {
 		baseURL = fileCfg.BaseURL
 	} else {
-		provider = os.Getenv("FORGE_PROVIDER")
-		apiKey = os.Getenv("FORGE_API_KEY")
-		model = os.Getenv("FORGE_MODEL")
-		baseURL = os.Getenv("FORGE_BASE_URL")
-		if baseURL == "" {
-			baseURL = os.Getenv("FORGE_API_URL")
-		}
+		baseURL = envBaseURL
 	}
 
 	// 3. Resolve other configuration parameters (with config file priority)
@@ -213,10 +206,6 @@ func LoadConfig() Config {
 		OllamaTimeout:     ollamaTimeout,
 		OllamaStartupWait: ollamaStartupWait,
 		DistillBatchSize:  distillBatchSize,
-	}
-
-	if cfg.BaseURL == "" {
-		cfg.BaseURL = os.Getenv("FORGE_API_URL") // legacy compatibility
 	}
 
 	if cfg.Provider == "" {
@@ -317,6 +306,13 @@ func parseBoolOrDefault(raw string, fallback bool) bool {
 		return fallback
 	}
 	return v
+}
+
+func firstNonEmptyEnv(fileLoaded bool, fileVal, envVal string) string {
+	if fileLoaded && fileVal != "" {
+		return fileVal
+	}
+	return envVal
 }
 
 // Distiller handles event distillation.
