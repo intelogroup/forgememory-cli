@@ -15,11 +15,11 @@ import (
 	"strconv"
 	"strings"
 	"time"
-	"unicode"
 
 	"github.com/forge/forge/internal/db"
 	"github.com/forge/forge/internal/distill"
 	"github.com/forge/forge/internal/ipc"
+	"github.com/forge/forge/internal/tokens"
 )
 
 // MCP Protocol types
@@ -970,29 +970,20 @@ func eventRecencyScore(ts string) float64 {
 }
 
 func tokenSet(text string) map[string]bool {
-	parts := strings.FieldsFunc(strings.ToLower(text), func(r rune) bool {
-		return !unicode.IsLetter(r) && !unicode.IsDigit(r)
-	})
-	set := make(map[string]bool)
-	for _, part := range parts {
-		if len(part) >= 3 {
-			set[part] = true
-		}
-	}
-	return set
+	return tokens.TokenSet(text, nil)
 }
 
 func topQueryTokens(query string, limit int) []string {
 	set := tokenSet(query)
-	tokens := make([]string, 0, len(set))
+	toks := make([]string, 0, len(set))
 	for token := range set {
-		tokens = append(tokens, token)
+		toks = append(toks, token)
 	}
-	sort.Strings(tokens)
-	if limit <= 0 || len(tokens) <= limit {
-		return tokens
+	sort.Strings(toks)
+	if limit <= 0 || len(toks) <= limit {
+		return toks
 	}
-	return tokens[:limit]
+	return toks[:limit]
 }
 
 func (s *Server) getActiveFailures(args map[string]any) ToolResult {

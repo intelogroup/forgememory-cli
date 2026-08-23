@@ -18,9 +18,10 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+
+	"github.com/forge/forge/internal/tokens"
 	"syscall"
 	"time"
-	"unicode"
 
 	"github.com/forge/forge/internal/config"
 	"github.com/forge/forge/internal/db"
@@ -999,38 +1000,10 @@ func GetRelevantPrinciples(database *db.DB, projectID string, queryHint string, 
 	return result, nil
 }
 
-var injectStopWords = map[string]bool{
-	"a": true, "about": true, "after": true, "agent": true, "all": true,
-	"also": true, "and": true, "are": true, "been": true, "before": true,
-	"build": true, "change": true, "claude": true, "codex": true, "create": true,
-	"feature": true, "for": true, "from": true, "gemini": true, "have": true,
-	"implement": true, "into": true, "just": true, "make": true, "need": true,
-	"next": true, "prompt": true, "project": true, "repo": true, "same": true,
-	"session": true, "some": true, "that": true, "the": true, "their": true,
-	"there": true, "they": true, "this": true, "tool": true, "user": true,
-	"using": true, "want": true, "with": true, "work": true, "working": true,
-}
+var injectStopWords = tokens.CommonStopWords
 
 func tokenize(text string) []string {
-	parts := strings.FieldsFunc(strings.ToLower(text), func(r rune) bool {
-		return !unicode.IsLetter(r) && !unicode.IsDigit(r)
-	})
-	set := make(map[string]bool)
-	for _, part := range parts {
-		if len(part) < 3 || injectStopWords[part] {
-			continue
-		}
-		set[part] = true
-	}
-	var keys []string
-	for k := range set {
-		keys = append(keys, k)
-	}
-	sort.Strings(keys)
-	if len(keys) > 12 {
-		keys = keys[:12]
-	}
-	return keys
+	return tokens.Tokenize(text, injectStopWords)
 }
 
 func jaccardIntersection(a, b []string) float64 {

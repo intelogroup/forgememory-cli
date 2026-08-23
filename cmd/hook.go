@@ -13,12 +13,12 @@ import (
 	"strconv"
 	"strings"
 	"time"
-	"unicode"
 
 	"github.com/forge/forge/internal/coach"
 	"github.com/forge/forge/internal/db"
 	"github.com/forge/forge/internal/ipc"
 	"github.com/forge/forge/internal/retrieve"
+	"github.com/forge/forge/internal/tokens"
 	"github.com/google/uuid"
 )
 
@@ -310,17 +310,7 @@ var promptFieldPriority = map[string]int{
 	"query":       3,
 }
 
-var recallStopWords = map[string]bool{
-	"a": true, "about": true, "after": true, "agent": true, "all": true,
-	"also": true, "and": true, "are": true, "been": true, "before": true,
-	"build": true, "change": true, "claude": true, "codex": true, "create": true,
-	"feature": true, "for": true, "from": true, "gemini": true, "have": true,
-	"implement": true, "into": true, "just": true, "make": true, "need": true,
-	"next": true, "prompt": true, "project": true, "repo": true, "same": true,
-	"session": true, "some": true, "that": true, "the": true, "their": true,
-	"there": true, "they": true, "this": true, "tool": true, "user": true,
-	"using": true, "want": true, "with": true, "work": true, "working": true,
-}
+var recallStopWords = tokens.CommonStopWords
 
 type promptCandidate struct {
 	priority int
@@ -1236,33 +1226,15 @@ func recentnessScore(ts string) float64 {
 }
 
 func recallTokens(text string) []string {
-	return sortedKeys(tokenSet(text))
+	return tokens.Tokenize(text, recallStopWords)
 }
 
 func tokenSet(text string) map[string]bool {
-	parts := strings.FieldsFunc(strings.ToLower(text), func(r rune) bool {
-		return !unicode.IsLetter(r) && !unicode.IsDigit(r)
-	})
-	set := make(map[string]bool)
-	for _, part := range parts {
-		if len(part) < 3 || recallStopWords[part] {
-			continue
-		}
-		set[part] = true
-	}
-	return set
+	return tokens.TokenSet(text, recallStopWords)
 }
 
 func sortedKeys(set map[string]bool) []string {
-	keys := make([]string, 0, len(set))
-	for key := range set {
-		keys = append(keys, key)
-	}
-	sort.Strings(keys)
-	if len(keys) > 12 {
-		keys = keys[:12]
-	}
-	return keys
+	return tokens.SortedKeys(set)
 }
 
 func sameProject(a, b string) bool {
