@@ -664,3 +664,26 @@ func TestInferSourceTool(t *testing.T) {
 		}
 	}
 }
+
+// Claude Code sends no exit_code/status on PostToolUse: the hook only fires
+// when the tool returned, so a plain response is a success.
+func TestHookEventMetadataDerivesStatusWithoutExitCode(t *testing.T) {
+	cases := []struct {
+		name string
+		resp any
+		want string
+	}{
+		{"plain", map[string]any{"stdout": "x", "stderr": "", "interrupted": false}, "success"},
+		{"interrupted", map[string]any{"interrupted": true}, "interrupted"},
+		{"timeout", map[string]any{"timedOutAfterMs": float64(120000)}, "timeout"},
+		{"no response", nil, ""},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			status, _, _, _, _, _ := hookEventMetadata(ClaudeHookInput{ToolResponse: c.resp})
+			if status != c.want {
+				t.Fatalf("status = %q, want %q", status, c.want)
+			}
+		})
+	}
+}

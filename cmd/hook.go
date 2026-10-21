@@ -189,6 +189,18 @@ func hookEventMetadata(input ClaudeHookInput) (status string, exitCode int, dura
 			status = "success"
 		}
 	}
+	// Claude Code sends no exit code or status; PostToolUse only fires when the
+	// tool returned, so a response that wasn't interrupted or timed out succeeded.
+	if response, ok := input.ToolResponse.(map[string]any); ok && status == "" {
+		switch {
+		case response["interrupted"] == true:
+			status = "interrupted"
+		case response["timedOutAfterMs"] != nil:
+			status = "timeout"
+		default:
+			status = "success"
+		}
+	}
 	return
 }
 
