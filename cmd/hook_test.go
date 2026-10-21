@@ -649,3 +649,18 @@ func TestIsNoisePayload_Empty(t *testing.T) {
 		t.Error("empty payload should not be noise")
 	}
 }
+
+func TestInferSourceTool(t *testing.T) {
+	cases := []struct{ current, transcript, want string }{
+		{"unknown", "/Users/u/.claude/projects/-p/abc.jsonl", "claude"},
+		{"", "/Users/u/.claude/projects/-p/abc.jsonl", "claude"},
+		{"codex", "/Users/u/.claude/projects/-p/abc.jsonl", "codex"},
+		{"unknown", "/Users/u/.gemini/tmp/x.json", "unknown"},
+		{"unknown", "", "unknown"},
+	}
+	for _, c := range cases {
+		if got := inferSourceTool(c.current, c.transcript); got != c.want {
+			t.Errorf("inferSourceTool(%q, %q) = %q, want %q", c.current, c.transcript, got, c.want)
+		}
+	}
+}

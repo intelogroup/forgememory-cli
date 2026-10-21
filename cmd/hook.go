@@ -348,6 +348,15 @@ func isSessionEndEvent(eventType string) bool {
 	return false
 }
 
+// inferSourceTool tags events from a bare `forge hook` (no --source) by
+// transcript location: Claude Code writes transcripts under ~/.claude/.
+func inferSourceTool(current, transcriptPath string) string {
+	if (current == "" || current == "unknown") && strings.Contains(transcriptPath, "/.claude/") {
+		return "claude"
+	}
+	return current
+}
+
 // runHook is the entrypoint for `forge hook`.
 // It reads the hook payload from stdin, packages it, and sends to the daemon.
 // Fails silently in <1ms if daemon is down.
@@ -395,6 +404,7 @@ func runHook(args []string) {
 	// Parse hook input to extract session/tool metadata.
 	input, eventType := parseHookInput(payload, eventType)
 	status, exitCode, durationMS, sequence, model, parentSpanID := hookEventMetadata(input)
+	sourceTool = inferSourceTool(sourceTool, input.TranscriptPath)
 
 	sessionID := input.SessionID
 	if sessionID == "" {
