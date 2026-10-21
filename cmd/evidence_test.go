@@ -174,3 +174,50 @@ func strconvQuote(value string) string {
 	encoded, _ := json.Marshal(value)
 	return string(encoded)
 }
+
+// The hook computes status/exit_code/duration/sequence/parent span; the daemon
+// must persist them (they were silently dropped, leaving the columns empty).
+func TestHandleEventMsgPersistsOutcomeFields(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	database, err := db.Open(filepath.Join(home, "forge.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer database.Close()
+
+	raw := map[string]json.RawMessage{
+		"type":           json.RawMessage(`"event"`),
+		"id":             json.RawMessage(`"event-out"`),
+		"session_id":     json.RawMessage(`"session-out"`),
+		"project_id":     json.RawMessage(`"project-out"`),
+		"source_tool":    json.RawMessage(`"claude"`),
+		"event_type":     json.RawMessage(`"PostToolUse"`),
+		"tool_name":      json.RawMessage(`"Bash"`),
+		"payload":        json.RawMessage(`"{}"`),
+		"status":         json.RawMessage(`"error"`),
+		"exit_code":      json.RawMessage(`2`),
+		"duration_ms":    json.RawMessage(`842`),
+		"sequence":       json.RawMessage(`7`),
+		"parent_span_id": json.RawMessage(`"parent-1"`),
+	}
+	handleEventMsg(raw, database)
+
+	events, err := database.UndistilledEventsIncludingUnknown(10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got *db.Event
+	for i := range events {
+		if events[i].ID == "event-out" {
+			got = &events[i]
+		}
+	}
+	if got == nil {
+		t.Fatalf("event-out not stored: %#v", events)
+	}
+	if got.Status != "error" || got.ExitCode != 2 || got.DurationMS != 842 || got.Sequence != 7 || got.ParentSpanID != "parent-1" {
+		t.Fatalf("got status=%q exit=%d dur=%d seq=%d parent=%q, want error/2/842/7/parent-1",
+			got.Status, got.ExitCode, got.DurationMS, got.Sequence, got.ParentSpanID)
+	}
+}

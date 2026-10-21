@@ -261,12 +261,22 @@ func handleEventMsg(raw map[string]json.RawMessage, database *db.DB) {
 		json.Unmarshal(v, &s)
 		return s
 	}
+	extractInt := func(key string) int64 {
+		var n any
+		_ = json.Unmarshal(raw[key], &n)
+		return int64Value(n)
+	}
 
 	event := &db.Event{
 		ID:             extract("id"),
 		TS:             extract("ts"),
 		TraceID:        extract("trace_id"),
 		SpanID:         extract("span_id"),
+		ParentSpanID:   extract("parent_span_id"),
+		Sequence:       extractInt("sequence"),
+		DurationMS:     extractInt("duration_ms"),
+		Status:         extract("status"),
+		ExitCode:       int(extractInt("exit_code")),
 		Model:          extract("model"),
 		TaskID:         extract("task_id"),
 		CWD:            extract("cwd"),
