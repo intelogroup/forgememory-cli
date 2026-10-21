@@ -1167,6 +1167,11 @@ func (d *Distiller) callOpenAI(prompt string) (string, error) {
 			{"role": "user", "content": prompt},
 		},
 	}
+	if d.config.Provider == ProviderOpenAI {
+		// gpt-5+ models reject max_tokens; max_completion_tokens works on all current OpenAI models.
+		delete(body, "max_tokens")
+		body["max_completion_tokens"] = 16384 // headroom for reasoning tokens
+	}
 	if d.config.Provider == ProviderOpenAI && strings.Contains(strings.ToLower(prompt), "json") {
 		body["response_format"] = map[string]string{"type": "json_object"}
 	}

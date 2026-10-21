@@ -1,6 +1,7 @@
 package distill
 
 import (
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -115,5 +116,39 @@ func TestOpenAI401SurfacesAsProviderInvalid(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "Invalid OpenAI API key") {
 		t.Fatalf("err = %v, want 'Invalid OpenAI API key' — wrong path or wrong status mapping", err)
+	}
+}
+
+// Newer OpenAI models (gpt-5+/luna) reject max_tokens; OpenAI must get
+// max_completion_tokens while other OpenAI-compatible providers keep max_tokens.
+func TestCallOpenAITokenLimitParam(t *testing.T) {
+	cases := []struct {
+		provider      Provider
+		want, notWant string
+	}{
+		{ProviderOpenAI, "max_completion_tokens", "max_tokens"},
+		{ProviderGroq, "max_tokens", "max_completion_tokens"},
+	}
+	for _, c := range cases {
+		t.Run(string(c.provider), func(t *testing.T) {
+			var got atomic.Value
+			got.Store("")
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				b, _ := io.ReadAll(r.Body)
+				got.Store(string(b))
+				w.Header().Set("Content-Type", "application/json")
+				_, _ = w.Write([]byte(`{"choices":[{"message":{"content":"ok"}}]}`))
+			}))
+			defer srv.Close()
+
+			d := New(nil, Config{Provider: c.provider, APIKey: "k", Model: "m", BaseURL: srv.URL, Timeout: 5 * time.Second})
+			if _, err := d.callOpenAI("ping"); err != nil {
+				t.Fatalf("callOpenAI: %v", err)
+			}
+			body := got.Load().(string)
+			if !strings.Contains(body, `"`+c.want+`"`) || strings.Contains(body, `"`+c.notWant+`"`) {
+				t.Fatalf("body %s: want %s and not %s", body, c.want, c.notWant)
+			}
+		})
 	}
 }
