@@ -133,6 +133,12 @@ func TestSetupOpencode_WritesPlugin(t *testing.T) {
 		t.Error("plugin should gate Stop on status === \"idle\"")
 	}
 
+	// The plugin is an ES module (`export const ForgePlugin`); `require` is not
+	// defined there, so spawn must come from an ESM import.
+	if strings.Contains(plugin, "require(") || !strings.Contains(plugin, `import { spawn } from "node:child_process"`) {
+		t.Error("plugin must import spawn via ESM, not require()")
+	}
+
 	// Must NOT use the `$` shell helper — OpenCode does not expose it,
 	// and previous versions broke with "$ is not a function" at runtime.
 	if strings.Contains(plugin, "{ $ }") || strings.Contains(plugin, "({ $ })") {
