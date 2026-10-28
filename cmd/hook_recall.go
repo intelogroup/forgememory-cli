@@ -17,8 +17,34 @@ func isFirstPromptOfSession(database *db.DB, sessionID string) bool {
 	if sessionID == "" || sessionID == "unknown" {
 		return false
 	}
-	events, err := database.SessionEvents(sessionID, 1)
-	return err == nil && len(events) == 0
+	// the prompt being handled is already stored; SessionStart events precede it
+	events, err := database.SessionEvents(sessionID, 500)
+	if err != nil {
+		return false
+	}
+	n := 0
+	for _, e := range events {
+		if e.EventType == "SessionStart" {
+			continue
+		}
+		if e.EventType != "UserPromptSubmit" {
+			return false
+		}
+		n++
+	}
+	return n <= 1
+}
+
+// promptMatchShown reports whether buildSessionRecallOutput puts the match in the prompt.
+func promptMatchShown(m *promptRecallMatch) bool {
+	if m == nil {
+		return false
+	}
+	threshold := 2.0
+	if m.ImplHint != "" {
+		threshold = 1.5
+	}
+	return m.Score >= threshold
 }
 
 // loadLastProjectSession returns the most recent session summary for a project,
@@ -214,11 +240,7 @@ func envInt(key string, fallback int) int {
 func buildSessionRecallOutput(projectID string, summaries []db.SessionSummary, principles []db.Principle, alerts []db.Alert, externalSummaries []db.ExternalContextSummary, promptMatch *promptRecallMatch, lastSession *db.SessionSummary, distillError string) string {
 	var sentences []string
 
-	matchThreshold := 2.0
-	if promptMatch != nil && promptMatch.ImplHint != "" {
-		matchThreshold = 1.5
-	}
-	if promptMatch != nil && promptMatch.Score >= matchThreshold {
+	if promptMatchShown(promptMatch) {
 		source := displayProjectName(promptMatch.ProjectID)
 		if promptMatch.ImplHint != "" {
 			outcome := promptMatch.Outcome
@@ -246,6 +268,16 @@ func buildSessionRecallOutput(projectID string, summaries []db.SessionSummary, p
 				trimSentence(promptMatch.Narrative),
 			))
 		}
+	}
+
+	var lessons []string
+	for _, p := range principles {
+		if p.Title != "" {
+			lessons = append(lessons, p.Title)
+		}
+	}
+	if len(lessons) > 0 {
+		sentences = append(sentences, "Recent lessons: "+strings.Join(lessons, "; ")+".")
 	}
 
 	// Docs/API insights
@@ -492,6 +524,7 @@ func scorePromptPrincipleMatch(principle db.Principle, tokens []string) (promptR
 
 	return promptRecallMatch{
 		SourceType:   "principle",
+		PrincipleID:  principle.ID,
 		ProjectID:    principle.ProjectID,
 		Narrative:    principle.Narrative,
 		Title:        principle.Title,

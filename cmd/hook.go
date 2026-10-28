@@ -331,6 +331,7 @@ type promptCandidate struct {
 
 type promptRecallMatch struct {
 	SourceType   string
+	PrincipleID  string // set when SourceType is "principle", so a shown match can be counted as a recall
 	ProjectID    string
 	Narrative    string
 	Title        string
@@ -491,7 +492,7 @@ func runHook(args []string) {
 	// Prompt recall: inject recent context after persisting the latest prompt so
 	// both project-local summaries and cross-project matches can use it.
 	if eventType == "UserPromptSubmit" {
-		handleSessionRecall(projectID, payload)
+		handleSessionRecall(projectID, sessionID, payload)
 		os.Exit(0)
 	}
 	os.Exit(0)
@@ -499,14 +500,13 @@ func runHook(args []string) {
 
 // handleSessionRecall injects recent memories as hookSpecificOutput.
 // Opens the DB directly (read-only under WAL mode — safe with concurrent daemon writes).
-func handleSessionRecall(projectID, payload string) {
+func handleSessionRecall(projectID, sessionID, payload string) {
 	database, err := db.Open("")
 	if err != nil {
 		return
 	}
 	defer database.Close()
 
-	sessionID := envOr("FORGE_SESSION_ID", "")
 	isFirst := isFirstPromptOfSession(database, sessionID)
 
 	promptText := extractPromptText(payload)
@@ -540,6 +540,9 @@ func handleSessionRecall(projectID, payload string) {
 		return
 	}
 	markEmittedPrinciplesUsed(database, text, principles)
+	if promptMatchShown(promptMatch) && promptMatch.PrincipleID != "" {
+		_ = database.IncrementPrincipleUsage(promptMatch.PrincipleID)
+	}
 	output := map[string]interface{}{
 		"hookSpecificOutput": map[string]interface{}{
 			"hookEventName":     "UserPromptSubmit",

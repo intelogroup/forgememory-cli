@@ -689,6 +689,7 @@ func TestHookEventMetadataDerivesStatusWithoutExitCode(t *testing.T) {
 }
 
 func TestMarkEmittedPrinciplesUsed_CountsOnlyThoseShown(t *testing.T) {
+	t.Setenv("HOME", t.TempDir()) // db.Open("") resolves under HOME: never touch the real forge.db
 	database, err := db.Open("")
 	if err != nil {
 		t.Fatalf("db.Open failed: %v", err)
@@ -710,5 +711,60 @@ func TestMarkEmittedPrinciplesUsed_CountsOnlyThoseShown(t *testing.T) {
 	}
 	if counts["p1"] != 1 || counts["p2"] != 0 {
 		t.Fatalf("want p1=1 p2=0, got %v", counts)
+	}
+}
+
+func TestBuildSessionRecallOutput_IncludesRecentLessons(t *testing.T) {
+	out := buildSessionRecallOutput("proj", nil,
+		[]db.Principle{{Title: "run the test before saying done"}}, nil, nil, nil, nil, "")
+	if !strings.Contains(out, "Recent lessons: run the test before saying done.") {
+		t.Fatalf("missing recent lessons: %q", out)
+	}
+}
+
+func TestPromptMatchShown_FollowsThreshold(t *testing.T) {
+	if promptMatchShown(nil) || promptMatchShown(&promptRecallMatch{Score: 1.9}) {
+		t.Fatal("below threshold or nil must not count as shown")
+	}
+	if !promptMatchShown(&promptRecallMatch{Score: 2.0}) || !promptMatchShown(&promptRecallMatch{Score: 1.5, ImplHint: "h"}) {
+		t.Fatal("at threshold must count as shown")
+	}
+}
+
+func TestScorePromptPrincipleMatch_CarriesID(t *testing.T) {
+	p := db.Principle{ID: "p9", TS: "2026-10-28T00:00:00Z", Title: "retry daemon connection refused", Narrative: "retry daemon connection refused on startup"}
+	m, ok := scorePromptPrincipleMatch(p, recallTokens("daemon connection refused retry"))
+	if !ok || m.PrincipleID != "p9" {
+		t.Fatalf("want match with PrincipleID p9, got ok=%v %+v", ok, m)
+	}
+}
+
+func TestIsFirstPromptOfSession_CountsPromptsNotOtherEvents(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	database, err := db.Open("")
+	if err != nil {
+		t.Fatalf("db.Open failed: %v", err)
+	}
+	defer database.Close()
+	add := func(id, ts, typ string) {
+		if err := database.InsertEvent(&db.Event{ID: id, TS: ts, TraceID: "s1", SpanID: id, SessionID: "s1", EventType: typ, Payload: "{}"}); err != nil {
+			t.Fatalf("InsertEvent: %v", err)
+		}
+	}
+	add("e1", "2026-10-28T00:00:00Z", "SessionStart")
+	add("e2", "2026-10-28T00:00:01Z", "UserPromptSubmit")
+	if !isFirstPromptOfSession(database, "s1") {
+		t.Fatal("one stored prompt plus SessionStart is still the first prompt")
+	}
+	add("e3", "2026-10-28T00:00:02Z", "UserPromptSubmit")
+	if isFirstPromptOfSession(database, "s1") {
+		t.Fatal("second stored prompt is not the first")
+	}
+	add("e4", "2026-10-28T00:00:03Z", "PostToolUse")
+	if isFirstPromptOfSession(database, "s1") {
+		t.Fatal("a session with tool events is not at its first prompt")
+	}
+	if isFirstPromptOfSession(database, "") {
+		t.Fatal("empty session id must not inject")
 	}
 }
