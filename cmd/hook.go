@@ -539,6 +539,7 @@ func handleSessionRecall(projectID, payload string) {
 	if text == "" {
 		return
 	}
+	markEmittedPrinciplesUsed(database, text, principles)
 	output := map[string]interface{}{
 		"hookSpecificOutput": map[string]interface{}{
 			"hookEventName":     "UserPromptSubmit",
@@ -547,6 +548,15 @@ func handleSessionRecall(projectID, payload string) {
 	}
 	data, _ := json.Marshal(output)
 	fmt.Println(string(data))
+}
+
+// markEmittedPrinciplesUsed counts a recall for each principle the hook actually put in the prompt.
+func markEmittedPrinciplesUsed(database *db.DB, text string, principles []db.Principle) {
+	for _, p := range principles {
+		if p.Title != "" && strings.Contains(text, p.Title) {
+			_ = database.IncrementPrincipleUsage(p.ID)
+		}
+	}
 }
 
 func appendCoachSuggestion(recall string, item *db.CoachingItem) string {

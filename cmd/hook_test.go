@@ -687,3 +687,28 @@ func TestHookEventMetadataDerivesStatusWithoutExitCode(t *testing.T) {
 		})
 	}
 }
+
+func TestMarkEmittedPrinciplesUsed_CountsOnlyThoseShown(t *testing.T) {
+	database, err := db.Open("")
+	if err != nil {
+		t.Fatalf("db.Open failed: %v", err)
+	}
+	defer database.Close()
+	shown := db.Principle{ID: "p1", TS: "2026-10-28T00:00:00Z", Type: "pattern", Title: "shown lesson", Narrative: "n", ProjectID: "proj"}
+	hidden := db.Principle{ID: "p2", TS: "2026-10-28T00:00:01Z", Type: "pattern", Title: "hidden lesson", Narrative: "n", ProjectID: "proj"}
+	for _, p := range []db.Principle{shown, hidden} {
+		p := p
+		if _, err := database.InsertPrinciple(&p); err != nil {
+			t.Fatalf("InsertPrinciple failed: %v", err)
+		}
+	}
+	markEmittedPrinciplesUsed(database, "Recall: shown lesson applies", []db.Principle{shown, hidden})
+	got, _ := database.RecentPrinciplesByProject("proj", 10)
+	counts := map[string]int{}
+	for _, p := range got {
+		counts[p.ID] = p.UseCount
+	}
+	if counts["p1"] != 1 || counts["p2"] != 0 {
+		t.Fatalf("want p1=1 p2=0, got %v", counts)
+	}
+}
