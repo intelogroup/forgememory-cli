@@ -529,6 +529,14 @@ func isTestBinary() bool {
 	return strings.HasSuffix(filepath.Base(os.Args[0]), ".test")
 }
 
+// markPrinciplesUsed counts a recall: a principle handed to the agent was used,
+// so use_count and last_used_ts show which memories actually come back.
+func markPrinciplesUsed(database *db.DB, ps []db.Principle) {
+	for _, p := range ps {
+		_ = database.IncrementPrincipleUsage(p.ID)
+	}
+}
+
 func (s *Server) getRecentContext(args map[string]any) ToolResult {
 	limit := intFromArgs(args, "limit", 10)
 	projectID := projectIDFromArgs(args)
@@ -537,6 +545,7 @@ func (s *Server) getRecentContext(args map[string]any) ToolResult {
 	if err != nil {
 		return toolError("Failed to get principles: " + err.Error())
 	}
+	markPrinciplesUsed(s.db, principles)
 	summaries, _ := s.db.GetRecentSessionSummariesByProject(projectID, 3)
 	alerts, _ := s.db.ActiveAlertsByProject(projectID, 3)
 	externalSummaries, _ := s.db.FreshExternalContextSummariesByProject(projectID, 3)
@@ -668,6 +677,7 @@ func (s *Server) getPrinciples(args map[string]any) ToolResult {
 	if err != nil {
 		return toolError("Failed to get principles: " + err.Error())
 	}
+	markPrinciplesUsed(s.db, principles)
 
 	text := fmt.Sprintf("## Distilled Principles: %s\n\n", projectID)
 

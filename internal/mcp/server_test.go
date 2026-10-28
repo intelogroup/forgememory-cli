@@ -500,6 +500,26 @@ func TestGetPrinciples_ShortTimestampDoesNotPanic(t *testing.T) {
 	}
 }
 
+func TestRecallCountsPrincipleUse(t *testing.T) {
+	database := openTestDB(t)
+	if _, err := database.InsertPrinciple(&db.Principle{
+		ID: "p1", TS: "2026-10-28T00:00:00Z", Type: "pattern", Title: "t", Narrative: "n", ProjectID: "proj",
+	}); err != nil {
+		t.Fatalf("InsertPrinciple failed: %v", err)
+	}
+	s := New(database)
+	args := map[string]any{"limit": 10.0, "project_id": "proj"}
+	s.getPrinciples(args)
+	s.getRecentContext(args)
+	got, err := database.RecentPrinciplesByProject("proj", 10)
+	if err != nil || len(got) != 1 {
+		t.Fatalf("read back: %v %v", got, err)
+	}
+	if got[0].UseCount != 2 || got[0].LastUsedTS == "" {
+		t.Fatalf("want use_count 2 and last_used_ts set, got %d %q", got[0].UseCount, got[0].LastUsedTS)
+	}
+}
+
 func openTestDB(t *testing.T) *db.DB {
 	t.Helper()
 	database, err := db.Open(filepath.Join(t.TempDir(), "test.db"))
