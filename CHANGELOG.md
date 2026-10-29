@@ -1,5 +1,18 @@
 # Changelog
 
+## [Unreleased]
+
+### Added
+- `forge consolidate`: Mem0-style ADD/UPDATE/DELETE consolidation over distilled principles. Dry run by default, `--apply` writes. Each LLM batch commits in one transaction, invalid decisions are rejected (batch membership, evidence resolution against events/sessions, score clamp), and DELETE expires rather than deletes.
+- Memory schema v8: temporal columns on `principles` (`valid_from`, `valid_until`, `expired_at`, `superseded_by`, `reference_ts`, `source_episodes`), plus `memory_edges` and a `memory_ops` audit trail.
+- `db.UpdatePrincipleContent` and `db.RevivePrincipleIfExpired` route rewrites through the signing/encryption chokepoint; `db.EvidenceExists` resolves cited evidence.
+
+### Fixed
+- Schema 8 migration referenced `expired_at` before the column existed, failing every `Open()` on fresh and v7 databases.
+- Consolidation UPDATE wrote title/narrative without re-signing, so updated principles were dropped by every read path.
+- ADD ignored `inserted`, silently losing duplicate decisions while writing a false ADD audit row.
+- Expiring one side of a conflict pair stranded the peer in `conflicting` forever.
+
 ## [0.8.14] - 2026-08-23
 
 ### Refactored

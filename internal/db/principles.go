@@ -90,6 +90,24 @@ func signedPayload(title, narrative string) string {
 	return title + "\x00" + narrative
 }
 
+// sealPrincipleContent signs title+narrative and encrypts the narrative for
+// storage. Every write path that stores a principle's text goes through here,
+// so a rewritten row keeps a signature scanPrinciples can verify. Returns a
+// nil-safe result when the key feature is disabled.
+func sealPrincipleContent(title, narrative string) (storedNarrative, signature string) {
+	key := hmacKey()
+	if key == nil {
+		return narrative, ""
+	}
+	signature = security.Sign(key, signedPayload(title, narrative))
+	enc, err := security.Encrypt(key, narrative)
+	if err != nil {
+		log.Printf("forge: encrypting principle narrative failed, storing plaintext: %v", err)
+		return narrative, signature
+	}
+	return enc, signature
+}
+
 // FilterConcepts returns only the concepts that are in AllowedConcepts.
 func FilterConcepts(concepts []string) []string {
 	var out []string
@@ -106,6 +124,19 @@ func FilterConcepts(concepts []string) []string {
 // actually inserted, (false, nil) when it was silently ignored due to a
 // duplicate fingerprint.
 func (d *DB) InsertPrinciple(p *Principle) (inserted bool, err error) {
+	return d.insertPrinciple(nil, p)
+}
+
+// InsertPrincipleTx is InsertPrinciple inside an existing transaction.
+func (d *DB) InsertPrincipleTx(tx *sql.Tx, p *Principle) (inserted bool, err error) {
+	if tx == nil {
+		return false, ErrTxRequired
+	}
+	var c connOrTx = tx
+	return d.insertPrinciple(&c, p)
+}
+
+func (d *DB) insertPrinciple(c *connOrTx, p *Principle) (inserted bool, err error) {
 	if p.ID == "" {
 		p.ID = uuid.New().String()
 	}
@@ -115,30 +146,20 @@ func (d *DB) InsertPrinciple(p *Principle) (inserted bool, err error) {
 	if p.Fingerprint == "" {
 		p.Fingerprint = fingerprint(p.Title, p.ProjectID)
 	}
-	key := hmacKey()
-	if key != nil {
-		p.Signature = security.Sign(key, signedPayload(p.Title, p.Narrative))
-	}
 	conceptsJSON := encodeStringSlice(p.Concepts)
 	filesJSON := encodeStringSlice(p.FilesModified)
 
-	// Signature above is computed over the plaintext narrative; only the
-	// stored column is encrypted, so verification on read still checks the
-	// real content (decrypt happens before verify in scanPrinciples).
-	storedNarrative := p.Narrative
-	if key != nil {
-		if enc, err := security.Encrypt(key, p.Narrative); err == nil {
-			storedNarrative = enc
-		} else {
-			log.Printf("forge: encrypting principle narrative failed, storing plaintext: %v", err)
-		}
-	}
+	// The signature is computed over the plaintext narrative; only the stored
+	// column is encrypted, so verification on read still checks the real
+	// content (decrypt happens before verify in scanPrinciples).
+	storedNarrative, signature := sealPrincipleContent(p.Title, p.Narrative)
+	p.Signature = signature
 
 	outcome := p.Outcome
 	if outcome == "" {
 		outcome = "unknown"
 	}
-	result, err := d.conn.Exec(
+	result, err := execOn(d.conn, c)(
 		`INSERT OR IGNORE INTO principles
 		 (id, ts, type, title, narrative, impact_score, project_id, source_event, fingerprint, concepts, files_modified, outcome, impl_hint, last_used_ts, use_count, signature)
 		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
@@ -362,7 +383,22 @@ func (d *DB) PrincipleCount() (int, error) {
 
 // GetPrincipleByID fetches a single principle by ID. Returns (nil, nil) if not found.
 func (d *DB) GetPrincipleByID(id string) (*Principle, error) {
-	rows, err := d.conn.Query(
+	return d.getPrincipleByID(nil, id)
+}
+
+// GetPrincipleByIDTx is GetPrincipleByID inside an existing transaction.
+// Required for reads that happen while a write transaction holds the single
+// SQLite connection; a pool query there would deadlock.
+func (d *DB) GetPrincipleByIDTx(tx *sql.Tx, id string) (*Principle, error) {
+	if tx == nil {
+		return nil, ErrTxRequired
+	}
+	var c connOrTx = tx
+	return d.getPrincipleByID(&c, id)
+}
+
+func (d *DB) getPrincipleByID(c *connOrTx, id string) (*Principle, error) {
+	rows, err := queryOn(d.conn, c)(
 		`SELECT id, ts, type, title, narrative, impact_score, project_id, source_event, fingerprint,
 		        COALESCE(concepts,''), COALESCE(files_modified,''),
 		        COALESCE(status,''), COALESCE(conflict_peer_id,''),
@@ -592,4 +628,186 @@ func (d *DB) IncrementPrincipleUsage(id string) error {
 		now, id,
 	)
 	return err
+}
+
+// InsertMemoryOp appends an audit row to memory_ops for consolidation decisions.
+func (d *DB) InsertMemoryOp(id, ts, op, targetID, beforeJSON, afterJSON, reason, model, batchID string) error {
+	return d.insertMemoryOp(nil, id, ts, op, targetID, beforeJSON, afterJSON, reason, model, batchID)
+}
+
+// InsertMemoryOpTx is InsertMemoryOp inside an existing transaction.
+func (d *DB) InsertMemoryOpTx(tx *sql.Tx, id, ts, op, targetID, beforeJSON, afterJSON, reason, model, batchID string) error {
+	if tx == nil {
+		return ErrTxRequired
+	}
+	var c connOrTx = tx
+	return d.insertMemoryOp(&c, id, ts, op, targetID, beforeJSON, afterJSON, reason, model, batchID)
+}
+
+func (d *DB) insertMemoryOp(c *connOrTx, id, ts, op, targetID, beforeJSON, afterJSON, reason, model, batchID string) error {
+	_, err := execOn(d.conn, c)(
+		`INSERT INTO memory_ops (id, ts, op, target_id, before_json, after_json, reason, model, batch_id)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		id, ts, op, targetID, beforeJSON, afterJSON, reason, model, batchID,
+	)
+	return err
+}
+
+// ExpirePrinciple revokes a principle and sets valid_until / superseded_by (temporal audit trail).
+//
+// It also unlinks the row from any conflict pair: a revoked row must not leave
+// its peer stuck in status='conflicting', where every read path excludes it and
+// no conflict pair remains on screen to resolve.
+func (d *DB) ExpirePrinciple(id, expiredAt, supersededBy string) error {
+	return d.expirePrinciple(nil, id, expiredAt, supersededBy)
+}
+
+// ExpirePrincipleTx is ExpirePrinciple inside an existing transaction.
+func (d *DB) ExpirePrincipleTx(tx *sql.Tx, id, expiredAt, supersededBy string) error {
+	if tx == nil {
+		return ErrTxRequired
+	}
+	var c connOrTx = tx
+	return d.expirePrinciple(&c, id, expiredAt, supersededBy)
+}
+
+func (d *DB) expirePrinciple(c *connOrTx, id, expiredAt, supersededBy string) error {
+	if _, err := execOn(d.conn, c)(
+		`UPDATE principles SET status='revoked', expired_at=?, superseded_by=?, valid_until=? WHERE id = ?`,
+		expiredAt, supersededBy, expiredAt, id,
+	); err != nil {
+		return err
+	}
+	// Any peer still pointing at this row is orphaned now: clear its conflict
+	// state so it returns to the active set instead of staying quarantined.
+	_, err := execOn(d.conn, c)(
+		`UPDATE principles
+		    SET status = CASE WHEN status = 'conflicting' THEN 'active' ELSE status END,
+		        conflict_peer_id = ''
+		  WHERE conflict_peer_id = ?`, id,
+	)
+	return err
+}
+
+// UpdatePrincipleContent rewrites a principle's text through the same
+// signing/encryption path as InsertPrinciple, and recomputes the fingerprint
+// from the new title and the row's project — the one fingerprint definition
+// distillation also uses. Callers that need pre-change values for an audit row
+// must fetch them first.
+func (d *DB) UpdatePrincipleContent(id, title, narrative string, impactScore float64, implHint string) error {
+	return d.updatePrincipleContent(nil, id, title, narrative, impactScore, implHint)
+}
+
+// UpdatePrincipleContentTx is UpdatePrincipleContent inside an existing transaction.
+func (d *DB) UpdatePrincipleContentTx(tx *sql.Tx, id, title, narrative string, impactScore float64, implHint string) error {
+	if tx == nil {
+		return ErrTxRequired
+	}
+	var c connOrTx = tx
+	return d.updatePrincipleContent(&c, id, title, narrative, impactScore, implHint)
+}
+
+func (d *DB) updatePrincipleContent(c *connOrTx, id, title, narrative string, impactScore float64, implHint string) error {
+	var projectID string
+	err := queryRowOn(d.conn, c)(`SELECT project_id FROM principles WHERE id = ?`, id).Scan(&projectID)
+	if err == sql.ErrNoRows {
+		return fmt.Errorf("principle %s not found", id)
+	}
+	if err != nil {
+		return err
+	}
+
+	storedNarrative, signature := sealPrincipleContent(title, narrative)
+	result, err := execOn(d.conn, c)(
+		`UPDATE principles
+		    SET title = ?, narrative = ?, impact_score = ?, impl_hint = ?,
+		        fingerprint = ?, signature = ?
+		  WHERE id = ?`,
+		title, storedNarrative, impactScore, implHint, fingerprint(title, projectID), signature, id,
+	)
+	if err != nil {
+		return err
+	}
+	n, err := result.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if n == 0 {
+		return fmt.Errorf("principle %s not found", id)
+	}
+	return nil
+}
+
+// RevivePrincipleIfExpired re-activates a principle that a previous
+// consolidation expired, storing p's text through the signing path. It
+// deliberately refuses rows with expired_at == "": those are either active
+// duplicates or explicit harden revocations, and an LLM ADD decision must not
+// undo a manual revocation. On success p.ID is set to the existing row's ID so
+// callers audit the right target. existingID is returned even when nothing is
+// revived, so the caller can record what the ADD collided with.
+func (d *DB) RevivePrincipleIfExpired(p *Principle) (revived bool, existingID string, err error) {
+	return d.revivePrincipleIfExpired(nil, p)
+}
+
+// RevivePrincipleIfExpiredTx is RevivePrincipleIfExpired inside an existing transaction.
+func (d *DB) RevivePrincipleIfExpiredTx(tx *sql.Tx, p *Principle) (revived bool, existingID string, err error) {
+	if tx == nil {
+		return false, "", ErrTxRequired
+	}
+	var c connOrTx = tx
+	return d.revivePrincipleIfExpired(&c, p)
+}
+
+func (d *DB) revivePrincipleIfExpired(c *connOrTx, p *Principle) (revived bool, existingID string, err error) {
+	var expiredAt, existingType, existingConcepts string
+	err = queryRowOn(d.conn, c)(
+		`SELECT id, COALESCE(expired_at,''), COALESCE(type,''), COALESCE(concepts,'')
+		   FROM principles WHERE fingerprint = ?`,
+		p.Fingerprint,
+	).Scan(&existingID, &expiredAt, &existingType, &existingConcepts)
+	if err == sql.ErrNoRows {
+		return false, "", nil
+	}
+	if err != nil {
+		return false, "", err
+	}
+	if expiredAt == "" {
+		return false, existingID, nil
+	}
+
+	// A replacement ADD may omit fields the expired row already had; keep the
+	// old values rather than blanking them.
+	principleType := p.Type
+	if principleType == "" {
+		principleType = existingType
+	}
+	concepts := p.Concepts
+	if len(concepts) == 0 {
+		concepts = decodeStringSlice(existingConcepts)
+	}
+
+	storedNarrative, signature := sealPrincipleContent(p.Title, p.Narrative)
+	result, err := execOn(d.conn, c)(
+		`UPDATE principles
+		    SET title = ?, narrative = ?, impact_score = ?, type = ?, source_event = ?,
+		        concepts = ?, files_modified = ?, impl_hint = ?, signature = ?,
+		        status = 'active', expired_at = '', valid_until = '', superseded_by = '',
+		        valid_from = ?
+		  WHERE id = ?`,
+		p.Title, storedNarrative, p.ImpactScore, principleType, p.SourceEvent,
+		encodeStringSlice(concepts), encodeStringSlice(p.FilesModified), p.ImplHint, signature,
+		time.Now().UTC().Format(time.RFC3339), existingID,
+	)
+	if err != nil {
+		return false, existingID, err
+	}
+	n, err := result.RowsAffected()
+	if err != nil {
+		return false, existingID, err
+	}
+	if n == 0 {
+		return false, existingID, nil
+	}
+	p.ID = existingID
+	return true, existingID, nil
 }

@@ -45,6 +45,8 @@ func main() {
 		runHarden(os.Args[2:])
 	case "search":
 		runSearch(os.Args[2:])
+	case "consolidate":
+		runConsolidate(os.Args[2:])
 	case "save":
 		runSave(os.Args[2:])
 	case "scan":
@@ -116,6 +118,7 @@ func printUsage() {
    save          Save a memory directly (--type --content [--principle])
    scan          Mine recent git history for learnings (--dry-run)
    distill       Run distillation manually (--all drains backlog, --wait queues behind running distill)
+   consolidate   Propose memory consolidation across projects (dry run by default; --apply to write)
    memory        Manage distilled principles (list, delete, rate, thumbs-up/down)
    harden        Key lifecycle: rotate-key, revoke <id>
    context       Show recent work across all agents (sessions + principles + timeline)

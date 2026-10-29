@@ -98,7 +98,7 @@ func defaultPath() string {
 // schemaVersion is stamped into SQLite's user_version pragma once migrate()
 // has applied the current schema. Bump it whenever migrate()'s statements
 // change.
-const schemaVersion = 7
+const schemaVersion = 8
 
 // migrate applies the full schema, but only once: it runs on every Open(),
 // including every short-lived CLI subprocess invocation and any test that
@@ -321,6 +321,12 @@ func (d *DB) migrate() error {
 		{"principles", "last_used_ts", "TEXT DEFAULT ''"},
 		{"principles", "use_count", "INTEGER DEFAULT 0"},
 		{"principles", "signature", "TEXT DEFAULT ''"},
+		{"principles", "valid_from", "TEXT NOT NULL DEFAULT ''"},
+		{"principles", "valid_until", "TEXT NOT NULL DEFAULT ''"},
+		{"principles", "expired_at", "TEXT NOT NULL DEFAULT ''"},
+		{"principles", "superseded_by", "TEXT NOT NULL DEFAULT ''"},
+		{"principles", "reference_ts", "TEXT NOT NULL DEFAULT ''"},
+		{"principles", "source_episodes", "TEXT NOT NULL DEFAULT '[]'"},
 	}
 	extraMigrations := []string{
 		`CREATE TABLE IF NOT EXISTS evaluation_tasks (
@@ -524,6 +530,35 @@ func (d *DB) migrate() error {
 			UNIQUE(owner_id, boundary_id, signer_id, task_id, attempt, nonce)
 		)`,
 		`CREATE INDEX IF NOT EXISTS idx_provenance_receipts_scope ON provenance_receipts(owner_id, boundary_id, timestamp DESC)`,
+		`CREATE TABLE IF NOT EXISTS memory_edges (
+			id            TEXT PRIMARY KEY,
+			src_id        TEXT NOT NULL,
+			dst_id        TEXT NOT NULL,
+			relation      TEXT NOT NULL,
+			weight        REAL NOT NULL DEFAULT 0.5,
+			created_at    TEXT NOT NULL,
+			valid_from    TEXT NOT NULL DEFAULT '',
+			valid_until   TEXT NOT NULL DEFAULT '',
+			expired_at    TEXT NOT NULL DEFAULT ''
+		)`,
+		`CREATE INDEX IF NOT EXISTS idx_mem_edges_src ON memory_edges(src_id, relation)`,
+		`CREATE INDEX IF NOT EXISTS idx_mem_edges_dst ON memory_edges(dst_id, relation)`,
+		`CREATE TABLE IF NOT EXISTS memory_ops (
+			id          TEXT PRIMARY KEY,
+			ts          TEXT NOT NULL,
+			op          TEXT NOT NULL,
+			target_id   TEXT NOT NULL DEFAULT '',
+			before_json TEXT NOT NULL DEFAULT '',
+			after_json  TEXT NOT NULL DEFAULT '',
+			reason      TEXT NOT NULL DEFAULT '',
+			model       TEXT NOT NULL DEFAULT '',
+			batch_id    TEXT NOT NULL DEFAULT ''
+		)`,
+		`CREATE INDEX IF NOT EXISTS idx_memory_ops_ts ON memory_ops(ts DESC)`,
+		// No partial "active fingerprint" index here. principles.fingerprint is
+		// already UNIQUE table-wide (see migrations), so a second index keyed on
+		// expired_at would enforce nothing — and creating it before colMigrations
+		// adds expired_at made every Open() fail with "no such column".
 	}
 	for _, m := range extraMigrations {
 		if _, err := tx.Exec(m); err != nil {
