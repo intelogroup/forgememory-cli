@@ -98,7 +98,7 @@ func defaultPath() string {
 // schemaVersion is stamped into SQLite's user_version pragma once migrate()
 // has applied the current schema. Bump it whenever migrate()'s statements
 // change.
-const schemaVersion = 9
+const schemaVersion = 10
 
 // migrate applies the full schema, but only once: it runs on every Open(),
 // including every short-lived CLI subprocess invocation and any test that
@@ -328,6 +328,7 @@ func (d *DB) migrate() error {
 		{"principles", "reference_ts", "TEXT NOT NULL DEFAULT ''"},
 		{"principles", "source_episodes", "TEXT NOT NULL DEFAULT '[]'"},
 		{"principles", "scope", "TEXT NOT NULL DEFAULT 'project'"},
+		{"principles", "last_consolidated_ts", "TEXT NOT NULL DEFAULT ''"},
 	}
 	extraMigrations := []string{
 		`CREATE TABLE IF NOT EXISTS evaluation_tasks (

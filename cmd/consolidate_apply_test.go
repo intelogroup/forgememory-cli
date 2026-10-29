@@ -3,6 +3,7 @@ package main
 import (
 	"path/filepath"
 	"testing"
+	"time"
 
 	"github.com/forge/forge/internal/db"
 )
@@ -19,9 +20,18 @@ func openApplyTestDB(t *testing.T) *db.DB {
 
 func applyBatch(t *testing.T, database *db.DB, results ...ConsolidationResult) error {
 	t.Helper()
+	return applyBatchFor(t, database, nil, results...)
+}
+
+func applyBatchFor(t *testing.T, database *db.DB, principleIDs []string, results ...ConsolidationResult) error {
+	t.Helper()
 	ctx := &consolidationCtx{
 		database: database,
-		batches:  []*consolidationBatch{{id: "test-batch", results: results}},
+		batches: []*consolidationBatch{{
+			id:           "test-batch",
+			results:      results,
+			principleIDs: principleIDs,
+		}},
 	}
 	return ctx.applyResults()
 }
@@ -451,7 +461,7 @@ func TestLoadPrinciplesForConsolidation(t *testing.T) {
 		}
 	}
 
-	all, err := loadPrinciplesForConsolidation(database, "", 0)
+	all, err := loadPrinciplesForConsolidation(database, "", 0, "", true)
 	if err != nil {
 		t.Fatalf("loadPrinciplesForConsolidation: %v", err)
 	}
@@ -462,7 +472,7 @@ func TestLoadPrinciplesForConsolidation(t *testing.T) {
 		t.Errorf("all: order = %s, %s; want a-high, b-mid", all[0].Title, all[1].Title)
 	}
 
-	capped, err := loadPrinciplesForConsolidation(database, "", 2)
+	capped, err := loadPrinciplesForConsolidation(database, "", 2, "", true)
 	if err != nil {
 		t.Fatalf("loadPrinciplesForConsolidation(limit): %v", err)
 	}
@@ -470,7 +480,7 @@ func TestLoadPrinciplesForConsolidation(t *testing.T) {
 		t.Errorf("limit 2: %v", []string{capped[0].Title, capped[1].Title})
 	}
 
-	scoped, err := loadPrinciplesForConsolidation(database, "proj-a", 0)
+	scoped, err := loadPrinciplesForConsolidation(database, "proj-a", 0, "", true)
 	if err != nil {
 		t.Fatalf("loadPrinciplesForConsolidation(project): %v", err)
 	}
@@ -483,7 +493,7 @@ func TestLoadPrinciplesForConsolidation(t *testing.T) {
 		}
 	}
 
-	over, err := loadPrinciplesForConsolidation(database, "", 99)
+	over, err := loadPrinciplesForConsolidation(database, "", 99, "", true)
 	if err != nil || len(over) != 3 {
 		t.Errorf("limit above count: len=%d err=%v, want 3/nil", len(over), err)
 	}
@@ -546,5 +556,104 @@ func TestValidateResultsScopeHandling(t *testing.T) {
 	}
 	if valid[0].Scope != "project" {
 		t.Errorf("defaulted scope = %q, want project", valid[0].Scope)
+	}
+}
+
+func TestLoadPrinciplesForConsolidationIncremental(t *testing.T) {
+	database := openApplyTestDB(t)
+
+	fresh := &db.Principle{Title: "never reviewed", Narrative: "n", ProjectID: "proj", Type: "pattern", ImpactScore: 0.5}
+	reviewed := &db.Principle{Title: "reviewed recently", Narrative: "n", ProjectID: "proj", Type: "pattern", ImpactScore: 0.6}
+	for _, p := range []*db.Principle{fresh, reviewed} {
+		if inserted, err := database.InsertPrinciple(p); err != nil || !inserted {
+			t.Fatalf("InsertPrinciple(%s): inserted=%v err=%v", p.Title, inserted, err)
+		}
+	}
+	if err := database.MarkPrinciplesConsolidated([]string{reviewed.ID}, time.Now().UTC().Format(time.RFC3339)); err != nil {
+		t.Fatalf("MarkPrinciplesConsolidated: %v", err)
+	}
+
+	// Default window (30 days): only the never-reviewed row.
+	cutoff := time.Now().UTC().AddDate(0, 0, -30).Format(time.RFC3339)
+	got, err := loadPrinciplesForConsolidation(database, "", 0, cutoff, false)
+	if err != nil {
+		t.Fatalf("loadPrinciplesForConsolidation: %v", err)
+	}
+	if len(got) != 1 || got[0].ID != fresh.ID {
+		t.Fatalf("incremental candidates = %v, want only the never-reviewed row", got)
+	}
+
+	// recheck-days 0 means never-reviewed only.
+	got, err = loadPrinciplesForConsolidation(database, "", 0, "", false)
+	if err != nil {
+		t.Fatalf("loadPrinciplesForConsolidation(0): %v", err)
+	}
+	if len(got) != 1 || got[0].ID != fresh.ID {
+		t.Fatalf("never-reviewed candidates = %v", got)
+	}
+
+	// --all bypasses the window.
+	got, err = loadPrinciplesForConsolidation(database, "", 0, "", true)
+	if err != nil {
+		t.Fatalf("loadPrinciplesForConsolidation(all): %v", err)
+	}
+	if len(got) != 2 {
+		t.Fatalf("all candidates = %d, want 2", len(got))
+	}
+}
+
+func TestApplyResultsMarksBatchConsolidated(t *testing.T) {
+	database := openApplyTestDB(t)
+
+	p := &db.Principle{Title: "t", Narrative: "n", ProjectID: "proj", Type: "pattern"}
+	if inserted, err := database.InsertPrinciple(p); err != nil || !inserted {
+		t.Fatalf("InsertPrinciple: inserted=%v err=%v", inserted, err)
+	}
+
+	if err := applyBatchFor(t, database, []string{p.ID}, ConsolidationResult{
+		Operation:  "DELETE",
+		OriginalID: p.ID,
+		Reason:     "stale",
+	}); err != nil {
+		t.Fatalf("applyResults: %v", err)
+	}
+
+	var marked string
+	if err := database.Conn().QueryRow(
+		`SELECT COALESCE(last_consolidated_ts,'') FROM principles WHERE id = ?`, p.ID,
+	).Scan(&marked); err != nil {
+		t.Fatalf("read marker: %v", err)
+	}
+	if marked == "" {
+		t.Error("batch inputs were not marked consolidated")
+	}
+}
+
+// TestApplyResultsRollbackLeavesMarkerUnset: if any decision in a batch fails,
+// the transaction rolls back the review marker too, so the rows are retried.
+func TestApplyResultsRollbackLeavesMarkerUnset(t *testing.T) {
+	database := openApplyTestDB(t)
+
+	p := &db.Principle{Title: "t", Narrative: "n", ProjectID: "proj", Type: "pattern"}
+	if inserted, err := database.InsertPrinciple(p); err != nil || !inserted {
+		t.Fatalf("InsertPrinciple: inserted=%v err=%v", inserted, err)
+	}
+
+	err := applyBatchFor(t, database, []string{p.ID},
+		ConsolidationResult{Operation: "UPDATE", OriginalID: p.ID, Title: "t2", Narrative: "n2", Reason: "r"},
+		ConsolidationResult{Operation: "UPDATE", NewID: "missing-id", Title: "t", Narrative: "n", Reason: "r"},
+	)
+	if err == nil {
+		t.Fatal("expected the batch to fail")
+	}
+
+	var marked string
+	if err := database.Conn().QueryRow(
+		`SELECT COALESCE(last_consolidated_ts,'') FROM principles WHERE id = ?`, p.ID,
+	).Scan(&marked); err != nil {
+		t.Fatalf("read marker: %v", err)
+	}
+	if marked != "" {
+		t.Errorf("marker = %q, want empty after rollback", marked)
 	}
 }

@@ -1,6 +1,7 @@
 package main
 
 import (
+	"encoding/json"
 	"flag"
 	"fmt"
 	"os"
@@ -37,6 +38,8 @@ func runMemory(args []string) {
 		runMemoryThumbsUp(database, subArgs)
 	case "thumbs-down":
 		runMemoryThumbsDown(database, subArgs)
+	case "history", "log":
+		runMemoryHistory(database, subArgs)
 	default:
 		fmt.Fprintf(os.Stderr, "Unknown memory subcommand: %s\n", subcommand)
 		printMemoryUsage()
@@ -56,6 +59,7 @@ Subcommands:
   rate <id> <score>                     Update the impact score (0.0 to 1.0) of a principle
   thumbs-up <id>                        Boost a principle's impact score by +0.2
   thumbs-down <id>                      Reduce score by -0.2 (deletes if < 0.2)
+  history [<id>] [--limit N] [--json]   Show consolidation audit rows (all, or one principle)
 `)
 }
 
@@ -102,6 +106,45 @@ func runMemoryList(database *db.DB, args []string) {
 			fmt.Printf("  Last Used: %s (used %d times)\n", p.LastUsedTS, p.UseCount)
 		}
 		fmt.Println()
+	}
+}
+
+func runMemoryHistory(database *db.DB, args []string) {
+	fs := flag.NewFlagSet("memory history", flag.ContinueOnError)
+	limitFlag := fs.Int("limit", 50, "Limit the number of audit rows shown")
+	jsonFlag := fs.Bool("json", false, "Emit JSON")
+	if err := fs.Parse(args); err != nil {
+		os.Exit(2)
+	}
+
+	targetID := fs.Arg(0)
+	ops, err := database.MemoryOps(targetID, *limitFlag)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+		os.Exit(1)
+	}
+	if len(ops) == 0 {
+		fmt.Println("No consolidation history recorded.")
+		return
+	}
+
+	if *jsonFlag {
+		data, _ := json.MarshalIndent(ops, "", "  ")
+		fmt.Println(string(data))
+		return
+	}
+
+	fmt.Printf("%-20s %-8s %-36s %s\n", "WHEN", "OP", "TARGET", "REASON")
+	fmt.Println(strings.Repeat("-", 100))
+	for _, op := range ops {
+		reason := op.Reason
+		if len(reason) > 40 {
+			reason = reason[:37] + "..."
+		}
+		fmt.Printf("%-20s %-8s %-36s %s\n", op.TS, op.Op, op.TargetID, reason)
+		if op.BatchID != "" {
+			fmt.Printf("  batch=%s model=%s\n", op.BatchID, op.Model)
+		}
 	}
 }
 

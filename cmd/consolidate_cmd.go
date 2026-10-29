@@ -34,8 +34,9 @@ type ConsolidationResult struct {
 // consolidationBatch groups the decisions produced by one LLM call so the
 // apply layer can commit or roll back that batch as a unit.
 type consolidationBatch struct {
-	id      string
-	results []ConsolidationResult
+	id           string
+	results      []ConsolidationResult
+	principleIDs []string
 }
 
 // consolidationCtx holds the in-memory state during a consolidation run.
@@ -66,6 +67,8 @@ func runConsolidate(args []string) {
 	verbose := fs.Bool("verbose", false, "Print detailed progress")
 	project := fs.String("project", "", "Only consider principles from this project (default: all projects)")
 	limit := fs.Int("limit", 0, "Maximum principles to consider, highest impact first (0 = all)")
+	all := fs.Bool("all", false, "Re-consolidate principles reviewed within the recheck window")
+	recheckDays := fs.Int("recheck-days", 30, "Re-consolidate principles not reviewed in this many days (0 = only never-reviewed)")
 	help := fs.Bool("help", false, "Show this help message")
 
 	// A parse error (unknown flag, -h) must not fall through to the apply path.
@@ -86,6 +89,10 @@ func runConsolidate(args []string) {
 		fmt.Fprintln(os.Stderr, "Error: --limit must be >= 0")
 		os.Exit(2)
 	}
+	if *recheckDays < 0 {
+		fmt.Fprintln(os.Stderr, "Error: --recheck-days must be >= 0")
+		os.Exit(2)
+	}
 
 	database, err := db.Open("")
 	if err != nil {
@@ -100,7 +107,11 @@ func runConsolidate(args []string) {
 		os.Exit(1)
 	}
 
-	principles, err := loadPrinciplesForConsolidation(database, *project, *limit)
+	cutoff := ""
+	if !*all && *recheckDays > 0 {
+		cutoff = time.Now().UTC().AddDate(0, 0, -*recheckDays).Format(time.RFC3339)
+	}
+	principles, err := loadPrinciplesForConsolidation(database, *project, *limit, cutoff, *all)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Error loading principles: %v\n", err)
 		os.Exit(1)
@@ -111,7 +122,11 @@ func runConsolidate(args []string) {
 		if *project != "" {
 			scope = "project " + *project
 		}
-		fmt.Printf("Loaded %d principles from DB (%s)\n", len(principles), scope)
+		mode := "incremental"
+		if *all {
+			mode = "all"
+		}
+		fmt.Printf("Loaded %d principles from DB (%s, %s)\n", len(principles), scope, mode)
 	}
 
 	ctx := &consolidationCtx{
@@ -155,9 +170,14 @@ func runConsolidate(args []string) {
 			fmt.Fprintf(os.Stderr, "Batch %d-%d: rejected %d invalid decision(s)\n", i+1, end, rejected)
 		}
 
+		ids := make([]string, 0, len(batch))
+		for _, p := range batch {
+			ids = append(ids, p.ID)
+		}
 		ctx.batches = append(ctx.batches, &consolidationBatch{
-			id:      fmt.Sprintf("consolidate-%s-b%d", runID, len(ctx.batches)+1),
-			results: valid,
+			id:           fmt.Sprintf("consolidate-%s-b%d", runID, len(ctx.batches)+1),
+			results:      valid,
+			principleIDs: ids,
 		})
 		for _, r := range valid {
 			totalOps[r.Operation]++
@@ -203,6 +223,9 @@ Options:
   --dry-run    Explicit dry run (default when --apply is absent)
   --project ID Only consider principles from this project
   --limit N    Consider at most N principles, highest impact first (0 = all)
+  --all        Re-consolidate principles reviewed within the recheck window
+  --recheck-days N
+               Re-review principles older than N days (default 30; 0 = only new)
   --verbose    Print detailed progress information
   --help       Show this help message
 
@@ -215,8 +238,14 @@ Examples:
 // loadPrinciplesForConsolidation loads active principles (optionally scoped to
 // one project), ranks them by impact and recency, and applies the --limit cap
 // so a dry run over a large store stays cheap.
-func loadPrinciplesForConsolidation(database *db.DB, projectID string, limit int) ([]db.Principle, error) {
-	principles, err := database.RecentPrinciplesByProject(projectID, 10000)
+func loadPrinciplesForConsolidation(database *db.DB, projectID string, limit int, cutoff string, includeAll bool) ([]db.Principle, error) {
+	var principles []db.Principle
+	var err error
+	if includeAll {
+		principles, err = database.RecentPrinciplesByProject(projectID, 10000)
+	} else {
+		principles, err = database.RecentPrinciplesForConsolidation(projectID, cutoff, 10000)
+	}
 	if err != nil {
 		return nil, err
 	}
@@ -479,6 +508,11 @@ func (c *consolidationCtx) applyResults() error {
 				case "NONE":
 					// No action needed.
 				}
+			}
+			// Every input row was reviewed by this batch (including NONE
+			// decisions), so mark them all; a rollback above unmarks them.
+			if err := c.database.MarkPrinciplesConsolidatedTx(tx, batch.principleIDs, now); err != nil {
+				return fmt.Errorf("mark batch consolidated: %w", err)
 			}
 			return nil
 		})

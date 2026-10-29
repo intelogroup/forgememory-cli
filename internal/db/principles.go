@@ -371,6 +371,82 @@ func scanPrinciples(rows *sql.Rows) ([]Principle, error) {
 	return principles, rows.Err()
 }
 
+// RecentPrinciplesForConsolidation returns active consolidation candidates:
+// never-reviewed rows, plus rows last reviewed before cutoff when a cutoff is
+// supplied. An empty cutoff means "never reviewed only"; callers that want the
+// full store pass a zero cutoff and use RecentPrinciplesVisibleTo instead.
+func (d *DB) RecentPrinciplesForConsolidation(projectID, cutoff string, limit int) ([]Principle, error) {
+	where := []string{
+		`(status = 'active' OR status IS NULL OR status = '')`,
+	}
+	args := []any{}
+	if cutoff == "" {
+		where = append(where, `last_consolidated_ts = ''`)
+	} else {
+		where = append(where, `(last_consolidated_ts = '' OR last_consolidated_ts < ?)`)
+		args = append(args, cutoff)
+	}
+	if projectID != "" {
+		exact, unixLike, windowsLike := projectIDSelectors(projectID)
+		where = append(where, `(project_id = ? OR project_id LIKE ? OR project_id LIKE ?)`)
+		args = append(args, exact, unixLike, windowsLike)
+	}
+	args = append(args, limit)
+
+	rows, err := d.conn.Query(
+		`SELECT id, ts, type, title, narrative, impact_score, project_id, source_event, fingerprint,
+		        COALESCE(concepts,''), COALESCE(files_modified,''),
+		        COALESCE(status,''), COALESCE(conflict_peer_id,''),
+		        COALESCE(outcome,'unknown'), COALESCE(impl_hint,''),
+		        COALESCE(last_used_ts,''), COALESCE(use_count,0), COALESCE(signature,''), COALESCE(scope,'project')
+		 FROM principles
+		 WHERE `+strings.Join(where, " AND ")+`
+		 ORDER BY ts DESC LIMIT ?`, args...)
+	if err != nil {
+		return nil, err
+	}
+	return scanPrinciples(rows)
+}
+
+// MarkPrinciplesConsolidated stamps rows as reviewed by consolidation, so the
+// next incremental run skips them until the recheck window elapses.
+func (d *DB) MarkPrinciplesConsolidated(ids []string, ts string) error {
+	return d.markPrinciplesConsolidated(nil, ids, ts)
+}
+
+// MarkPrinciplesConsolidatedTx is MarkPrinciplesConsolidated inside an
+// existing transaction.
+func (d *DB) MarkPrinciplesConsolidatedTx(tx *sql.Tx, ids []string, ts string) error {
+	if tx == nil {
+		return ErrTxRequired
+	}
+	var c connOrTx = tx
+	return d.markPrinciplesConsolidated(&c, ids, ts)
+}
+
+func (d *DB) markPrinciplesConsolidated(c *connOrTx, ids []string, ts string) error {
+	const chunk = 400 // stay well under SQLite's bound-parameter limit
+	for start := 0; start < len(ids); start += chunk {
+		end := start + chunk
+		if end > len(ids) {
+			end = len(ids)
+		}
+		part := ids[start:end]
+		placeholders := strings.TrimSuffix(strings.Repeat("?,", len(part)), ",")
+		args := make([]any, 0, len(part)+1)
+		args = append(args, ts)
+		for _, id := range part {
+			args = append(args, id)
+		}
+		if _, err := execOn(d.conn, c)(
+			`UPDATE principles SET last_consolidated_ts = ? WHERE id IN (`+placeholders+`)`, args...,
+		); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 // SearchPrinciplesVisibleTo finds active principles visible from projectID —
 // that project's own rows plus globally scoped rows — matching any of the
 // provided terms. Uses FTS5 for sub-millisecond lookup at scale.

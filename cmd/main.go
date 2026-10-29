@@ -119,7 +119,7 @@ func printUsage() {
    scan          Mine recent git history for learnings (--dry-run)
    distill       Run distillation manually (--all drains backlog, --wait queues behind running distill)
    consolidate   Propose memory consolidation (dry run by default; --apply to write; --project/--limit to narrow)
-   memory        Manage distilled principles (list, delete, rate, thumbs-up/down)
+   memory        Manage distilled principles (list, delete, rate, thumbs-up/down, history)
    harden        Key lifecycle: rotate-key, revoke <id>
    context       Show recent work across all agents (sessions + principles + timeline)
    commits       Link git commits to the session active when they landed (--path --since)

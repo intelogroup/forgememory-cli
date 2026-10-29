@@ -7,6 +7,9 @@
 - Memory schema v8: temporal columns on `principles` (`valid_from`, `valid_until`, `expired_at`, `superseded_by`, `reference_ts`, `source_episodes`), plus `memory_edges` and a `memory_ops` audit trail.
 - `db.UpdatePrincipleContent` and `db.RevivePrincipleIfExpired` route rewrites through the signing/encryption chokepoint; `db.EvidenceExists` resolves cited evidence.
 
+- `forge memory history [<id>] [--json]`: read the `memory_ops` consolidation audit trail.
+- Incremental consolidation: `principles.last_consolidated_ts` (schema 10) skips rows reviewed within `--recheck-days` (default 30); `--all` re-reviews everything and `--recheck-days 0` limits a run to never-reviewed rows. A batch is marked only when its transaction commits.
+
 ### Fixed
 - Schema 8 migration referenced `expired_at` before the column existed, failing every `Open()` on fresh and v7 databases.
 - Consolidation UPDATE wrote title/narrative without re-signing, so updated principles were dropped by every read path.
