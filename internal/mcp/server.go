@@ -541,7 +541,7 @@ func (s *Server) getRecentContext(args map[string]any) ToolResult {
 	limit := intFromArgs(args, "limit", 10)
 	projectID := projectIDFromArgs(args)
 
-	principles, err := s.db.RecentPrinciplesByProject(projectID, limit)
+	principles, err := s.db.RecentPrinciplesVisibleTo(projectID, limit)
 	if err != nil {
 		return toolError("Failed to get principles: " + err.Error())
 	}
@@ -673,7 +673,7 @@ func (s *Server) getPrinciples(args map[string]any) ToolResult {
 	limit := intFromArgs(args, "limit", 10)
 	projectID := projectIDFromArgs(args)
 
-	principles, err := s.db.RecentPrinciplesByProject(projectID, limit)
+	principles, err := s.db.RecentPrinciplesVisibleTo(projectID, limit)
 	if err != nil {
 		return toolError("Failed to get principles: " + err.Error())
 	}

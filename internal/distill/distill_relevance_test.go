@@ -46,7 +46,8 @@ func TestGetRelevantPrinciples(t *testing.T) {
 		Title:         "Use redis caching",
 		Narrative:     "Cache expensive network calls to Redis with appropriate TTL.",
 		ImpactScore:   0.7,
-		ProjectID:     "other-project", // cross-project
+		ProjectID:     "other-project",
+		Scope:         "global", // explicit cross-project visibility
 		FilesModified: []string{"src/cache.go"},
 	}
 

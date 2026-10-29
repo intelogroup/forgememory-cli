@@ -436,3 +436,115 @@ func TestValidateResultsAcceptsInBatchPrincipleEvidence(t *testing.T) {
 		t.Fatalf("valid=%d rejected=%d, want 1/0", len(valid), rejected)
 	}
 }
+
+func TestLoadPrinciplesForConsolidation(t *testing.T) {
+	database := openApplyTestDB(t)
+
+	seed := []*db.Principle{
+		{Title: "a-high", Narrative: "n", ProjectID: "proj-a", Type: "pattern", ImpactScore: 0.9},
+		{Title: "a-low", Narrative: "n", ProjectID: "proj-a", Type: "pattern", ImpactScore: 0.4},
+		{Title: "b-mid", Narrative: "n", ProjectID: "proj-b", Type: "pattern", ImpactScore: 0.7},
+	}
+	for _, p := range seed {
+		if inserted, err := database.InsertPrinciple(p); err != nil || !inserted {
+			t.Fatalf("InsertPrinciple(%s): inserted=%v err=%v", p.Title, inserted, err)
+		}
+	}
+
+	all, err := loadPrinciplesForConsolidation(database, "", 0)
+	if err != nil {
+		t.Fatalf("loadPrinciplesForConsolidation: %v", err)
+	}
+	if len(all) != 3 {
+		t.Fatalf("all: len=%d, want 3", len(all))
+	}
+	if all[0].Title != "a-high" || all[1].Title != "b-mid" {
+		t.Errorf("all: order = %s, %s; want a-high, b-mid", all[0].Title, all[1].Title)
+	}
+
+	capped, err := loadPrinciplesForConsolidation(database, "", 2)
+	if err != nil {
+		t.Fatalf("loadPrinciplesForConsolidation(limit): %v", err)
+	}
+	if len(capped) != 2 || capped[0].Title != "a-high" || capped[1].Title != "b-mid" {
+		t.Errorf("limit 2: %v", []string{capped[0].Title, capped[1].Title})
+	}
+
+	scoped, err := loadPrinciplesForConsolidation(database, "proj-a", 0)
+	if err != nil {
+		t.Fatalf("loadPrinciplesForConsolidation(project): %v", err)
+	}
+	if len(scoped) != 2 {
+		t.Fatalf("project proj-a: len=%d, want 2", len(scoped))
+	}
+	for _, p := range scoped {
+		if p.ProjectID != "proj-a" {
+			t.Errorf("project filter leaked %q", p.ProjectID)
+		}
+	}
+
+	over, err := loadPrinciplesForConsolidation(database, "", 99)
+	if err != nil || len(over) != 3 {
+		t.Errorf("limit above count: len=%d err=%v, want 3/nil", len(over), err)
+	}
+}
+
+func TestApplyResultsPersistsScope(t *testing.T) {
+	database := openApplyTestDB(t)
+
+	if err := applyBatch(t, database, ConsolidationResult{
+		Operation:   "ADD",
+		NewID:       "global-add",
+		Title:       "portable lesson",
+		Narrative:   "applies everywhere",
+		ProjectID:   "proj",
+		Type:        "pattern",
+		ImpactScore: 0.7,
+		Scope:       "global",
+		Reason:      "r",
+	}); err != nil {
+		t.Fatalf("applyResults ADD: %v", err)
+	}
+	got, err := database.GetPrincipleByID("global-add")
+	if err != nil || got == nil {
+		t.Fatalf("GetPrincipleByID: got=%v err=%v", got, err)
+	}
+	if got.Scope != "global" {
+		t.Errorf("ADD scope = %q, want global", got.Scope)
+	}
+
+	if err := applyBatch(t, database, ConsolidationResult{
+		Operation:   "UPDATE",
+		OriginalID:  "global-add",
+		Title:       "portable lesson",
+		Narrative:   "now project specific",
+		ImpactScore: 0.7,
+		Scope:       "project",
+		Reason:      "r",
+	}); err != nil {
+		t.Fatalf("applyResults UPDATE: %v", err)
+	}
+	got, err = database.GetPrincipleByID("global-add")
+	if err != nil || got == nil {
+		t.Fatalf("GetPrincipleByID after update: got=%v err=%v", got, err)
+	}
+	if got.Scope != "project" {
+		t.Errorf("UPDATE scope = %q, want project", got.Scope)
+	}
+}
+
+func TestValidateResultsScopeHandling(t *testing.T) {
+	database := openApplyTestDB(t)
+	batch := []db.Principle{{ID: "p1", ProjectID: "proj"}}
+
+	valid, rejected := validateOn(t, database, batch, []ConsolidationResult{
+		{Operation: "UPDATE", OriginalID: "p1", Title: "t", Narrative: "n", Reason: "r", Evidence: []string{"p1"}}, // empty -> project
+		{Operation: "UPDATE", OriginalID: "p1", Title: "t", Narrative: "n", Reason: "r", Evidence: []string{"p1"}, Scope: "everywhere"},
+	})
+	if rejected != 1 || len(valid) != 1 {
+		t.Fatalf("valid=%d rejected=%d, want 1/1", len(valid), rejected)
+	}
+	if valid[0].Scope != "project" {
+		t.Errorf("defaulted scope = %q, want project", valid[0].Scope)
+	}
+}

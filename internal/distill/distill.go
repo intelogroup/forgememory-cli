@@ -925,8 +925,8 @@ func GetRelevantPrinciples(database *db.DB, projectID string, queryHint string, 
 	if queryHint != "" {
 		tokens := tokenize(queryHint)
 		if len(tokens) > 0 {
-			// SearchPrinciplesCrossProject(terms, minImpact, withinDays, limit)
-			ftsPrinciples, _ := database.SearchPrinciplesCrossProject(tokens, 0.0, 90, 30)
+			// SearchPrinciplesVisibleTo(projectID, terms, minImpact, withinDays, limit)
+			ftsPrinciples, _ := database.SearchPrinciplesVisibleTo(projectID, tokens, 0.0, 90, 30)
 			for _, p := range ftsPrinciples {
 				candidates[p.ID] = p
 			}

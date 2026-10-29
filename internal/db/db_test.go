@@ -232,7 +232,7 @@ func TestRecentPrinciplesByProject(t *testing.T) {
 	}
 }
 
-func TestSearchPrinciplesCrossProject(t *testing.T) {
+func TestSearchPrinciplesVisibleTo(t *testing.T) {
 	database, err := Open(filepath.Join(t.TempDir(), "test.db"))
 	if err != nil {
 		t.Fatalf("Open: %v", err)
@@ -246,6 +246,7 @@ func TestSearchPrinciplesCrossProject(t *testing.T) {
 			Narrative:   "When cargo reports E0599, the method exists on a trait not in scope. Add the use statement.",
 			ImpactScore: 0.85,
 			ProjectID:   "project-a",
+			Scope:       "global",
 			Concepts:    []string{"gotcha"},
 		},
 		{
@@ -254,6 +255,7 @@ func TestSearchPrinciplesCrossProject(t *testing.T) {
 			Narrative:   "Calling hooks inside if statements violates the Rules of Hooks and causes invalid hook call errors.",
 			ImpactScore: 0.75,
 			ProjectID:   "project-b",
+			Scope:       "global",
 		},
 		{
 			Type:        "preference",
@@ -261,6 +263,7 @@ func TestSearchPrinciplesCrossProject(t *testing.T) {
 			Narrative:   "Formatter discipline prevents noisy diffs.",
 			ImpactScore: 0.4, // below threshold
 			ProjectID:   "project-c",
+			Scope:       "global",
 		},
 	}
 	for _, p := range principles {
@@ -269,10 +272,10 @@ func TestSearchPrinciplesCrossProject(t *testing.T) {
 		}
 	}
 
-	// Should find rust principle.
-	results, err := database.SearchPrinciplesCrossProject([]string{"rust", "e0599"}, 0.5, 90, 5)
+	// Should find rust principle (global, visible from any project).
+	results, err := database.SearchPrinciplesVisibleTo("project-current", []string{"rust", "e0599"}, 0.5, 90, 5)
 	if err != nil {
-		t.Fatalf("SearchPrinciplesCrossProject: %v", err)
+		t.Fatalf("SearchPrinciplesVisibleTo: %v", err)
 	}
 	if len(results) != 1 {
 		t.Fatalf("len(results) = %d, want 1", len(results))
@@ -282,27 +285,27 @@ func TestSearchPrinciplesCrossProject(t *testing.T) {
 	}
 
 	// Should find react principle.
-	results, err = database.SearchPrinciplesCrossProject([]string{"react", "hooks"}, 0.5, 90, 5)
+	results, err = database.SearchPrinciplesVisibleTo("project-current", []string{"react", "hooks"}, 0.5, 90, 5)
 	if err != nil {
-		t.Fatalf("SearchPrinciplesCrossProject: %v", err)
+		t.Fatalf("SearchPrinciplesVisibleTo: %v", err)
 	}
 	if len(results) != 1 || results[0].ProjectID != "project-b" {
 		t.Fatalf("unexpected results %#v", results)
 	}
 
 	// Low-impact principle should not be returned (minImpact=0.5).
-	results, err = database.SearchPrinciplesCrossProject([]string{"prettier", "formatter"}, 0.5, 90, 5)
+	results, err = database.SearchPrinciplesVisibleTo("project-current", []string{"prettier", "formatter"}, 0.5, 90, 5)
 	if err != nil {
-		t.Fatalf("SearchPrinciplesCrossProject: %v", err)
+		t.Fatalf("SearchPrinciplesVisibleTo: %v", err)
 	}
 	if len(results) != 0 {
 		t.Fatalf("len(results) = %d, want 0 (impact too low)", len(results))
 	}
 
 	// Empty terms should return nothing.
-	results, err = database.SearchPrinciplesCrossProject(nil, 0.5, 90, 5)
+	results, err = database.SearchPrinciplesVisibleTo("project-current", nil, 0.5, 90, 5)
 	if err != nil {
-		t.Fatalf("SearchPrinciplesCrossProject nil terms: %v", err)
+		t.Fatalf("SearchPrinciplesVisibleTo nil terms: %v", err)
 	}
 	if len(results) != 0 {
 		t.Fatalf("len(results) = %d, want 0 for nil terms", len(results))
@@ -521,7 +524,7 @@ func TestRecentPrinciplesByProject_FiltersConflicting(t *testing.T) {
 	}
 }
 
-func TestSearchPrinciplesCrossProject_FiltersConflicting(t *testing.T) {
+func TestSearchPrinciplesVisibleTo_FiltersConflicting(t *testing.T) {
 	d := openTestDB(t)
 	a := insertPrinciple(t, d, "Rust error handling with anyhow", "proj-a")
 	b := insertPrinciple(t, d, "Rust error handling prefer thiserror", "proj-a")
@@ -530,13 +533,13 @@ func TestSearchPrinciplesCrossProject_FiltersConflicting(t *testing.T) {
 		t.Fatalf("MarkConflicting: %v", err)
 	}
 
-	results, err := d.SearchPrinciplesCrossProject([]string{"rust", "error", "handling"}, 0.0, 0, 10)
+	results, err := d.SearchPrinciplesVisibleTo("proj-a", []string{"rust", "error", "handling"}, 0.0, 0, 10)
 	if err != nil {
-		t.Fatalf("SearchPrinciplesCrossProject: %v", err)
+		t.Fatalf("SearchPrinciplesVisibleTo: %v", err)
 	}
 	for _, p := range results {
 		if p.Status == "conflicting" {
-			t.Errorf("conflicting principle %q leaked into SearchPrinciplesCrossProject", p.Title)
+			t.Errorf("conflicting principle %q leaked into SearchPrinciplesVisibleTo", p.Title)
 		}
 	}
 }

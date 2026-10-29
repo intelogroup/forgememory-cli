@@ -33,6 +33,7 @@ func TestUpdatePrincipleContentKeepsRowReadable(t *testing.T) {
 		"wrap multi-row writes in a transaction",
 		0.9,
 		"BEGIN/COMMIT",
+		"project",
 	); err != nil {
 		t.Fatalf("UpdatePrincipleContent: %v", err)
 	}
@@ -76,7 +77,7 @@ func TestUpdatePrincipleContentKeepsRowReadable(t *testing.T) {
 
 func TestUpdatePrincipleContentMissingRow(t *testing.T) {
 	database := openPrinciplesDB(t)
-	if err := database.UpdatePrincipleContent("does-not-exist", "t", "n", 0.5, ""); err == nil {
+	if err := database.UpdatePrincipleContent("does-not-exist", "t", "n", 0.5, "", "project"); err == nil {
 		t.Fatal("expected an error for a missing principle")
 	}
 }

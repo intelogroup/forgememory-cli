@@ -178,6 +178,7 @@ func TestLoadSessionRecallContext_FallsBackToGlobalRecentContext(t *testing.T) {
 
 	if _, err := database.InsertPrinciple(&db.Principle{
 		ProjectID:   "forgememory-cli",
+		Scope:       "global",
 		Title:       "Cross-project fallback",
 		Narrative:   "Use recent global context when project-specific recall is empty.",
 		Type:        "pattern",
@@ -341,6 +342,7 @@ func TestFindBestPromptRecall_PrefersCrossProjectPrinciple(t *testing.T) {
 	seed := []db.Principle{
 		{
 			ProjectID:     "payments-service",
+			Scope:         "global",
 			Title:         "Retry daemon handshake",
 			Narrative:     "Treat refused connection during daemon startup as a retryable recovery path instead of a fatal error.",
 			Type:          "bugfix",
@@ -544,6 +546,7 @@ func TestFindBestPromptRecall_PrefersMoreRecentMatchOnScoreTie(t *testing.T) {
 		{
 			TS:            oldTS,
 			ProjectID:     "legacy-service",
+			Scope:         "global",
 			Title:         "Retry daemon startup",
 			Narrative:     "Retry refused connection during daemon startup instead of failing immediately.",
 			Type:          "bugfix",
@@ -553,6 +556,7 @@ func TestFindBestPromptRecall_PrefersMoreRecentMatchOnScoreTie(t *testing.T) {
 		{
 			TS:            newTS,
 			ProjectID:     "payments-service",
+			Scope:         "global",
 			Title:         "Retry daemon startup",
 			Narrative:     "Retry refused connection during daemon startup instead of failing immediately.",
 			Type:          "bugfix",
@@ -588,6 +592,7 @@ func TestFindBestPromptRecall_AllowsSingleLongTokenMatch(t *testing.T) {
 	if _, err := database.InsertPrinciple(&db.Principle{
 		TS:            time.Now().Add(-24 * time.Hour).UTC().Format(time.RFC3339),
 		ProjectID:     "design-system",
+		Scope:         "global",
 		Title:         "Dashboard shell loading",
 		Narrative:     "Use a dashboard skeleton during startup to avoid layout jank.",
 		Type:          "pattern",

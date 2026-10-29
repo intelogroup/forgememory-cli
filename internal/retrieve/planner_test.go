@@ -285,6 +285,7 @@ func TestEnqueueFailureRetrieval_SkipsExternalWhenRelevantPrincipleExists(t *tes
 		Narrative:   "When cargo reports E0599, the method exists on a trait that is not in scope. Add the use statement for the trait.",
 		ImpactScore: 0.85,
 		ProjectID:   "other-project",
+		Scope:       "global",
 		Concepts:    []string{"gotcha"},
 	}); err != nil {
 		t.Fatalf("InsertPrinciple: %v", err)
@@ -366,7 +367,7 @@ func TestRelevantPrincipleExists_RequiresLibraryPlusOneOtherTerm(t *testing.T) {
 	}
 
 	// errorKind and normalizedMessage have no overlap with the principle above.
-	if relevantPrincipleExists(database, "rust", "rustc", "error[e0499]: cannot borrow as mutable more than once") {
+	if relevantPrincipleExists(database, "other-project", "rust", "rustc", "error[e0499]: cannot borrow as mutable more than once") {
 		t.Fatal("should not match — no error-specific term overlap")
 	}
 }

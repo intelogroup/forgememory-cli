@@ -45,7 +45,8 @@ type Principle struct {
 	ImplHint       string   `json:"impl_hint,omitempty"`        // ≤120 chars: exact pattern/call/approach used
 	LastUsedTS     string   `json:"last_used_ts,omitempty"`
 	UseCount       int      `json:"use_count,omitempty"`
-	Signature      string   `json:"-"` // HMAC-SHA256(title+narrative); verified on read, never exposed
+	Scope          string   `json:"scope,omitempty"` // "project" (default) or "global" (recallable everywhere)
+	Signature      string   `json:"-"`               // HMAC-SHA256(title+narrative); verified on read, never exposed
 }
 
 var (
@@ -84,6 +85,15 @@ func hmacKey() []byte {
 // expected, breaking `isFirstPromptOfSession`).
 func WarmSigningKey() {
 	hmacKey()
+}
+
+// normalizeScope maps an empty or unknown scope to the safe per-project
+// default. Only "global" widens recall beyond the principle's own project.
+func normalizeScope(scope string) string {
+	if strings.EqualFold(strings.TrimSpace(scope), "global") {
+		return "global"
+	}
+	return "project"
 }
 
 func signedPayload(title, narrative string) string {
@@ -159,12 +169,14 @@ func (d *DB) insertPrinciple(c *connOrTx, p *Principle) (inserted bool, err erro
 	if outcome == "" {
 		outcome = "unknown"
 	}
+	scope := normalizeScope(p.Scope)
+	p.Scope = scope
 	result, err := execOn(d.conn, c)(
 		`INSERT OR IGNORE INTO principles
-		 (id, ts, type, title, narrative, impact_score, project_id, source_event, fingerprint, concepts, files_modified, outcome, impl_hint, last_used_ts, use_count, signature)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		 (id, ts, type, title, narrative, impact_score, project_id, source_event, fingerprint, concepts, files_modified, outcome, impl_hint, last_used_ts, use_count, signature, scope)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		p.ID, p.TS, p.Type, p.Title, storedNarrative, p.ImpactScore,
-		p.ProjectID, p.SourceEvent, p.Fingerprint, conceptsJSON, filesJSON, outcome, p.ImplHint, p.LastUsedTS, p.UseCount, p.Signature,
+		p.ProjectID, p.SourceEvent, p.Fingerprint, conceptsJSON, filesJSON, outcome, p.ImplHint, p.LastUsedTS, p.UseCount, p.Signature, scope,
 	)
 	if err != nil {
 		return false, err
@@ -181,10 +193,55 @@ func (d *DB) RecentActivePrinciples(limit int) ([]Principle, error) {
 		        COALESCE(concepts,''), COALESCE(files_modified,''),
 		        COALESCE(status,''), COALESCE(conflict_peer_id,''),
 		        COALESCE(outcome,'unknown'), COALESCE(impl_hint,''),
-		        COALESCE(last_used_ts,''), COALESCE(use_count,0), COALESCE(signature,'')
+		        COALESCE(last_used_ts,''), COALESCE(use_count,0), COALESCE(signature,''), COALESCE(scope,'project')
 		 FROM principles
 		 WHERE status = 'active' OR status IS NULL OR status = ''
 		 ORDER BY ts DESC LIMIT ?`, limit,
+	)
+	if err != nil {
+		return nil, err
+	}
+	return scanPrinciples(rows)
+}
+
+// RecentGlobalPrinciples returns the most recent active principles scoped
+// global — the only rows a cross-project recall path may surface.
+func (d *DB) RecentGlobalPrinciples(limit int) ([]Principle, error) {
+	rows, err := d.conn.Query(
+		`SELECT id, ts, type, title, narrative, impact_score, project_id, source_event, fingerprint,
+		        COALESCE(concepts,''), COALESCE(files_modified,''),
+		        COALESCE(status,''), COALESCE(conflict_peer_id,''),
+		        COALESCE(outcome,'unknown'), COALESCE(impl_hint,''),
+		        COALESCE(last_used_ts,''), COALESCE(use_count,0), COALESCE(signature,''), COALESCE(scope,'project')
+		 FROM principles
+		 WHERE (status = 'active' OR status IS NULL OR status = '')
+		   AND scope = 'global'
+		 ORDER BY ts DESC LIMIT ?`, limit,
+	)
+	if err != nil {
+		return nil, err
+	}
+	return scanPrinciples(rows)
+}
+
+// RecentPrinciplesVisibleTo returns the active principles a project may see:
+// its own rows plus globally scoped rows. An empty projectID returns every
+// active principle for callers that explicitly mean "all" (admin surfaces).
+func (d *DB) RecentPrinciplesVisibleTo(projectID string, limit int) ([]Principle, error) {
+	if projectID == "" {
+		return d.RecentActivePrinciples(limit)
+	}
+	exact, unixLike, windowsLike := projectIDSelectors(projectID)
+	rows, err := d.conn.Query(
+		`SELECT id, ts, type, title, narrative, impact_score, project_id, source_event, fingerprint,
+		        COALESCE(concepts,''), COALESCE(files_modified,''),
+		        COALESCE(status,''), COALESCE(conflict_peer_id,''),
+		        COALESCE(outcome,'unknown'), COALESCE(impl_hint,''),
+		        COALESCE(last_used_ts,''), COALESCE(use_count,0), COALESCE(signature,''), COALESCE(scope,'project')
+		 FROM principles
+		 WHERE (project_id = ? OR project_id LIKE ? OR project_id LIKE ? OR scope = 'global')
+		   AND (status = 'active' OR status IS NULL OR status = '')
+		 ORDER BY ts DESC LIMIT ?`, exact, unixLike, windowsLike, limit,
 	)
 	if err != nil {
 		return nil, err
@@ -199,7 +256,7 @@ func (d *DB) RecentPrinciples(limit int) ([]Principle, error) {
 		        COALESCE(concepts,''), COALESCE(files_modified,''),
 		        COALESCE(status,''), COALESCE(conflict_peer_id,''),
 		        COALESCE(outcome,'unknown'), COALESCE(impl_hint,''),
-		        COALESCE(last_used_ts,''), COALESCE(use_count,0), COALESCE(signature,'')
+		        COALESCE(last_used_ts,''), COALESCE(use_count,0), COALESCE(signature,''), COALESCE(scope,'project')
 		 FROM principles ORDER BY ts DESC LIMIT ?`, limit,
 	)
 	if err != nil {
@@ -219,7 +276,7 @@ func (d *DB) RecentPrinciplesByProject(projectID string, limit int) ([]Principle
 		        COALESCE(concepts,''), COALESCE(files_modified,''),
 		        COALESCE(status,''), COALESCE(conflict_peer_id,''),
 		        COALESCE(outcome,'unknown'), COALESCE(impl_hint,''),
-		        COALESCE(last_used_ts,''), COALESCE(use_count,0), COALESCE(signature,'')
+		        COALESCE(last_used_ts,''), COALESCE(use_count,0), COALESCE(signature,''), COALESCE(scope,'project')
 		 FROM principles
 		 WHERE (project_id = ? OR project_id LIKE ? OR project_id LIKE ?)
 		   AND (status = 'active' OR status IS NULL OR status = '')
@@ -243,7 +300,7 @@ func (d *DB) RecentPrinciplesByProjectAll(projectID string, limit int) ([]Princi
 		        COALESCE(concepts,''), COALESCE(files_modified,''),
 		        COALESCE(status,''), COALESCE(conflict_peer_id,''),
 		        COALESCE(outcome,'unknown'), COALESCE(impl_hint,''),
-		        COALESCE(last_used_ts,''), COALESCE(use_count,0), COALESCE(signature,'')
+		        COALESCE(last_used_ts,''), COALESCE(use_count,0), COALESCE(signature,''), COALESCE(scope,'project')
 		 FROM principles
 		 WHERE project_id = ? OR project_id LIKE ? OR project_id LIKE ?
 		 ORDER BY ts DESC LIMIT ?`, exact, unixLike, windowsLike, limit,
@@ -285,7 +342,7 @@ func scanPrinciples(rows *sql.Rows) ([]Principle, error) {
 		if err := rows.Scan(&p.ID, &p.TS, &p.Type, &p.Title, &p.Narrative,
 			&p.ImpactScore, &p.ProjectID, &p.SourceEvent, &p.Fingerprint,
 			&conceptsJSON, &filesJSON, &p.Status, &p.ConflictPeerID,
-			&p.Outcome, &p.ImplHint, &p.LastUsedTS, &p.UseCount, &p.Signature); err != nil {
+			&p.Outcome, &p.ImplHint, &p.LastUsedTS, &p.UseCount, &p.Signature, &p.Scope); err != nil {
 			return nil, err
 		}
 		if key != nil {
@@ -314,10 +371,11 @@ func scanPrinciples(rows *sql.Rows) ([]Principle, error) {
 	return principles, rows.Err()
 }
 
-// SearchPrinciplesCrossProject finds active principles across all projects matching
-// any of the provided terms. Uses FTS5 for sub-millisecond lookup at scale.
+// SearchPrinciplesVisibleTo finds active principles visible from projectID —
+// that project's own rows plus globally scoped rows — matching any of the
+// provided terms. Uses FTS5 for sub-millisecond lookup at scale.
 // withinDays=0 disables the time filter.
-func (d *DB) SearchPrinciplesCrossProject(terms []string, minImpact float64, withinDays int, limit int) ([]Principle, error) {
+func (d *DB) SearchPrinciplesVisibleTo(projectID string, terms []string, minImpact float64, withinDays int, limit int) ([]Principle, error) {
 	if len(terms) == 0 {
 		return nil, nil
 	}
@@ -330,11 +388,23 @@ func (d *DB) SearchPrinciplesCrossProject(terms []string, minImpact float64, wit
 		return nil, nil
 	}
 
+	clauses := []string{
+		`p.rowid IN (SELECT rowid FROM principles_fts WHERE principles_fts MATCH ?)`,
+		`p.impact_score >= ?`,
+		`(p.status = 'active' OR p.status IS NULL OR p.status = '')`,
+	}
 	args := []any{ftsQuery, minImpact}
-	cutoffClause := ""
+
+	if projectID == "" {
+		clauses = append(clauses, `p.scope = 'global'`)
+	} else {
+		exact, unixLike, windowsLike := projectIDSelectors(projectID)
+		clauses = append(clauses, `(p.scope = 'global' OR p.project_id = ? OR p.project_id LIKE ? OR p.project_id LIKE ?)`)
+		args = append(args, exact, unixLike, windowsLike)
+	}
 	if withinDays > 0 {
 		cutoff := time.Now().UTC().AddDate(0, 0, -withinDays).Format(time.RFC3339)
-		cutoffClause = "AND p.ts >= ?"
+		clauses = append(clauses, `p.ts >= ?`)
 		args = append(args, cutoff)
 	}
 	args = append(args, limit)
@@ -344,12 +414,9 @@ func (d *DB) SearchPrinciplesCrossProject(terms []string, minImpact float64, wit
 	             COALESCE(p.concepts,''), COALESCE(p.files_modified,''),
 	             COALESCE(p.status,''), COALESCE(p.conflict_peer_id,''),
 	             COALESCE(p.outcome,'unknown'), COALESCE(p.impl_hint,''),
-	             COALESCE(p.last_used_ts,''), COALESCE(p.use_count,0), COALESCE(p.signature,'')
+	             COALESCE(p.last_used_ts,''), COALESCE(p.use_count,0), COALESCE(p.signature,''), COALESCE(p.scope,'project')
 	      FROM principles p
-	      WHERE p.rowid IN (SELECT rowid FROM principles_fts WHERE principles_fts MATCH ?)
-	        AND p.impact_score >= ?
-	        AND (p.status = 'active' OR p.status IS NULL OR p.status = '')
-	        ` + cutoffClause + `
+	      WHERE ` + strings.Join(clauses, " AND ") + `
 	      ORDER BY p.impact_score DESC, p.ts DESC
 	      LIMIT ?`
 
@@ -403,7 +470,7 @@ func (d *DB) getPrincipleByID(c *connOrTx, id string) (*Principle, error) {
 		        COALESCE(concepts,''), COALESCE(files_modified,''),
 		        COALESCE(status,''), COALESCE(conflict_peer_id,''),
 		        COALESCE(outcome,'unknown'), COALESCE(impl_hint,''),
-		        COALESCE(last_used_ts,''), COALESCE(use_count,0), COALESCE(signature,'')
+		        COALESCE(last_used_ts,''), COALESCE(use_count,0), COALESCE(signature,''), COALESCE(scope,'project')
 		 FROM principles WHERE id=? LIMIT 1`, id,
 	)
 	if err != nil {
@@ -423,7 +490,7 @@ func (d *DB) ConflictingPrinciples(limit int) ([]Principle, error) {
 		        COALESCE(concepts,''), COALESCE(files_modified,''),
 		        COALESCE(status,''), COALESCE(conflict_peer_id,''),
 		        COALESCE(outcome,'unknown'), COALESCE(impl_hint,''),
-		        COALESCE(last_used_ts,''), COALESCE(use_count,0), COALESCE(signature,'')
+		        COALESCE(last_used_ts,''), COALESCE(use_count,0), COALESCE(signature,''), COALESCE(scope,'project')
 		 FROM principles WHERE status='conflicting' ORDER BY ts DESC LIMIT ?`, limit,
 	)
 	if err != nil {
@@ -694,20 +761,20 @@ func (d *DB) expirePrinciple(c *connOrTx, id, expiredAt, supersededBy string) er
 // from the new title and the row's project — the one fingerprint definition
 // distillation also uses. Callers that need pre-change values for an audit row
 // must fetch them first.
-func (d *DB) UpdatePrincipleContent(id, title, narrative string, impactScore float64, implHint string) error {
-	return d.updatePrincipleContent(nil, id, title, narrative, impactScore, implHint)
+func (d *DB) UpdatePrincipleContent(id, title, narrative string, impactScore float64, implHint, scope string) error {
+	return d.updatePrincipleContent(nil, id, title, narrative, impactScore, implHint, scope)
 }
 
 // UpdatePrincipleContentTx is UpdatePrincipleContent inside an existing transaction.
-func (d *DB) UpdatePrincipleContentTx(tx *sql.Tx, id, title, narrative string, impactScore float64, implHint string) error {
+func (d *DB) UpdatePrincipleContentTx(tx *sql.Tx, id, title, narrative string, impactScore float64, implHint, scope string) error {
 	if tx == nil {
 		return ErrTxRequired
 	}
 	var c connOrTx = tx
-	return d.updatePrincipleContent(&c, id, title, narrative, impactScore, implHint)
+	return d.updatePrincipleContent(&c, id, title, narrative, impactScore, implHint, scope)
 }
 
-func (d *DB) updatePrincipleContent(c *connOrTx, id, title, narrative string, impactScore float64, implHint string) error {
+func (d *DB) updatePrincipleContent(c *connOrTx, id, title, narrative string, impactScore float64, implHint, scope string) error {
 	var projectID string
 	err := queryRowOn(d.conn, c)(`SELECT project_id FROM principles WHERE id = ?`, id).Scan(&projectID)
 	if err == sql.ErrNoRows {
@@ -721,9 +788,9 @@ func (d *DB) updatePrincipleContent(c *connOrTx, id, title, narrative string, im
 	result, err := execOn(d.conn, c)(
 		`UPDATE principles
 		    SET title = ?, narrative = ?, impact_score = ?, impl_hint = ?,
-		        fingerprint = ?, signature = ?
+		        fingerprint = ?, signature = ?, scope = ?
 		  WHERE id = ?`,
-		title, storedNarrative, impactScore, implHint, fingerprint(title, projectID), signature, id,
+		title, storedNarrative, impactScore, implHint, fingerprint(title, projectID), signature, normalizeScope(scope), id,
 	)
 	if err != nil {
 		return err
@@ -759,12 +826,12 @@ func (d *DB) RevivePrincipleIfExpiredTx(tx *sql.Tx, p *Principle) (revived bool,
 }
 
 func (d *DB) revivePrincipleIfExpired(c *connOrTx, p *Principle) (revived bool, existingID string, err error) {
-	var expiredAt, existingType, existingConcepts string
+	var expiredAt, existingType, existingConcepts, existingScope string
 	err = queryRowOn(d.conn, c)(
-		`SELECT id, COALESCE(expired_at,''), COALESCE(type,''), COALESCE(concepts,'')
+		`SELECT id, COALESCE(expired_at,''), COALESCE(type,''), COALESCE(concepts,''), COALESCE(scope,'project')
 		   FROM principles WHERE fingerprint = ?`,
 		p.Fingerprint,
-	).Scan(&existingID, &expiredAt, &existingType, &existingConcepts)
+	).Scan(&existingID, &expiredAt, &existingType, &existingConcepts, &existingScope)
 	if err == sql.ErrNoRows {
 		return false, "", nil
 	}
@@ -785,17 +852,21 @@ func (d *DB) revivePrincipleIfExpired(c *connOrTx, p *Principle) (revived bool, 
 	if len(concepts) == 0 {
 		concepts = decodeStringSlice(existingConcepts)
 	}
+	scope := p.Scope
+	if strings.TrimSpace(scope) == "" {
+		scope = existingScope
+	}
 
 	storedNarrative, signature := sealPrincipleContent(p.Title, p.Narrative)
 	result, err := execOn(d.conn, c)(
 		`UPDATE principles
 		    SET title = ?, narrative = ?, impact_score = ?, type = ?, source_event = ?,
-		        concepts = ?, files_modified = ?, impl_hint = ?, signature = ?,
+		        concepts = ?, files_modified = ?, impl_hint = ?, signature = ?, scope = ?,
 		        status = 'active', expired_at = '', valid_until = '', superseded_by = '',
 		        valid_from = ?
 		  WHERE id = ?`,
 		p.Title, storedNarrative, p.ImpactScore, principleType, p.SourceEvent,
-		encodeStringSlice(concepts), encodeStringSlice(p.FilesModified), p.ImplHint, signature,
+		encodeStringSlice(concepts), encodeStringSlice(p.FilesModified), p.ImplHint, signature, normalizeScope(scope),
 		time.Now().UTC().Format(time.RFC3339), existingID,
 	)
 	if err != nil {

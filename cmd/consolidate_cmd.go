@@ -64,6 +64,8 @@ func runConsolidate(args []string) {
 	apply := fs.Bool("apply", false, "Apply the consolidation decisions (default is a dry run)")
 	dryRun := fs.Bool("dry-run", false, "Print decisions without applying them (default)")
 	verbose := fs.Bool("verbose", false, "Print detailed progress")
+	project := fs.String("project", "", "Only consider principles from this project (default: all projects)")
+	limit := fs.Int("limit", 0, "Maximum principles to consider, highest impact first (0 = all)")
 	help := fs.Bool("help", false, "Show this help message")
 
 	// A parse error (unknown flag, -h) must not fall through to the apply path.
@@ -80,6 +82,10 @@ func runConsolidate(args []string) {
 		fmt.Fprintln(os.Stderr, "Error: --apply and --dry-run are mutually exclusive")
 		os.Exit(2)
 	}
+	if *limit < 0 {
+		fmt.Fprintln(os.Stderr, "Error: --limit must be >= 0")
+		os.Exit(2)
+	}
 
 	database, err := db.Open("")
 	if err != nil {
@@ -94,17 +100,18 @@ func runConsolidate(args []string) {
 		os.Exit(1)
 	}
 
-	principles, err := database.RecentPrinciplesByProject("", 10000)
+	principles, err := loadPrinciplesForConsolidation(database, *project, *limit)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Error loading principles: %v\n", err)
 		os.Exit(1)
 	}
 
-	// Sort by impact_score DESC, ts DESC
-	sortPrinciples(principles)
-
 	if *verbose {
-		fmt.Printf("Loaded %d principles from DB\n", len(principles))
+		scope := "all projects"
+		if *project != "" {
+			scope = "project " + *project
+		}
+		fmt.Printf("Loaded %d principles from DB (%s)\n", len(principles), scope)
 	}
 
 	ctx := &consolidationCtx{
@@ -194,12 +201,30 @@ This command is a dry run by default: decisions are printed and nothing is writt
 Options:
   --apply      Apply the decisions to the database
   --dry-run    Explicit dry run (default when --apply is absent)
+  --project ID Only consider principles from this project
+  --limit N    Consider at most N principles, highest impact first (0 = all)
   --verbose    Print detailed progress information
   --help       Show this help message
 
 Examples:
   forge consolidate
-  forge consolidate --apply --verbose`
+  forge consolidate --limit 24 --verbose
+  forge consolidate --project myapp --apply --verbose`
+}
+
+// loadPrinciplesForConsolidation loads active principles (optionally scoped to
+// one project), ranks them by impact and recency, and applies the --limit cap
+// so a dry run over a large store stays cheap.
+func loadPrinciplesForConsolidation(database *db.DB, projectID string, limit int) ([]db.Principle, error) {
+	principles, err := database.RecentPrinciplesByProject(projectID, 10000)
+	if err != nil {
+		return nil, err
+	}
+	sortPrinciples(principles)
+	if limit > 0 && len(principles) > limit {
+		principles = principles[:limit]
+	}
+	return principles, nil
 }
 
 func sortPrinciples(principles []db.Principle) {
@@ -239,6 +264,12 @@ func (c *consolidationCtx) validateResults(batch []db.Principle, results []Conso
 		res.Type = strings.TrimSpace(res.Type)
 		res.Reason = strings.TrimSpace(res.Reason)
 		res.Scope = strings.ToLower(strings.TrimSpace(res.Scope))
+		if res.Scope == "" {
+			// The model usually restates the current scope; when it omits it,
+			// keep the lesson project-local rather than silently globalizing it.
+			res.Scope = "project"
+		}
+		scopeOK := res.Scope == "project" || res.Scope == "global"
 		res.ProjectID = strings.TrimSpace(res.ProjectID)
 		if res.ImpactScore < 0 {
 			res.ImpactScore = 0
@@ -272,7 +303,7 @@ func (c *consolidationCtx) validateResults(batch []db.Principle, results []Conso
 		default:
 			ok = false
 		}
-		if !ok || res.Reason == "" {
+		if !ok || !scopeOK || res.Reason == "" {
 			rejected++
 			continue
 		}
@@ -460,12 +491,18 @@ func (c *consolidationCtx) applyResults() error {
 
 // applyUpdate issues an UPDATE to the principle row and writes an audit row.
 func (c *consolidationCtx) applyUpdate(tx *sql.Tx, res ConsolidationResult, now, batchID string) error {
-	before, err := c.database.GetPrincipleByIDTx(tx, res.NewID)
+	// Validation anchors UPDATE to original_id; fall back here as well so the
+	// apply layer is safe when called directly.
+	target := res.NewID
+	if target == "" {
+		target = res.OriginalID
+	}
+	before, err := c.database.GetPrincipleByIDTx(tx, target)
 	if err != nil {
-		return fmt.Errorf("fetching principle %s: %w", res.NewID, err)
+		return fmt.Errorf("fetching principle %s: %w", target, err)
 	}
 	if before == nil {
-		return fmt.Errorf("principle %s not found", res.NewID)
+		return fmt.Errorf("principle %s not found", target)
 	}
 
 	implHint := before.ImplHint
@@ -484,12 +521,12 @@ func (c *consolidationCtx) applyUpdate(tx *sql.Tx, res ConsolidationResult, now,
 	// The DB layer re-signs and re-encrypts the new text; writing title and
 	// narrative directly here would leave a stale HMAC and the row would be
 	// dropped by every read path.
-	if err := c.database.UpdatePrincipleContentTx(tx, res.NewID, res.Title, res.Narrative, res.ImpactScore, implHint); err != nil {
+	if err := c.database.UpdatePrincipleContentTx(tx, target, res.Title, res.Narrative, res.ImpactScore, implHint, res.Scope); err != nil {
 		return fmt.Errorf("update principle: %w", err)
 	}
 
 	if err := c.database.InsertMemoryOpTx(
-		tx, newOpID(), now, "UPDATE", res.NewID,
+		tx, newOpID(), now, "UPDATE", target,
 		string(auditBefore), string(auditAfter),
 		res.Reason, c.model, batchID,
 	); err != nil {
@@ -547,6 +584,7 @@ func (c *consolidationCtx) applyAdd(tx *sql.Tx, res ConsolidationResult, now, ba
 		ImpactScore: res.ImpactScore,
 		ProjectID:   res.ProjectID,
 		SourceEvent: res.SourceEvent,
+		Scope:       res.Scope,
 		Status:      "active",
 		LastUsedTS:  now,
 		UseCount:    0,

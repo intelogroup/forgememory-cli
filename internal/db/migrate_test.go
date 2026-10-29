@@ -97,4 +97,16 @@ func TestOpenMigratesV7Database(t *testing.T) {
 		t.Errorf("unexpected defaults: expired_at=%q valid_from=%q source_episodes=%q",
 			expiredAt, validFrom, sourceEpisodes)
 	}
+
+	// Rows written before scope existed were recallable across projects; the
+	// migration must preserve that by backfilling them to global.
+	var scope string
+	if err := database.conn.QueryRow(
+		`SELECT scope FROM principles WHERE id = 'p1'`,
+	).Scan(&scope); err != nil {
+		t.Fatalf("scope column missing after migration: %v", err)
+	}
+	if scope != "global" {
+		t.Errorf("scope = %q, want global backfill for pre-existing rows", scope)
+	}
 }
