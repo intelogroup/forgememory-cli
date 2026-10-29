@@ -1859,6 +1859,11 @@ func parseConflictPairs(response string) ([][2]string, error) {
 			response = response[idx : end+1]
 		}
 	}
+	// json_object mode cannot return a bare array: "no conflicts" arrives as {}.
+	var obj map[string]json.RawMessage
+	if json.Unmarshal([]byte(response), &obj) == nil {
+		return nil, nil
+	}
 	var raw []struct {
 		A string `json:"a"`
 		B string `json:"b"`

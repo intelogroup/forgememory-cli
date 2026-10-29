@@ -1322,3 +1322,17 @@ func TestDistillBatchIncludingUnknown_DrainsOrphanBacklog(t *testing.T) {
 		t.Fatalf("DistillBatchIncludingUnknown should drain orphan backlog to 0, got %d undistilled", undistilled)
 	}
 }
+
+func TestParseConflictPairs_EmptyObjectMeansNoConflicts(t *testing.T) {
+	// json_object mode cannot return a bare array, so "no conflicts" arrives as {}
+	for _, in := range []string{`{}`, ` {"conflicts": []} `} {
+		pairs, err := parseConflictPairs(in)
+		if err != nil || len(pairs) != 0 {
+			t.Fatalf("parseConflictPairs(%q) = %v, %v; want no pairs, no error", in, pairs, err)
+		}
+	}
+	pairs, err := parseConflictPairs(`{"conflicts": [{"a": "x", "b": "y"}]}`)
+	if err != nil || len(pairs) != 1 || pairs[0] != [2]string{"x", "y"} {
+		t.Fatalf("wrapped array = %v, %v; want one pair x,y", pairs, err)
+	}
+}
