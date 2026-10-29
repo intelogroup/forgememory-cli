@@ -8,6 +8,8 @@
 - `db.UpdatePrincipleContent` and `db.RevivePrincipleIfExpired` route rewrites through the signing/encryption chokepoint; `db.EvidenceExists` resolves cited evidence.
 
 - `forge memory history [<id>] [--json]`: read the `memory_ops` consolidation audit trail.
+- Canonical project identity: `principles.project_key` (schema 11) hashes the git root so two repositories with the same basename no longer share project-scoped memory. Distillation, manual save, and consolidation ADD populate it; hook/MCP/inject/planner match on it with a `project_id` fallback for legacy rows.
+- Opt-in daemon scheduling: `FORGE_CONSOLIDATE_INTERVAL` (e.g. `24h`) runs `consolidate --apply` in a bounded subprocess. Unset by default, and skipped when no inference provider is configured.
 - Incremental consolidation: `principles.last_consolidated_ts` (schema 10) skips rows reviewed within `--recheck-days` (default 30); `--all` re-reviews everything and `--recheck-days 0` limits a run to never-reviewed rows. A batch is marked only when its transaction commits.
 
 ### Fixed

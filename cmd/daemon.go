@@ -211,6 +211,14 @@ func runDaemon(args []string) {
 	distillCfg := distill.LoadConfig()
 	go distillLoop(distill.New(database, distillCfg), database, distillCfg.DistillInterval)
 	go retrievalLoop(retrieve.NewWorker(database), retrievalWake, stop)
+	if interval := consolidationInterval(); interval > 0 {
+		if distillCfg.Provider == "" {
+			log.Printf("consolidate: FORGE_CONSOLIDATE_INTERVAL is set but no inference provider is configured; scheduling disabled")
+		} else {
+			log.Printf("consolidate: scheduled every %s", interval)
+			go consolidationLoop(interval, stop)
+		}
+	}
 
 	<-stop
 	log.Println("Shutting down...")
