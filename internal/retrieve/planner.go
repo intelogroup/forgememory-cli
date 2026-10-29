@@ -83,7 +83,7 @@ func EnqueuePromptRetrieval(database *db.DB, projectID, promptText string) error
 //  2. Context7 (priority 100) — precise official-docs hint for the library.
 //  3. Web search via Exa/Tavily (priority 85) — recent best-practice articles,
 //     only when a search key is configured and no fresh cached result exists.
-func EnqueueFailureRetrieval(database *db.DB, projectID, commandFamily, errorKind, normalizedMessage, payload string) error {
+func EnqueueFailureRetrieval(database *db.DB, projectID, projectKey, commandFamily, errorKind, normalizedMessage, payload string) error {
 	if database == nil {
 		return nil
 	}
@@ -93,7 +93,7 @@ func EnqueueFailureRetrieval(database *db.DB, projectID, commandFamily, errorKin
 	}
 
 	// Step 1: check cross-project principles before making any external call.
-	if relevantPrincipleExists(database, projectID, library, errorKind, normalizedMessage) {
+	if relevantPrincipleExists(database, projectID, projectKey, library, errorKind, normalizedMessage) {
 		return nil
 	}
 
@@ -138,12 +138,12 @@ func EnqueueFailureRetrieval(database *db.DB, projectID, commandFamily, errorKin
 //   - The library name appears in title, narrative, or concepts.
 //   - At least one additional error-specific term also matches.
 //   - impact_score >= 0.5 and the principle is within 90 days.
-func relevantPrincipleExists(database *db.DB, projectID, library, errorKind, normalizedMessage string) bool {
+func relevantPrincipleExists(database *db.DB, projectID, projectKey, library, errorKind, normalizedMessage string) bool {
 	terms := buildPrincipleSearchTerms(library, errorKind, normalizedMessage)
 	if len(terms) == 0 {
 		return false
 	}
-	principles, err := database.SearchPrinciplesVisibleTo(projectID, terms, 0.5, 90, 5)
+	principles, err := database.SearchPrinciplesVisibleTo(projectID, projectKey, terms, 0.5, 90, 5)
 	if err != nil || len(principles) == 0 {
 		return false
 	}

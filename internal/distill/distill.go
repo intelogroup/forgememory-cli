@@ -25,6 +25,7 @@ import (
 
 	"github.com/forge/forge/internal/config"
 	"github.com/forge/forge/internal/db"
+	"github.com/forge/forge/internal/git"
 	"github.com/google/uuid"
 )
 
@@ -398,7 +399,7 @@ func (d *Distiller) distillBatch(limit int, includeUnknown bool) (int, error) {
 	}
 
 	// Parse principles from response
-	principles, err := d.parsePrinciples(response, batch[0].ProjectID)
+	principles, err := d.parsePrinciples(response, batch[0].ProjectID, projectKeyForEvents(batch))
 	if err != nil {
 		return 0, fmt.Errorf("parse principles: %w", err)
 	}
@@ -795,7 +796,7 @@ func (d *Distiller) DistillCheckpointSummary(summary db.SessionSummary, events [
 	if err != nil {
 		return 0, fmt.Errorf("llm call failed: %w", err)
 	}
-	principles, err := d.parsePrinciples(response, summary.ProjectID)
+	principles, err := d.parsePrinciples(response, summary.ProjectID, projectKeyForEvents(events))
 	if err != nil {
 		return 0, fmt.Errorf("parse principles: %w", err)
 	}
@@ -864,7 +865,7 @@ func (d *Distiller) buildCheckpointPrinciplesPrompt(summary db.SessionSummary, e
 // InjectPrinciplesForPrompt fetches relevant active principles for projectID (using queryHint and activeFiles),
 // formats them as a Markdown context block, and prepends them to the given prompt.
 // When database is nil or FORGE_INJECT_PRINCIPLES is set to false, the original prompt is returned unchanged.
-func InjectPrinciplesForPrompt(database *db.DB, prompt, projectID string, queryHint string, activeFiles []string) string {
+func InjectPrinciplesForPrompt(database *db.DB, prompt, projectID, projectKey string, queryHint string, activeFiles []string) string {
 	if database == nil {
 		return prompt
 	}
@@ -879,7 +880,7 @@ func InjectPrinciplesForPrompt(database *db.DB, prompt, projectID string, queryH
 		return prompt
 	}
 
-	principles, err := GetRelevantPrinciples(database, projectID, queryHint, activeFiles)
+	principles, err := GetRelevantPrinciples(database, projectID, projectKey, queryHint, activeFiles)
 	if err != nil || len(principles) == 0 {
 		return prompt
 	}
@@ -898,7 +899,7 @@ func InjectPrinciplesForPrompt(database *db.DB, prompt, projectID string, queryH
 
 // GetRelevantPrinciples retrieves active principles for a project, decays and ranks them,
 // and boosts relevance based on queryHint (using FTS5) and activeFiles (using Jaccard intersection on FilesModified).
-func GetRelevantPrinciples(database *db.DB, projectID string, queryHint string, activeFiles []string) ([]db.Principle, error) {
+func GetRelevantPrinciples(database *db.DB, projectID, projectKey, queryHint string, activeFiles []string) ([]db.Principle, error) {
 	if database == nil {
 		return nil, nil
 	}
@@ -910,7 +911,7 @@ func GetRelevantPrinciples(database *db.DB, projectID string, queryHint string, 
 	}
 
 	// 1. Fetch up to 15 principles from the current project for recency
-	recencyPrinciples, err := database.RecentPrinciplesByProject(projectID, 15)
+	recencyPrinciples, err := database.RecentPrinciplesForProject(projectID, projectKey, 15)
 	if err != nil {
 		return nil, err
 	}
@@ -926,7 +927,7 @@ func GetRelevantPrinciples(database *db.DB, projectID string, queryHint string, 
 		tokens := tokenize(queryHint)
 		if len(tokens) > 0 {
 			// SearchPrinciplesVisibleTo(projectID, terms, minImpact, withinDays, limit)
-			ftsPrinciples, _ := database.SearchPrinciplesVisibleTo(projectID, tokens, 0.0, 90, 30)
+			ftsPrinciples, _ := database.SearchPrinciplesVisibleTo(projectID, projectKey, tokens, 0.0, 90, 30)
 			for _, p := range ftsPrinciples {
 				candidates[p.ID] = p
 			}
@@ -1574,12 +1575,24 @@ func CompletePrompt(cfg Config, prompt string) (string, error) {
 	return d.callLLM(prompt)
 }
 
-// ParsePrinciples is a public wrapper around parsePrinciples.
-func (d *Distiller) ParsePrinciples(response string, projectID string) ([]db.Principle, error) {
-	return d.parsePrinciples(response, projectID)
+// projectKeyForEvents derives the canonical project key for a distillation
+// batch from the directory the events were captured in.
+func projectKeyForEvents(events []db.Event) string {
+	// Never fall back to the process working directory here: the distiller may
+	// run from the daemon, and a key for the wrong directory would make the new
+	// principles invisible to their real project.
+	if len(events) == 0 || strings.TrimSpace(events[0].CWD) == "" {
+		return ""
+	}
+	return db.ProjectKey(git.Root(events[0].CWD))
 }
 
-func (d *Distiller) parsePrinciples(response string, projectID string) ([]db.Principle, error) {
+// ParsePrinciples is a public wrapper around parsePrinciples.
+func (d *Distiller) ParsePrinciples(response string, projectID string) ([]db.Principle, error) {
+	return d.parsePrinciples(response, projectID, "")
+}
+
+func (d *Distiller) parsePrinciples(response string, projectID, projectKey string) ([]db.Principle, error) {
 	// Extract JSON array from response
 	response = strings.TrimSpace(response)
 	if !strings.HasPrefix(response, "[") {
@@ -1623,6 +1636,7 @@ func (d *Distiller) parsePrinciples(response string, projectID string) ([]db.Pri
 			Narrative:     strings.TrimSpace(r.Narrative),
 			ImpactScore:   r.ImpactScore,
 			ProjectID:     projectID,
+			ProjectKey:    projectKey,
 			Outcome:       outcome,
 			ImplHint:      implHint,
 			Concepts:      db.FilterConcepts(r.Concepts),

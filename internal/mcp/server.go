@@ -539,9 +539,9 @@ func markPrinciplesUsed(database *db.DB, ps []db.Principle) {
 
 func (s *Server) getRecentContext(args map[string]any) ToolResult {
 	limit := intFromArgs(args, "limit", 10)
-	projectID := projectIDFromArgs(args)
+	projectID, projectKey := projectRefFromArgs(args)
 
-	principles, err := s.db.RecentPrinciplesVisibleTo(projectID, limit)
+	principles, err := s.db.RecentPrinciplesVisibleTo(projectID, projectKey, limit)
 	if err != nil {
 		return toolError("Failed to get principles: " + err.Error())
 	}
@@ -671,9 +671,9 @@ func (s *Server) searchMemories(args map[string]any) ToolResult {
 
 func (s *Server) getPrinciples(args map[string]any) ToolResult {
 	limit := intFromArgs(args, "limit", 10)
-	projectID := projectIDFromArgs(args)
+	projectID, projectKey := projectRefFromArgs(args)
 
-	principles, err := s.db.RecentPrinciplesVisibleTo(projectID, limit)
+	principles, err := s.db.RecentPrinciplesVisibleTo(projectID, projectKey, limit)
 	if err != nil {
 		return toolError("Failed to get principles: " + err.Error())
 	}
@@ -1055,7 +1055,7 @@ func (s *Server) getInjectPrinciples(args map[string]any) ToolResult {
 	if len(prompt) > 100000 {
 		return toolError("Parameter 'prompt' exceeds maximum length of 100,000 characters")
 	}
-	projectID := projectIDFromArgs(args)
+	projectID, projectKey := projectRefFromArgs(args)
 
 	queryHint, _ := args["query_hint"].(string)
 	if len(queryHint) > 1000 {
@@ -1073,7 +1073,7 @@ func (s *Server) getInjectPrinciples(args map[string]any) ToolResult {
 		}
 	}
 
-	enhancedPrompt := distill.InjectPrinciplesForPrompt(s.db, prompt, projectID, queryHint, activeFiles)
+	enhancedPrompt := distill.InjectPrinciplesForPrompt(s.db, prompt, projectID, projectKey, queryHint, activeFiles)
 	if enhancedPrompt == prompt {
 		return ToolResult{
 			Content: []ToolContent{{Type: "text", Text: prompt}},

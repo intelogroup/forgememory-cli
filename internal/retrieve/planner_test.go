@@ -144,7 +144,7 @@ func TestEnqueueFailureRetrieval_QueuesContext7ForRepeatedRustFailure(t *testing
 	t.Setenv("HOME", t.TempDir())
 
 	payload := `{"tool_input":{"command":"cargo build"},"tool_response":{"stderr":"error[E0599]: no method named serve found for struct AppState"}}`
-	if err := EnqueueFailureRetrieval(database, "api-service", "cargo build", "rust:e0599", "error[e0599]: no method named serve found for struct appstate", payload); err != nil {
+	if err := EnqueueFailureRetrieval(database, "api-service", "", "cargo build", "rust:e0599", "error[e0599]: no method named serve found for struct appstate", payload); err != nil {
 		t.Fatalf("EnqueueFailureRetrieval: %v", err)
 	}
 
@@ -179,7 +179,7 @@ func TestEnqueueFailureRetrieval_QueuesWebSearchWhenExaKeySet(t *testing.T) {
 	t.Setenv("FORGE_EXA_API_KEY", "test-exa-key")
 
 	payload := `{"tool_input":{"command":"cargo build"},"tool_response":{"stderr":"error[E0412]: cannot find type AppState in this scope"}}`
-	if err := EnqueueFailureRetrieval(database, "api-service", "cargo build", "rustc", "error[e0412]: cannot find type appstate in this scope", payload); err != nil {
+	if err := EnqueueFailureRetrieval(database, "api-service", "", "cargo build", "rustc", "error[e0412]: cannot find type appstate in this scope", payload); err != nil {
 		t.Fatalf("EnqueueFailureRetrieval: %v", err)
 	}
 
@@ -292,7 +292,7 @@ func TestEnqueueFailureRetrieval_SkipsExternalWhenRelevantPrincipleExists(t *tes
 	}
 
 	payload := `{"tool_input":{"command":"cargo build"},"tool_response":{"stderr":"error[E0599]: no method named serve found"}}`
-	if err := EnqueueFailureRetrieval(database, "api-service", "cargo build", "rustc", "error[e0599]: no method named serve found", payload); err != nil {
+	if err := EnqueueFailureRetrieval(database, "api-service", "", "cargo build", "rustc", "error[e0599]: no method named serve found", payload); err != nil {
 		t.Fatalf("EnqueueFailureRetrieval: %v", err)
 	}
 
@@ -331,7 +331,7 @@ func TestEnqueueFailureRetrieval_SkipsWebSearchWhenFreshSummaryExists(t *testing
 	}
 
 	payload := `{"tool_input":{"command":"cargo build"},"tool_response":{"stderr":"error[E0412]: cannot find type AppState"}}`
-	if err := EnqueueFailureRetrieval(database, "api-service", "cargo build", "rustc", "error[e0412]: cannot find type appstate", payload); err != nil {
+	if err := EnqueueFailureRetrieval(database, "api-service", "", "cargo build", "rustc", "error[e0412]: cannot find type appstate", payload); err != nil {
 		t.Fatalf("EnqueueFailureRetrieval: %v", err)
 	}
 
@@ -367,7 +367,7 @@ func TestRelevantPrincipleExists_RequiresLibraryPlusOneOtherTerm(t *testing.T) {
 	}
 
 	// errorKind and normalizedMessage have no overlap with the principle above.
-	if relevantPrincipleExists(database, "other-project", "rust", "rustc", "error[e0499]: cannot borrow as mutable more than once") {
+	if relevantPrincipleExists(database, "other-project", "", "rust", "rustc", "error[e0499]: cannot borrow as mutable more than once") {
 		t.Fatal("should not match — no error-specific term overlap")
 	}
 }

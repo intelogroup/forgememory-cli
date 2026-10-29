@@ -58,7 +58,7 @@ func TestGetRelevantPrinciples(t *testing.T) {
 	}
 
 	t.Run("Recency-based matching", func(t *testing.T) {
-		principles, err := GetRelevantPrinciples(database, "my-project", "", nil)
+		principles, err := GetRelevantPrinciples(database, "my-project", "", "", nil)
 		if err != nil {
 			t.Fatalf("GetRelevantPrinciples failed: %v", err)
 		}
@@ -73,7 +73,7 @@ func TestGetRelevantPrinciples(t *testing.T) {
 
 	t.Run("FTS5 Query Hint match (cross-project)", func(t *testing.T) {
 		// Should pull p3 because of FTS match on "redis caching"
-		principles, err := GetRelevantPrinciples(database, "my-project", "caching strategy", nil)
+		principles, err := GetRelevantPrinciples(database, "my-project", "", "caching strategy", nil)
 		if err != nil {
 			t.Fatalf("GetRelevantPrinciples failed: %v", err)
 		}
@@ -95,7 +95,7 @@ func TestGetRelevantPrinciples(t *testing.T) {
 		// p1 score: 0.8 + 0.3 * (1/2) = 0.95
 		// p2 score: 0.9 + 0 = 0.90
 		// So p1 should rank higher than p2 now
-		principles, err := GetRelevantPrinciples(database, "my-project", "", []string{"src/state.go"})
+		principles, err := GetRelevantPrinciples(database, "my-project", "", "", []string{"src/state.go"})
 		if err != nil {
 			t.Fatalf("GetRelevantPrinciples failed: %v", err)
 		}

@@ -5,6 +5,10 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"sync"
+
+	"github.com/forge/forge/internal/db"
+	"github.com/forge/forge/internal/git"
 )
 
 // detectProjectID returns a stable project identifier for the current repo.
@@ -12,6 +16,21 @@ import (
 // converge on the same project_id instead of mixing absolute paths and names.
 func detectProjectID() string {
 	return detectProjectIDForPath("")
+}
+
+var (
+	projectKeyOnce  sync.Once
+	projectKeyValue string
+)
+
+// currentProjectKey returns the canonical key for the process working
+// directory, cached per process. Empty when the directory cannot be resolved,
+// in which case callers fall back to project_id matching.
+func currentProjectKey() string {
+	projectKeyOnce.Do(func() {
+		projectKeyValue = db.ProjectKey(git.Root(""))
+	})
+	return projectKeyValue
 }
 
 func detectProjectIDForPath(cwd string) string {

@@ -74,7 +74,7 @@ func runContext(args []string) {
 	}
 
 	if relevant != "" {
-		relevantPrinciples, _ := distill.GetRelevantPrinciples(database, projectID, relevant, nil)
+		relevantPrinciples, _ := distill.GetRelevantPrinciples(database, projectID, currentProjectKey(), relevant, nil)
 		if len(relevantPrinciples) > 0 {
 			fmt.Printf("Relevant to \"%s\":\n\n", relevant)
 			for _, p := range relevantPrinciples {
@@ -87,7 +87,7 @@ func runContext(args []string) {
 	} else {
 		recentFiles := detectRecentFiles()
 		if len(recentFiles) > 0 {
-			autoPrinciples, _ := distill.GetRelevantPrinciples(database, projectID, strings.Join(recentFiles, " "), recentFiles)
+			autoPrinciples, _ := distill.GetRelevantPrinciples(database, projectID, currentProjectKey(), strings.Join(recentFiles, " "), recentFiles)
 			if len(autoPrinciples) > 0 {
 				fmt.Println("Patterns in recent files:")
 				for _, p := range autoPrinciples {

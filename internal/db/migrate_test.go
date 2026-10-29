@@ -109,4 +109,13 @@ func TestOpenMigratesV7Database(t *testing.T) {
 	if scope != "global" {
 		t.Errorf("scope = %q, want global backfill for pre-existing rows", scope)
 	}
+	var projectKey string
+	if err := database.conn.QueryRow(
+		`SELECT project_key FROM principles WHERE id = 'p1'`,
+	).Scan(&projectKey); err != nil {
+		t.Fatalf("project_key column missing after migration: %v", err)
+	}
+	if projectKey != "" {
+		t.Errorf("project_key = %q, want empty for pre-existing rows (unresolvable root)", projectKey)
+	}
 }

@@ -58,7 +58,7 @@ func runInjectCheck(args []string) {
 		}
 	}
 
-	principles, err := distill.GetRelevantPrinciples(database, projectID, queryHint, activeFiles)
+	principles, err := distill.GetRelevantPrinciples(database, projectID, currentProjectKey(), queryHint, activeFiles)
 	if err != nil || len(principles) == 0 {
 		os.Exit(0)
 	}
@@ -109,7 +109,7 @@ func runPrePushCheck() int {
 		return 0
 	}
 
-	principles, err := distill.GetRelevantPrinciples(database, projectID, strings.Join(pushFiles, " "), pushFiles)
+	principles, err := distill.GetRelevantPrinciples(database, projectID, currentProjectKey(), strings.Join(pushFiles, " "), pushFiles)
 	if err != nil || len(principles) == 0 {
 		return 0
 	}

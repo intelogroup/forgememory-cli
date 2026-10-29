@@ -53,6 +53,7 @@ func runSave(args []string) {
 			Narrative:   *principle,
 			ImpactScore: 0.7,
 			ProjectID:   projectID,
+			ProjectKey:  db.ProjectKey(projectRoot),
 		}
 		if _, err := database.InsertPrinciple(p); err != nil {
 			fmt.Fprintf(os.Stderr, "Error saving principle: %v\n", err)

@@ -63,7 +63,7 @@ func loadLastProjectSession(database *db.DB, projectID, currentSessionID string)
 }
 
 func loadSessionRecallContext(database *db.DB, projectID, promptText string) ([]db.Principle, []db.SessionSummary, []db.Alert, []db.ExternalContextSummary, *promptRecallMatch, string) {
-	principles, _ := database.RecentPrinciplesByProject(projectID, 2)
+	principles, _ := database.RecentPrinciplesForProject(projectID, currentProjectKey(), 2)
 
 	// Load more summaries than needed and score them against the current prompt
 	// for relevance, so the most contextually relevant lessons are injected.
@@ -455,7 +455,7 @@ func findPromptRelevantPrinciples(database *db.DB, projectID string, tokens []st
 	seen := make(map[string]bool)
 
 	if projectID != "" {
-		same, err := database.RecentPrinciplesByProject(projectID, 50)
+		same, err := database.RecentPrinciplesForProject(projectID, currentProjectKey(), 50)
 		if err == nil {
 			for _, p := range same {
 				match, ok := scorePromptPrincipleMatch(p, tokens)

@@ -657,3 +657,68 @@ func TestApplyResultsRollbackLeavesMarkerUnset(t *testing.T) {
 		t.Errorf("marker = %q, want empty after rollback", marked)
 	}
 }
+
+func TestApplyResultsAddInheritsBatchProjectKey(t *testing.T) {
+	database := openApplyTestDB(t)
+
+	key := db.ProjectKey("/repos/a/api")
+	source := &db.Principle{
+		Title: "existing api lesson", Narrative: "n", ProjectID: "api",
+		ProjectKey: key, Type: "pattern",
+	}
+	if inserted, err := database.InsertPrinciple(source); err != nil || !inserted {
+		t.Fatalf("InsertPrinciple: inserted=%v err=%v", inserted, err)
+	}
+
+	ctx := &consolidationCtx{
+		database: database,
+		batches: []*consolidationBatch{{
+			id:           "test-batch",
+			principleIDs: []string{source.ID},
+			projectKeys:  map[string]string{"api": key},
+			results: []ConsolidationResult{{
+				Operation:   "ADD",
+				NewID:       "derived-id",
+				Title:       "derived api lesson",
+				Narrative:   "n2",
+				ProjectID:   "api",
+				Type:        "pattern",
+				ImpactScore: 0.6,
+				Scope:       "global",
+				Reason:      "derived",
+			}},
+		}},
+	}
+	if err := ctx.applyResults(); err != nil {
+		t.Fatalf("applyResults: %v", err)
+	}
+
+	got, err := database.GetPrincipleByID("derived-id")
+	if err != nil || got == nil {
+		t.Fatalf("GetPrincipleByID: got=%v err=%v", got, err)
+	}
+	if got.ProjectKey != key {
+		t.Errorf("project_key = %q, want inherited %q", got.ProjectKey, key)
+	}
+	if got.Scope != "global" {
+		t.Errorf("scope = %q, want global", got.Scope)
+	}
+}
+
+func TestBatchProjectKeysRejectsAmbiguousProject(t *testing.T) {
+	keys := batchProjectKeys([]db.Principle{
+		{ProjectID: "api", ProjectKey: "key-a"},
+		{ProjectID: "api", ProjectKey: "key-b"},
+		{ProjectID: "web", ProjectKey: "key-c"},
+		{ProjectID: "legacy"},
+	})
+	if _, ok := keys["api"]; ok {
+		t.Error("ambiguous project should not get a key")
+	}
+	if keys["web"] != "key-c" {
+		t.Errorf("web key = %q, want key-c", keys["web"])
+	}
+	if _, ok := keys["legacy"]; ok {
+		t.Error("keyless project should not get a key")
+	}
+}

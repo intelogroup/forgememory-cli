@@ -273,7 +273,7 @@ func TestSearchPrinciplesVisibleTo(t *testing.T) {
 	}
 
 	// Should find rust principle (global, visible from any project).
-	results, err := database.SearchPrinciplesVisibleTo("project-current", []string{"rust", "e0599"}, 0.5, 90, 5)
+	results, err := database.SearchPrinciplesVisibleTo("project-current", "", []string{"rust", "e0599"}, 0.5, 90, 5)
 	if err != nil {
 		t.Fatalf("SearchPrinciplesVisibleTo: %v", err)
 	}
@@ -285,7 +285,7 @@ func TestSearchPrinciplesVisibleTo(t *testing.T) {
 	}
 
 	// Should find react principle.
-	results, err = database.SearchPrinciplesVisibleTo("project-current", []string{"react", "hooks"}, 0.5, 90, 5)
+	results, err = database.SearchPrinciplesVisibleTo("project-current", "", []string{"react", "hooks"}, 0.5, 90, 5)
 	if err != nil {
 		t.Fatalf("SearchPrinciplesVisibleTo: %v", err)
 	}
@@ -294,7 +294,7 @@ func TestSearchPrinciplesVisibleTo(t *testing.T) {
 	}
 
 	// Low-impact principle should not be returned (minImpact=0.5).
-	results, err = database.SearchPrinciplesVisibleTo("project-current", []string{"prettier", "formatter"}, 0.5, 90, 5)
+	results, err = database.SearchPrinciplesVisibleTo("project-current", "", []string{"prettier", "formatter"}, 0.5, 90, 5)
 	if err != nil {
 		t.Fatalf("SearchPrinciplesVisibleTo: %v", err)
 	}
@@ -303,7 +303,7 @@ func TestSearchPrinciplesVisibleTo(t *testing.T) {
 	}
 
 	// Empty terms should return nothing.
-	results, err = database.SearchPrinciplesVisibleTo("project-current", nil, 0.5, 90, 5)
+	results, err = database.SearchPrinciplesVisibleTo("project-current", "", nil, 0.5, 90, 5)
 	if err != nil {
 		t.Fatalf("SearchPrinciplesVisibleTo nil terms: %v", err)
 	}
@@ -533,7 +533,7 @@ func TestSearchPrinciplesVisibleTo_FiltersConflicting(t *testing.T) {
 		t.Fatalf("MarkConflicting: %v", err)
 	}
 
-	results, err := d.SearchPrinciplesVisibleTo("proj-a", []string{"rust", "error", "handling"}, 0.0, 0, 10)
+	results, err := d.SearchPrinciplesVisibleTo("proj-a", "", []string{"rust", "error", "handling"}, 0.0, 0, 10)
 	if err != nil {
 		t.Fatalf("SearchPrinciplesVisibleTo: %v", err)
 	}

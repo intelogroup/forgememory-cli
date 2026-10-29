@@ -67,8 +67,8 @@ func TestDetectRecentFilesCleanTree(t *testing.T) {
 
 	f := filepath.Join(tmpDir, "clean.go")
 	mustWriteFile(t, f, "package main\n")
-	git(t, tmpDir, "add", "clean.go")
-	git(t, tmpDir, "commit", "-m", "add clean.go")
+	runGit(t, tmpDir, "add", "clean.go")
+	runGit(t, tmpDir, "commit", "-m", "add clean.go")
 
 	mustWriteFile(t, f, "package main\n\nfunc main() {}\n")
 
@@ -94,7 +94,7 @@ func TestGetPushFiles(t *testing.T) {
 
 	f := filepath.Join(tmpDir, "push.go")
 	mustWriteFile(t, f, "package main\n")
-	git(t, tmpDir, "add", "push.go")
+	runGit(t, tmpDir, "add", "push.go")
 
 	out := chdirDo(t, tmpDir, func() []string { return getPushFiles() })
 	if len(out) == 0 {
@@ -108,7 +108,7 @@ func TestGetPushFilesStaged(t *testing.T) {
 
 	f := filepath.Join(tmpDir, "staged.go")
 	mustWriteFile(t, f, "package main\n")
-	git(t, tmpDir, "add", "staged.go")
+	runGit(t, tmpDir, "add", "staged.go")
 
 	out := chdirDo(t, tmpDir, func() []string { return getPushFiles() })
 	found := false
@@ -152,7 +152,7 @@ func TestPrePushCheckBlocksConflict(t *testing.T) {
 
 	f := filepath.Join(tmpDir, "conflict.go")
 	mustWriteFile(t, f, "package main\n")
-	git(t, tmpDir, "add", "conflict.go")
+	runGit(t, tmpDir, "add", "conflict.go")
 
 	code := chdirDo(t, tmpDir, func() int { return runPrePushCheck() })
 	if code != 1 {
@@ -171,7 +171,7 @@ func TestPrePushCheckLowImpact(t *testing.T) {
 
 	f := filepath.Join(tmpDir, "low.go")
 	mustWriteFile(t, f, "package main\n")
-	git(t, tmpDir, "add", "low.go")
+	runGit(t, tmpDir, "add", "low.go")
 
 	code := chdirDo(t, tmpDir, func() int { return runPrePushCheck() })
 	if code != 0 {
@@ -218,7 +218,7 @@ func TestPrePushCheckMultipleFiles(t *testing.T) {
 
 	mustWriteFile(t, filepath.Join(tmpDir, "a.go"), "package a\n")
 	mustWriteFile(t, filepath.Join(tmpDir, "b.go"), "package b\n")
-	git(t, tmpDir, "add", "a.go", "b.go")
+	runGit(t, tmpDir, "add", "a.go", "b.go")
 
 	code := chdirDo(t, tmpDir, func() int { return runPrePushCheck() })
 	if code != 1 {
@@ -251,15 +251,15 @@ func projectName(t *testing.T, tmpDir string) string {
 
 func initGitRepo(t *testing.T, dir string) {
 	t.Helper()
-	git(t, dir, "init", "--initial-branch=main")
-	git(t, dir, "config", "user.email", "test@test.com")
-	git(t, dir, "config", "user.name", "Test")
+	runGit(t, dir, "init", "--initial-branch=main")
+	runGit(t, dir, "config", "user.email", "test@test.com")
+	runGit(t, dir, "config", "user.name", "Test")
 	mustWriteFile(t, filepath.Join(dir, "README.md"), "# test\n")
-	git(t, dir, "add", "README.md")
-	git(t, dir, "commit", "-m", "initial")
+	runGit(t, dir, "add", "README.md")
+	runGit(t, dir, "commit", "-m", "initial")
 }
 
-func git(t *testing.T, dir string, args ...string) {
+func runGit(t *testing.T, dir string, args ...string) {
 	t.Helper()
 	cmd := exec.Command("git", args...)
 	cmd.Dir = dir

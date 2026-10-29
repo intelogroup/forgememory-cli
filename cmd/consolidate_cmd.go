@@ -37,6 +37,7 @@ type consolidationBatch struct {
 	id           string
 	results      []ConsolidationResult
 	principleIDs []string
+	projectKeys  map[string]string // project_id -> canonical key, when unambiguous
 }
 
 // consolidationCtx holds the in-memory state during a consolidation run.
@@ -178,6 +179,7 @@ func runConsolidate(args []string) {
 			id:           fmt.Sprintf("consolidate-%s-b%d", runID, len(ctx.batches)+1),
 			results:      valid,
 			principleIDs: ids,
+			projectKeys:  batchProjectKeys(batch),
 		})
 		for _, r := range valid {
 			totalOps[r.Operation]++
@@ -254,6 +256,31 @@ func loadPrinciplesForConsolidation(database *db.DB, projectID string, limit int
 		principles = principles[:limit]
 	}
 	return principles, nil
+}
+
+// batchProjectKeys maps each project in a batch to its canonical key, but only
+// when every keyed row agrees. An ambiguous project stays keyless so a new ADD
+// falls back to project_id rather than guessing an identity.
+func batchProjectKeys(batch []db.Principle) map[string]string {
+	seen := make(map[string]map[string]bool)
+	for _, p := range batch {
+		if p.ProjectKey == "" {
+			continue
+		}
+		if seen[p.ProjectID] == nil {
+			seen[p.ProjectID] = make(map[string]bool)
+		}
+		seen[p.ProjectID][p.ProjectKey] = true
+	}
+	out := make(map[string]string, len(seen))
+	for projectID, keys := range seen {
+		if len(keys) == 1 {
+			for key := range keys {
+				out[projectID] = key
+			}
+		}
+	}
+	return out
 }
 
 func sortPrinciples(principles []db.Principle) {
@@ -502,7 +529,7 @@ func (c *consolidationCtx) applyResults() error {
 						return fmt.Errorf("DELETE %s: %w", res.OriginalID, err)
 					}
 				case "ADD":
-					if err := c.applyAdd(tx, res, now, batch.id); err != nil {
+					if err := c.applyAdd(tx, res, now, batch.id, batch.projectKeys[res.ProjectID]); err != nil {
 						return fmt.Errorf("ADD: %w", err)
 					}
 				case "NONE":
@@ -608,7 +635,7 @@ func (c *consolidationCtx) applyExpire(tx *sql.Tx, res ConsolidationResult, now,
 // applyAdd inserts a new principle, or revives an expired one that owns the
 // same fingerprint. A fingerprint collision with an active row (or a manual
 // revocation) is recorded as SKIP rather than silently dropped.
-func (c *consolidationCtx) applyAdd(tx *sql.Tx, res ConsolidationResult, now, batchID string) error {
+func (c *consolidationCtx) applyAdd(tx *sql.Tx, res ConsolidationResult, now, batchID, projectKey string) error {
 	p := &db.Principle{
 		ID:          res.NewID,
 		TS:          now,
@@ -617,6 +644,7 @@ func (c *consolidationCtx) applyAdd(tx *sql.Tx, res ConsolidationResult, now, ba
 		Narrative:   res.Narrative,
 		ImpactScore: res.ImpactScore,
 		ProjectID:   res.ProjectID,
+		ProjectKey:  projectKey,
 		SourceEvent: res.SourceEvent,
 		Scope:       res.Scope,
 		Status:      "active",

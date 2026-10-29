@@ -143,7 +143,7 @@ func TestParsePrinciples(t *testing.T) {
 		{"type": "pattern", "title": "Go cross-compile", "narrative": "GOOS=windows GOARCH=amd64", "impact_score": 0.7}
 	]`
 
-	principles, err := d.parsePrinciples(response, "forge")
+	principles, err := d.parsePrinciples(response, "forge", "")
 	if err != nil {
 		t.Fatalf("parsePrinciples failed: %v", err)
 	}
@@ -169,7 +169,7 @@ func TestParsePrinciplesWithMarkdown(t *testing.T) {
 	// LLM sometimes wraps JSON in markdown
 	response := "```json\n[{\"type\": \"architecture\", \"title\": \"SQLite FTS5\", \"narrative\": \"Use FTS5 for search\", \"impact_score\": 0.8}]\n```"
 
-	principles, err := d.parsePrinciples(response, "test")
+	principles, err := d.parsePrinciples(response, "test", "")
 	if err != nil {
 		t.Fatalf("parsePrinciples failed: %v", err)
 	}
@@ -186,7 +186,7 @@ func TestParsePrinciplesInvalidJSON(t *testing.T) {
 	// than a hard error, so a single bad response doesn't stall the drain
 	// loop forever (#38 cause 2: the batch must still get MarkDistilled'd).
 	d := &Distiller{}
-	principles, err := d.parsePrinciples("not json at all", "test")
+	principles, err := d.parsePrinciples("not json at all", "test", "")
 	if err != nil {
 		t.Fatalf("expected no error for malformed JSON, got: %v", err)
 	}
@@ -197,7 +197,7 @@ func TestParsePrinciplesInvalidJSON(t *testing.T) {
 
 func TestParsePrinciplesNonArrayObject(t *testing.T) {
 	d := &Distiller{}
-	principles, err := d.parsePrinciples(`{"foo": "bar"}`, "test")
+	principles, err := d.parsePrinciples(`{"foo": "bar"}`, "test", "")
 	if err != nil {
 		t.Fatalf("expected no error for non-array JSON object, got: %v", err)
 	}
@@ -213,7 +213,7 @@ func TestParsePrinciples_FiltersGenericToolAdvice(t *testing.T) {
 		{"type": "architecture", "title": "ApplicationBuilder base_url fix", "narrative": "Use ApplicationBuilder.base_url() on 0.8 to bypass Cisco Umbrella through the Cloudflare Worker instead of hardcoding endpoints.", "impact_score": 0.9}
 	]`
 
-	principles, err := d.parsePrinciples(response, "forge")
+	principles, err := d.parsePrinciples(response, "forge", "")
 	if err != nil {
 		t.Fatalf("parsePrinciples failed: %v", err)
 	}
@@ -1334,5 +1334,22 @@ func TestParseConflictPairs_EmptyObjectMeansNoConflicts(t *testing.T) {
 	pairs, err := parseConflictPairs(`{"conflicts": [{"a": "x", "b": "y"}]}`)
 	if err != nil || len(pairs) != 1 || pairs[0] != [2]string{"x", "y"} {
 		t.Fatalf("wrapped array = %v, %v; want one pair x,y", pairs, err)
+	}
+}
+
+func TestParsePrinciplesSetsProjectKey(t *testing.T) {
+	d := &Distiller{}
+	principles, err := d.parsePrinciples(
+		`[{"type":"pattern","title":"Handle retries","narrative":"Retry transient failures with backoff.","impact_score":0.6}]`,
+		"proj", "key-abc",
+	)
+	if err != nil {
+		t.Fatalf("parsePrinciples: %v", err)
+	}
+	if len(principles) != 1 {
+		t.Fatalf("len = %d, want 1", len(principles))
+	}
+	if principles[0].ProjectKey != "key-abc" {
+		t.Errorf("ProjectKey = %q, want key-abc", principles[0].ProjectKey)
 	}
 }

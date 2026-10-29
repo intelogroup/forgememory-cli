@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/forge/forge/internal/db"
+	"github.com/forge/forge/internal/git"
 	"github.com/forge/forge/internal/retrieve"
 )
 
@@ -108,7 +109,11 @@ func ProcessEvent(database *db.DB, event *db.Event) error {
 			return err
 		}
 
-		return retrieve.EnqueueFailureRetrieval(database, event.ProjectID, obs.CommandFamily, obs.ErrorKind, obs.NormalizedMessage, event.Payload)
+		projectKey := ""
+		if strings.TrimSpace(event.CWD) != "" {
+			projectKey = db.ProjectKey(git.Root(event.CWD))
+		}
+		return retrieve.EnqueueFailureRetrieval(database, event.ProjectID, projectKey, obs.CommandFamily, obs.ErrorKind, obs.NormalizedMessage, event.Payload)
 	}
 
 	success := observeSuccess(event)

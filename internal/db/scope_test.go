@@ -17,7 +17,7 @@ func TestScopeVisibility(t *testing.T) {
 		t.Errorf("default scope = %q, want project", own.Scope)
 	}
 
-	visible, err := database.RecentPrinciplesVisibleTo("proj-a", 10)
+	visible, err := database.RecentPrinciplesVisibleTo("proj-a", "", 10)
 	if err != nil {
 		t.Fatalf("RecentPrinciplesVisibleTo: %v", err)
 	}
@@ -58,7 +58,7 @@ func TestSearchPrinciplesVisibleToHidesOtherProjectLocal(t *testing.T) {
 		}
 	}
 
-	fromA, err := database.SearchPrinciplesVisibleTo("proj-a", []string{"zebracorn"}, 0, 0, 10)
+	fromA, err := database.SearchPrinciplesVisibleTo("proj-a", "", []string{"zebracorn"}, 0, 0, 10)
 	if err != nil {
 		t.Fatalf("SearchPrinciplesVisibleTo(proj-a): %v", err)
 	}
@@ -66,7 +66,7 @@ func TestSearchPrinciplesVisibleToHidesOtherProjectLocal(t *testing.T) {
 		t.Errorf("proj-a results = %v, want only the global row", fromA)
 	}
 
-	fromB, err := database.SearchPrinciplesVisibleTo("proj-b", []string{"zebracorn"}, 0, 0, 10)
+	fromB, err := database.SearchPrinciplesVisibleTo("proj-b", "", []string{"zebracorn"}, 0, 0, 10)
 	if err != nil {
 		t.Fatalf("SearchPrinciplesVisibleTo(proj-b): %v", err)
 	}
@@ -74,7 +74,7 @@ func TestSearchPrinciplesVisibleToHidesOtherProjectLocal(t *testing.T) {
 		t.Errorf("proj-b results = %d, want own + global", len(fromB))
 	}
 
-	anonymous, err := database.SearchPrinciplesVisibleTo("", []string{"zebracorn"}, 0, 0, 10)
+	anonymous, err := database.SearchPrinciplesVisibleTo("", "", []string{"zebracorn"}, 0, 0, 10)
 	if err != nil {
 		t.Fatalf("SearchPrinciplesVisibleTo(\"\"): %v", err)
 	}
