@@ -69,6 +69,7 @@ func TestHandleToolsListIncludesScopedReadTools(t *testing.T) {
 	for _, name := range []string{
 		"get_recent_context",
 		"search_memories",
+		"recall",
 		"get_principles",
 		"get_session_summaries",
 		"get_project_timeline",
@@ -86,6 +87,7 @@ func TestHandleToolsListIncludesScopedReadTools(t *testing.T) {
 	for _, name := range []string{
 		"get_recent_context",
 		"search_memories",
+		"recall",
 		"get_principles",
 		"get_session_summaries",
 		"get_project_timeline",

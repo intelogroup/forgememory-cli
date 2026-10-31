@@ -16,6 +16,11 @@ func runHelp(args []string) {
     Returns: matching raw event payloads with recency-ranked results
     Params:  query (string, required), limit (number, default 10), project_id (string, optional)
 
+  recall
+    When:    looking for a past lesson when you don't know the exact wording
+    Returns: full text of matching principles, session summaries and saved notes, by meaning and keyword
+    Params:  query (string, required), limit (number, default 5, max 20), project_id (string, optional, "*" for all projects)
+
   get_principles
     When:    before architecture or design decisions
     Returns: distilled high-level patterns and preferences for this project
@@ -115,6 +120,7 @@ Add to your MCP config: {"forge": {"command": "forge", "args": ["mcp"]}}
 Call these tools at the right moment:
   get_recent_context    -> session start (always)
   search_memories       -> before solving errors or re-implementing features
+  recall                -> finding a past lesson by meaning, not exact wording
   get_principles        -> before architecture/design decisions
   inject_principles     -> before sending a prompt to a code agent (pass prompt as arg)
   get_active_failures   -> when something is mysteriously broken

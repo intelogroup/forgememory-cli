@@ -2,6 +2,7 @@ package mcp
 
 import (
 	"bufio"
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -16,6 +17,7 @@ import (
 	"github.com/forge/forge/internal/db"
 	"github.com/forge/forge/internal/distill"
 	"github.com/forge/forge/internal/ipc"
+	"github.com/forge/forge/internal/recall"
 	"github.com/forge/forge/internal/tokens"
 )
 
@@ -179,6 +181,29 @@ func (s *Server) handleToolsList(req Request) *Response {
 						"description": "Optional project identifier. Defaults to the current repo/project.",
 					},
 				},
+			},
+		},
+		{
+			Name:        "recall",
+			Description: "Call to find a past lesson, decision or fix when you don't know its exact wording. Searches distilled principles, session summaries and saved notes by meaning and keyword, and returns their full text.",
+			InputSchema: map[string]any{
+				"type": "object",
+				"properties": map[string]any{
+					"query": map[string]any{
+						"type":        "string",
+						"description": "What you want to find, in plain language",
+					},
+					"limit": map[string]any{
+						"type":        "number",
+						"description": "Number of results to return (default 5, max 20)",
+						"default":     5,
+					},
+					"project_id": map[string]any{
+						"type":        "string",
+						"description": "Project to search. Defaults to the current repo/project. Use \"*\" to search all projects.",
+					},
+				},
+				"required": []string{"query"},
 			},
 		},
 		{
@@ -486,6 +511,8 @@ func (s *Server) handleToolsCall(req Request) *Response {
 		result = s.getRecentContext(params.Arguments)
 	case "search_memories":
 		result = s.searchMemories(params.Arguments)
+	case "recall":
+		result = s.recallMemories(params.Arguments)
 	case "get_principles":
 		result = s.getPrinciples(params.Arguments)
 	case "get_session_summaries":
@@ -667,6 +694,42 @@ func (s *Server) searchMemories(args map[string]any) ToolResult {
 	return ToolResult{
 		Content: []ToolContent{{Type: "text", Text: text}},
 	}
+}
+
+func (s *Server) recallMemories(args map[string]any) ToolResult {
+	query, ok := args["query"].(string)
+	query = strings.TrimSpace(query)
+	if !ok || query == "" {
+		return toolError("Missing required parameter: query")
+	}
+	if len(query) > 1000 {
+		return toolError("Parameter 'query' exceeds maximum length of 1,000 characters")
+	}
+	limit := intFromArgs(args, "limit", 5)
+	if limit < 1 {
+		limit = 5
+	}
+	if limit > 20 {
+		limit = 20
+	}
+
+	scope := db.RecallScope{}
+	label := "all projects"
+	if stringFromArgs(args, "project_id") == "*" {
+		scope.All = true
+	} else {
+		scope.ProjectID, scope.ProjectKey = projectRefFromArgs(args)
+		label = scope.ProjectID
+	}
+
+	resp, err := recall.SearchFromEnv(context.Background(), s.db, query, scope, limit)
+	if err != nil {
+		return toolError("Recall failed: " + err.Error())
+	}
+	markPrinciplesUsed(s.db, recall.ReadablePrinciples(resp))
+
+	text := fmt.Sprintf("## Recall for \"%s\" (%s)\n\n%s", query, label, recall.Render(resp))
+	return ToolResult{Content: []ToolContent{{Type: "text", Text: text}}}
 }
 
 func (s *Server) getPrinciples(args map[string]any) ToolResult {
