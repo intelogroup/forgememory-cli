@@ -44,7 +44,7 @@ func (s Store) Put(traceID, taskID, kind, mediaType string, content []byte, meta
 	if !allowedKinds[kind] {
 		return db.EvaluationArtifact{}, fmt.Errorf("unsupported artifact kind %q", kind)
 	}
-	if strings.HasPrefix(strings.ToLower(mediaType), "text/") || mediaType == "application/json" || mediaType == "application/jsonl" || mediaType == "application/xml" {
+	if isTextMedia(mediaType) {
 		content = []byte(sanitize.ScrubSecrets(string(content)))
 	}
 	if metadata == "" {
@@ -54,19 +54,9 @@ func (s Store) Put(traceID, taskID, kind, mediaType string, content []byte, meta
 		return db.EvaluationArtifact{}, fmt.Errorf("artifact store root is required")
 	}
 
-	hashBytes := sha256.Sum256(content)
-	hash := hex.EncodeToString(hashBytes[:])
-	relativePath := filepath.Join("sha256", hash[:2], hash)
-	absolutePath := filepath.Join(s.Root, relativePath)
-	if err := os.MkdirAll(filepath.Dir(absolutePath), 0o700); err != nil {
-		return db.EvaluationArtifact{}, fmt.Errorf("create artifact directory: %w", err)
-	}
-	if _, err := os.Stat(absolutePath); os.IsNotExist(err) {
-		if err := writeAtomic(absolutePath, content); err != nil {
-			return db.EvaluationArtifact{}, err
-		}
-	} else if err != nil {
-		return db.EvaluationArtifact{}, fmt.Errorf("check artifact: %w", err)
+	relativePath, hash, err := s.writeContent(content)
+	if err != nil {
+		return db.EvaluationArtifact{}, err
 	}
 
 	id := uuid.NewSHA1(uuid.NameSpaceURL, []byte(strings.Join([]string{traceID, taskID, kind, hash}, "\x00"))).String()
@@ -79,6 +69,76 @@ func (s Store) Put(traceID, taskID, kind, mediaType string, content []byte, meta
 		return db.EvaluationArtifact{}, fmt.Errorf("insert artifact metadata: %w", err)
 	}
 	return artifact, nil
+}
+
+func isTextMedia(mediaType string) bool {
+	return strings.HasPrefix(strings.ToLower(mediaType), "text/") || mediaType == "application/json" || mediaType == "application/jsonl" || mediaType == "application/xml"
+}
+
+func (s Store) writeContent(content []byte) (relativePath, hash string, err error) {
+	hashBytes := sha256.Sum256(content)
+	hash = hex.EncodeToString(hashBytes[:])
+	relativePath = filepath.Join("sha256", hash[:2], hash)
+	absolutePath := filepath.Join(s.Root, relativePath)
+	if err := os.MkdirAll(filepath.Dir(absolutePath), 0o700); err != nil {
+		return "", "", fmt.Errorf("create artifact directory: %w", err)
+	}
+	if _, err := os.Stat(absolutePath); os.IsNotExist(err) {
+		if err := writeAtomic(absolutePath, content); err != nil {
+			return "", "", err
+		}
+	} else if err != nil {
+		return "", "", fmt.Errorf("check artifact: %w", err)
+	}
+	return relativePath, hash, nil
+}
+
+// Rewrite applies rewrite to every text artifact and returns how many files it
+// changed, or would change without apply. A changed file moves to its new content
+// address and the old one is removed. Rows keep their IDs.
+// shortcut: a crash between repointing and removal leaves the old file unreferenced, and a rerun will not see it; check for unindexed files if that happens.
+func (s Store) Rewrite(rewrite func(string) string, apply bool) (int, error) {
+	files, err := s.DB.ArtifactFiles()
+	if err != nil {
+		return 0, err
+	}
+	changed := 0
+	for _, file := range files {
+		if !isTextMedia(file.MediaType) {
+			continue
+		}
+		reader, err := s.Open(db.EvaluationArtifact{Path: file.Path})
+		if os.IsNotExist(err) {
+			continue // an indexed file that is gone holds nothing to rewrite
+		}
+		if err != nil {
+			return changed, err
+		}
+		raw, err := io.ReadAll(reader)
+		reader.Close()
+		if err != nil {
+			return changed, err
+		}
+		clean := rewrite(string(raw))
+		if clean == string(raw) {
+			continue
+		}
+		changed++
+		if !apply {
+			continue
+		}
+		newPath, hash, err := s.writeContent([]byte(clean))
+		if err != nil {
+			return changed, err
+		}
+		if err := s.DB.RepointArtifacts(file.Path, newPath, hash, int64(len(clean))); err != nil {
+			return changed, err
+		}
+		if err := os.Remove(filepath.Join(s.Root, file.Path)); err != nil {
+			return changed, fmt.Errorf("remove old artifact: %w", err)
+		}
+	}
+	return changed, nil
 }
 
 func writeAtomic(path string, content []byte) error {

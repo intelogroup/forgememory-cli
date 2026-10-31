@@ -47,6 +47,10 @@ func main() {
 		runSearch(os.Args[2:])
 	case "recall":
 		runRecall(os.Args[2:])
+	case "redact":
+		runRedact(os.Args[2:])
+	case "forget":
+		runForget(os.Args[2:])
 	case "consolidate":
 		runConsolidate(os.Args[2:])
 	case "save":
@@ -134,6 +138,8 @@ func printUsage() {
    stats         Fun aggregates: archetype, peak hour, top prompt words, agent-parallelism (--path)
    search <q>    Full-text search on event payloads
    recall <q>    Find memories by meaning and keyword (--all --project --limit --json)
+   redact        Scrub secrets already stored; counts only unless --apply (daemon must be stopped)
+   forget <text> Remove literal text from everything stored; counts only unless --apply
    mcp           Start MCP server (stdio transport, for Claude Code)
    ui            Start memory dashboard web UI (http://localhost:5555; traces, evaluations, artifacts)
    doctor        Self-test: check DB, daemon, agents, binary
