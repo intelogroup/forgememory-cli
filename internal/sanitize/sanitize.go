@@ -24,9 +24,10 @@ var (
 	// Authorization headers and other common credential strings
 	bearerPattern = regexp.MustCompile(`(?i)\bbearer\s+[A-Za-z0-9-_=]+\.[A-Za-z0-9-_=]+\.?[A-Za-z0-9-_.+/=]*\b`)
 	// The key may be quoted, at any JSON escaping depth: payloads nest tool input as strings.
-	passwordPattern = regexp.MustCompile(`(?i)\b[a-z0-9_]*(password|pass|passwd|pwd|secret|secret_key|access_key|api_key|apikey|token|private_key|privatekey)\b\\*["']?\s*([:=]|\s)\s*\\*["']?([A-Za-z0-9-_.+/=!@#$%^&*~]{8,})["']?`)
+	// A backslash only counts before a quote; alone it may start an escape like \\n.
+	passwordPattern = regexp.MustCompile(`(?i)\b[a-z0-9_]*(password|pass|passwd|pwd|secret|secret_key|access_key|api_key|apikey|token|private_key|privatekey)\b(?:\\*["'])?\s*([:=]|\s)\s*(?:\\*["'])?([A-Za-z0-9-_.+/=!@#$%^&*~]{8,})["']?`)
 	// "my password is X". shortcut: a letters-only value is left alone so "the token is expired" survives, upgrade if real passphrases leak.
-	prosePasswordPattern = regexp.MustCompile("(?i)\\b(?:password|passwd|passphrase|passcode|pwd|mot de passe|api[ _-]?key|secret|token|credentials?)\\s+(?:is|was|est)\\s+\\\\*[\"'`]?([^\\s\"'`\\\\,;]{6,})")
+	prosePasswordPattern = regexp.MustCompile("(?i)\\b(?:password|passwd|passphrase|passcode|pwd|mot de passe|api[ _-]?key|secret|token|credentials?)\\s+(?:is|was|est)\\s+(?:\\\\*[\"'`])?([^\\s\"'`\\\\,;]{6,})")
 )
 
 // ScrubSecrets redacts sensitive credentials and API keys from event payloads.

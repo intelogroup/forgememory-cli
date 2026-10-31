@@ -155,3 +155,16 @@ func TestScrubSecretsIsIdempotentAndKeepsJSONValid(t *testing.T) {
 		t.Fatalf("not idempotent:\n%s\n%s", once, twice)
 	}
 }
+
+func TestScrubSecretsNeverSplitsAJSONEscape(t *testing.T) {
+	for _, input := range []string{
+		`{"text":"pass \nabcdefghij1"}`,
+		`{"text":"token \tabcdefghij1"}`,
+		`{"text":"the password is \nabcdefghij1"}`,
+		`{"text":"secret: éabcdefghij1"}`,
+	} {
+		if got := ScrubSecrets(input); !json.Valid([]byte(got)) {
+			t.Errorf("%s became invalid JSON: %s", input, got)
+		}
+	}
+}
