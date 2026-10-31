@@ -22,7 +22,7 @@ import (
 
 const (
 	defaultURL   = "http://localhost:11434"
-	DefaultModel = "nomic-embed-text"
+	DefaultModel = "mxbai-embed-large"
 	maxResponse  = 64 << 20
 )
 
@@ -91,7 +91,11 @@ func (c *Client) EmbedDocuments(ctx context.Context, texts []string) ([][]float3
 
 // EmbedQuery embeds one search query.
 func (c *Client) EmbedQuery(ctx context.Context, query string) ([]float32, error) {
-	out, err := c.embed(ctx, withPrefix(c.model, "search_query: ", []string{query}))
+	input := withPrefix(c.model, "search_query: ", []string{query})
+	if strings.HasPrefix(c.model, "mxbai-embed") {
+		input = []string{"Represent this sentence for searching relevant passages: " + query}
+	}
+	out, err := c.embed(ctx, input)
 	if err != nil {
 		return nil, err
 	}
@@ -100,7 +104,7 @@ func (c *Client) EmbedQuery(ctx context.Context, query string) ([]float32, error
 
 // withPrefix adds the task prefix nomic models are trained to expect.
 //
-// shortcut: only nomic models get a prefix, add others here if they need one.
+// shortcut: only known models get a prefix, add others here if they need one.
 func withPrefix(model, prefix string, texts []string) []string {
 	if !strings.HasPrefix(model, "nomic-embed") {
 		return texts

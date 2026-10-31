@@ -132,6 +132,23 @@ func TestEmbedPrefixesAndNormalizes(t *testing.T) {
 	}
 }
 
+func TestMxbaiQueriesGetTheirRetrievalPrefix(t *testing.T) {
+	var seen []string
+	c, err := New(fakeOllama(t, &seen, vectors).URL, "mxbai-embed-large", false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := c.EmbedDocuments(context.Background(), []string{"doc"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := c.EmbedQuery(context.Background(), "q"); err != nil {
+		t.Fatal(err)
+	}
+	if seen[0] != "doc" || !strings.HasSuffix(seen[1], "passages: q") {
+		t.Fatalf("inputs = %q", seen)
+	}
+}
+
 func TestEmbedRejectsBadResponses(t *testing.T) {
 	for name, reply := range map[string]func(int) any{
 		"count mismatch": func(int) any { return map[string]any{"embeddings": [][]float32{}} },
