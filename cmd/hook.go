@@ -17,6 +17,7 @@ import (
 	"github.com/forge/forge/internal/coach"
 	"github.com/forge/forge/internal/db"
 	"github.com/forge/forge/internal/ipc"
+	"github.com/forge/forge/internal/recall"
 	"github.com/forge/forge/internal/retrieve"
 	"github.com/forge/forge/internal/tokens"
 	"github.com/google/uuid"
@@ -535,11 +536,15 @@ func handleSessionRecall(projectID, sessionID, payload string) {
 	}
 
 	text := buildSessionRecallOutput(projectID, summaries, principles, alerts, externalSummaries, promptMatch, lastSession, distillError)
+	text, lessons := appendSemanticLessons(text, firstPromptLessons(database, projectID, promptText))
 	text = appendCoachSuggestion(text, coachingItem)
 	if text == "" {
 		return
 	}
 	markEmittedPrinciplesUsed(database, text, principles)
+	for _, p := range recall.ReadablePrinciples(recall.Response{Results: lessons}) {
+		_ = database.IncrementPrincipleUsage(p.ID)
+	}
 	if promptMatchShown(promptMatch) && promptMatch.PrincipleID != "" {
 		_ = database.IncrementPrincipleUsage(promptMatch.PrincipleID)
 	}
