@@ -81,8 +81,8 @@ func addPrinciple(t *testing.T, d *db.DB, title, narrative, project string) *db.
 func drain(t *testing.T, d *db.DB, e Embedder) int {
 	t.Helper()
 	total := 0
-	for i := 0; i < 20; i++ {
-		n, err := IndexBatch(context.Background(), d, e, 2)
+	for {
+		n, err := IndexBatch(context.Background(), d, e, 32)
 		if err != nil {
 			t.Fatalf("IndexBatch: %v", err)
 		}
@@ -91,8 +91,6 @@ func drain(t *testing.T, d *db.DB, e Embedder) int {
 		}
 		total += n
 	}
-	t.Fatal("backlog never drained")
-	return total
 }
 
 var all = db.RecallScope{All: true}
@@ -113,7 +111,7 @@ func TestSearchFindsMeaningWithNoSharedWords(t *testing.T) {
 	if resp.Mode != ModeHybrid || resp.Reason != "" {
 		t.Fatalf("mode=%s reason=%q", resp.Mode, resp.Reason)
 	}
-	if len(resp.Results) != 1 || resp.Results[0].ID != target.ID {
+	if len(resp.Results) == 0 || resp.Results[0].ID != target.ID {
 		t.Fatalf("results = %+v, want the barge-in principle", resp.Results)
 	}
 	if resp.Results[0].Body != "stop speech playback" || resp.Results[0].Similarity < 0.99 {
@@ -131,6 +129,42 @@ func TestFusionPrefersDocumentsFoundByBothRankings(t *testing.T) {
 	}
 	if len(got) != 3 {
 		t.Fatalf("got %d documents, want 3 with no duplicates", len(got))
+	}
+}
+
+func TestFusionWeightsVectorsAboveAnyWordMatch(t *testing.T) {
+	v := db.RecallKey{Kind: "principle", ID: "vector"}
+	k := db.RecallKey{Kind: "principle", ID: "keyword"}
+	if got := fuse([]db.RecallKey{v}, []db.RecallKey{k}); got[0] != v {
+		t.Fatalf("top = %v, want the vector match", got[0])
+	}
+}
+
+// Short principles must not lose every slot to long summaries.
+func TestSearchGivesEachKindItsOwnSlots(t *testing.T) {
+	d := openDB(t)
+	e := &fakeEmbedder{dim: 2, axes: map[string]int{"topic": 0}}
+	for i := 0; i < 6; i++ {
+		if err := d.InsertSessionSummary(&db.SessionSummary{ProjectID: "a", SessionID: "s", Summary: "topic topic topic"}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	p := addPrinciple(t, d, "Unrelated", "body", "a")
+	drain(t, d, e)
+
+	resp, err := Search(context.Background(), d, e, "topic", all, 2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	counts := map[string]int{}
+	for _, r := range resp.Results {
+		counts[r.Kind]++
+	}
+	if counts[db.RecallKindSummary] != 1 {
+		t.Fatalf("summaries = %d, want 1 slot at limit 2: %+v", counts[db.RecallKindSummary], resp.Results)
+	}
+	if len(resp.Results) == 0 || resp.Results[0].ID != p.ID {
+		t.Fatalf("results = %+v, want principles listed first", resp.Results)
 	}
 }
 

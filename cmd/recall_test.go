@@ -8,7 +8,7 @@ func TestParseRecallArgs(t *testing.T) {
 		t.Fatalf("got %+v err=%v", got, err)
 	}
 	got, err = parseRecallArgs([]string{"--project", "wifizone", "routing"})
-	if err != nil || got.project != "wifizone" || got.query != "routing" || got.limit != 5 {
+	if err != nil || got.project != "wifizone" || got.query != "routing" || got.limit != 10 {
 		t.Fatalf("got %+v err=%v", got, err)
 	}
 	for _, bad := range [][]string{{}, {"--all"}, {"q", "--limit"}, {"q", "--limit", "0"}, {"q", "--limit", "x"}, {"q", "--project"}} {

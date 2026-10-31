@@ -19,7 +19,7 @@ func runHelp(args []string) {
   recall
     When:    looking for a past lesson when you don't know the exact wording
     Returns: full text of matching principles, session summaries and saved notes, by meaning and keyword
-    Params:  query (string, required), limit (number, default 5, max 20), project_id (string, optional, "*" for all projects)
+    Params:  query (string, required), limit (number of principles, default 10, max 20), project_id (string, optional, "*" for all projects)
 
   get_principles
     When:    before architecture or design decisions

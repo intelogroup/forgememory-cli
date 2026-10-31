@@ -19,8 +19,12 @@ const (
 	ModeHybrid  = "hybrid"
 	ModeFTSOnly = "fts-only"
 
+	// DefaultLimit is how many principles a search returns unless asked otherwise.
+	DefaultLimit = 10
+
 	candidatesPerRanking = 50
 	rrfK                 = 60
+	keywordWeight        = 0.25
 )
 
 // Embedder is the part of embed.Client recall needs.
@@ -96,7 +100,7 @@ func Search(ctx context.Context, d *db.DB, e Embedder, query string, scope db.Re
 		return Response{}, errors.New("empty query")
 	}
 	if limit <= 0 {
-		limit = 5
+		limit = DefaultLimit
 	}
 	keyword, err := d.RecallFTS(query, scope, candidatesPerRanking)
 	if err != nil {
@@ -118,14 +122,23 @@ func Search(ctx context.Context, d *db.DB, e Embedder, query string, scope db.Re
 	}
 
 	similarity := make(map[db.RecallKey]float32, len(semantic))
-	vectorKeys := make([]db.RecallKey, len(semantic))
-	for i, s := range semantic {
-		vectorKeys[i] = s.key
-		similarity[s.key] = s.score
+	vectorKeys := make(map[string][]db.RecallKey)
+	for _, item := range semantic {
+		vectorKeys[item.key.Kind] = append(vectorKeys[item.key.Kind], item.key)
+		similarity[item.key] = item.score
 	}
-	merged := fuse(vectorKeys, keyword)
-	if len(merged) > limit {
-		merged = merged[:limit]
+	keywordKeys := make(map[string][]db.RecallKey)
+	for _, key := range keyword {
+		keywordKeys[key.Kind] = append(keywordKeys[key.Kind], key)
+	}
+
+	var merged []db.RecallKey
+	for _, group := range resultGroups(limit) {
+		ranked := fuse(vectorKeys[group.kind], keywordKeys[group.kind])
+		if len(ranked) > group.slots {
+			ranked = ranked[:group.slots]
+		}
+		merged = append(merged, ranked...)
 	}
 	docs, err := d.RecallDocs(merged)
 	if err != nil {
@@ -136,6 +149,23 @@ func Search(ctx context.Context, d *db.DB, e Embedder, query string, scope db.Re
 		resp.Results[i] = Result{RecallDoc: doc, Similarity: similarity[db.RecallKey{Kind: doc.Kind, ID: doc.ID}]}
 	}
 	return resp, nil
+}
+
+type resultGroup struct {
+	kind  string
+	slots int
+}
+
+// resultGroups gives each kind its own slots: limit principles, plus half that
+// many summaries and notes. Long summaries outrank short principles on raw
+// similarity, so one shared ranking buried the distilled lessons in testing.
+func resultGroups(limit int) []resultGroup {
+	secondary := (limit + 1) / 2
+	return []resultGroup{
+		{db.RecallKindPrinciple, limit},
+		{db.RecallKindSummary, secondary},
+		{db.RecallKindNote, secondary},
+	}
 }
 
 // vectorRanking returns a non-empty reason, not an error, for the failures that
@@ -154,7 +184,7 @@ func vectorRanking(ctx context.Context, d *db.DB, e Embedder, query string, scop
 	if len(rows) == 0 {
 		return nil, "no vectors indexed yet for " + e.Model(), nil
 	}
-	return topK(qv, rows, candidatesPerRanking), "", nil
+	return topKPerKind(qv, rows, candidatesPerRanking), "", nil
 }
 
 type scored struct {
@@ -205,18 +235,42 @@ func topK(q []float32, rows []db.VectorRow, k int) []scored {
 	return out
 }
 
-// fuse merges rankings by reciprocal rank fusion.
-func fuse(rankings ...[]db.RecallKey) []db.RecallKey {
+// topKPerKind keeps k candidates of each kind, so a kind with shorter documents
+// isn't squeezed out before fusion sees it.
+func topKPerKind(q []float32, rows []db.VectorRow, k int) []scored {
+	split := map[string][]db.VectorRow{}
+	for _, r := range rows {
+		split[r.Kind] = append(split[r.Kind], r)
+	}
+	var out []scored
+	for _, kindRows := range split {
+		out = append(out, topK(q, kindRows, k)...)
+	}
+	sort.SliceStable(out, func(i, j int) bool {
+		if out[i].score != out[j].score {
+			return out[i].score > out[j].score
+		}
+		return out[i].key.ID < out[j].key.ID
+	})
+	return out
+}
+
+// fuse merges a vector and a keyword ranking by reciprocal rank fusion. Keywords
+// count for less: matching any one query word is weak evidence, and at equal
+// weight that noise pushed reworded matches out of the results in testing.
+func fuse(vector, keyword []db.RecallKey) []db.RecallKey {
 	scores := map[db.RecallKey]float64{}
 	var order []db.RecallKey
-	for _, ranking := range rankings {
+	add := func(ranking []db.RecallKey, weight float64) {
 		for rank, key := range ranking {
 			if _, seen := scores[key]; !seen {
 				order = append(order, key)
 			}
-			scores[key] += 1.0 / float64(rrfK+rank+1)
+			scores[key] += weight / float64(rrfK+rank+1)
 		}
 	}
+	add(vector, 1)
+	add(keyword, keywordWeight)
 	sort.SliceStable(order, func(i, j int) bool { return scores[order[i]] > scores[order[j]] })
 	return order
 }

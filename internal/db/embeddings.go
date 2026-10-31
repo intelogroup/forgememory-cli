@@ -165,7 +165,7 @@ func (s RecallScope) visibleClause(kindCol, idCol string) (string, []any) {
 }
 
 // EmbedDoc is a document waiting for a vector. Partial means its narrative
-// could not be read or verified, so Text holds only the title and concepts.
+// could not be read or verified, so Text holds only the title.
 type EmbedDoc struct {
 	Kind    string
 	ID      string
@@ -228,8 +228,10 @@ func readNarrative(title, stored, signature string) (string, bool) {
 	return plain, true
 }
 
-func principleEmbedDoc(id, title, stored, signature, concepts string) EmbedDoc {
-	text := title + " " + strings.Join(decodeStringSlice(concepts), " ")
+// principleEmbedDoc leaves concept tags out: generic tags like "gotcha" pull
+// unrelated principles together, and removing them raised recall in testing.
+func principleEmbedDoc(id, title, stored, signature string) EmbedDoc {
+	text := title
 	narrative, ok := readNarrative(title, stored, signature)
 	if ok {
 		text += ". " + narrative
@@ -276,7 +278,7 @@ func (d *DB) EmbeddingBacklog(model string, limit int) ([]EmbedDoc, error) {
 	var docs []EmbedDoc
 
 	rows, err := d.conn.Query(
-		`SELECT p.id, p.title, p.narrative, COALESCE(p.signature,''), COALESCE(p.concepts,'')
+		`SELECT p.id, p.title, p.narrative, COALESCE(p.signature,'')
 		 FROM principles p
 		 LEFT JOIN embeddings e ON e.source_kind = 'principle' AND e.source_id = p.id AND e.model = ?
 		 WHERE e.source_id IS NULL AND (p.status = 'active' OR p.status IS NULL OR p.status = '')
@@ -285,12 +287,12 @@ func (d *DB) EmbeddingBacklog(model string, limit int) ([]EmbedDoc, error) {
 		return nil, err
 	}
 	for rows.Next() {
-		var id, title, narrative, signature, concepts string
-		if err := rows.Scan(&id, &title, &narrative, &signature, &concepts); err != nil {
+		var id, title, narrative, signature string
+		if err := rows.Scan(&id, &title, &narrative, &signature); err != nil {
 			rows.Close()
 			return nil, err
 		}
-		docs = append(docs, principleEmbedDoc(id, title, narrative, signature, concepts))
+		docs = append(docs, principleEmbedDoc(id, title, narrative, signature))
 	}
 	rows.Close()
 	if err := rows.Err(); err != nil {
@@ -464,7 +466,7 @@ func RecallTerms(query string) []string {
 	return terms
 }
 
-// RecallFTS ranks visible documents by BM25 and matches any query term. Any, not
+// RecallFTS ranks visible documents by BM25 per kind and matches any query term. Any, not
 // all: requiring every term found 5 of 40 known documents in testing, against
 // 38 of 40 for any.
 func (d *DB) RecallFTS(query string, scope RecallScope, limit int) ([]RecallKey, error) {
@@ -473,23 +475,32 @@ func (d *DB) RecallFTS(query string, scope RecallScope, limit int) ([]RecallKey,
 		return nil, nil
 	}
 	clause, args := scope.visibleClause("source_kind", "source_id")
-	rows, err := d.conn.Query(
-		`SELECT source_kind, source_id FROM recall_fts
-		 WHERE recall_fts MATCH ? AND `+clause+` ORDER BY rank LIMIT ?`,
-		append(append([]any{match}, args...), limit)...)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
 	var out []RecallKey
-	for rows.Next() {
-		var k RecallKey
-		if err := rows.Scan(&k.Kind, &k.ID); err != nil {
+	// Limit per kind: BM25 favours long summaries, which would otherwise use up
+	// every slot before a short principle is considered.
+	for _, kind := range []string{RecallKindPrinciple, RecallKindNote, RecallKindSummary} {
+		queryArgs := append(append([]any{match, kind}, args...), limit)
+		rows, err := d.conn.Query(
+			`SELECT source_kind, source_id FROM recall_fts
+			 WHERE recall_fts MATCH ? AND source_kind = ? AND `+clause+` ORDER BY rank LIMIT ?`,
+			queryArgs...)
+		if err != nil {
 			return nil, err
 		}
-		out = append(out, k)
+		for rows.Next() {
+			var k RecallKey
+			if err := rows.Scan(&k.Kind, &k.ID); err != nil {
+				rows.Close()
+				return nil, err
+			}
+			out = append(out, k)
+		}
+		rows.Close()
+		if err := rows.Err(); err != nil {
+			return nil, err
+		}
 	}
-	return out, rows.Err()
+	return out, nil
 }
 
 // RecallDocs loads documents for display, in the order given. Keys that no

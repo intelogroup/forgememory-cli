@@ -159,7 +159,7 @@ func TestUnreadableNarrativeIsTitleOnlyThenHeals(t *testing.T) {
 	if !ok || !doc.Partial {
 		t.Fatalf("doc = %+v (found=%v), want partial", doc, ok)
 	}
-	if strings.Contains(doc.Text, "enc:v1") || !strings.Contains(doc.Text, "locked lesson") || !strings.Contains(doc.Text, "gotcha") {
+	if strings.Contains(doc.Text, "enc:v1") || !strings.Contains(doc.Text, "locked lesson") || strings.Contains(doc.Text, "gotcha") {
 		t.Fatalf("partial text = %q", doc.Text)
 	}
 

@@ -21,7 +21,7 @@ type recallArgs struct {
 }
 
 func parseRecallArgs(args []string) (recallArgs, error) {
-	parsed := recallArgs{limit: 5}
+	parsed := recallArgs{limit: recall.DefaultLimit}
 	var words []string
 	for i := 0; i < len(args); i++ {
 		switch args[i] {

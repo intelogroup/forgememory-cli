@@ -195,8 +195,8 @@ func (s *Server) handleToolsList(req Request) *Response {
 					},
 					"limit": map[string]any{
 						"type":        "number",
-						"description": "Number of results to return (default 5, max 20)",
-						"default":     5,
+						"description": "Number of principles to return, plus half as many session summaries and notes (default 10, max 20)",
+						"default":     recall.DefaultLimit,
 					},
 					"project_id": map[string]any{
 						"type":        "string",
@@ -705,9 +705,9 @@ func (s *Server) recallMemories(args map[string]any) ToolResult {
 	if len(query) > 1000 {
 		return toolError("Parameter 'query' exceeds maximum length of 1,000 characters")
 	}
-	limit := intFromArgs(args, "limit", 5)
+	limit := intFromArgs(args, "limit", recall.DefaultLimit)
 	if limit < 1 {
-		limit = 5
+		limit = recall.DefaultLimit
 	}
 	if limit > 20 {
 		limit = 20
