@@ -19,6 +19,7 @@ import (
 	"github.com/forge/forge/internal/ipc"
 	"github.com/forge/forge/internal/recall"
 	"github.com/forge/forge/internal/retrieve"
+	"github.com/forge/forge/internal/sanitize"
 	"github.com/forge/forge/internal/tokens"
 	"github.com/google/uuid"
 )
@@ -405,8 +406,9 @@ func runHook(args []string) {
 		eventType = "unknown"
 	}
 
-	// Read and strip private data from payload
-	payload := stripPrivate(string(readStdin()))
+	// Read and strip private data from payload. Scrub here, not only at insert:
+	// the outbox and the embed query both see this text first.
+	payload := sanitize.ScrubSecrets(stripPrivate(string(readStdin())))
 
 	mode := observabilityMode()
 	// Skip build/deploy noise in normal modes. Forensic mode keeps it so an
