@@ -12,6 +12,7 @@ import (
 	"crypto/rand"
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -115,13 +116,20 @@ func GetOrCreateKey() (key []byte, usedFallback bool, err error) {
 		} else {
 			goto fallback
 		}
-		if secret, ok := keyringGetWithTimeout(); ok {
+		secret, getErr := keyringGetWithTimeout()
+		if getErr == nil {
 			decoded, decErr := hex.DecodeString(secret)
 			if decErr == nil && len(decoded) == 32 {
 				clearKeychainUnavailable()
 				return decoded, false, nil
 			}
 			// Corrupt entry — regenerate below.
+		} else if !errors.Is(getErr, keyring.ErrNotFound) {
+			// The entry may exist: a locked keychain or slow prompt fails the read
+			// but can still accept a write. Overwriting here would strand every
+			// row encrypted under the real key. Don't mark the keychain unavailable
+			// either, so the next process retries the read.
+			goto fallback
 		}
 
 		newKey := make([]byte, 32)
@@ -165,21 +173,21 @@ fallback:
 // underlying OS calls take no context/cancellation, so a slow or prompting
 // backend is abandoned rather than awaited — the goroutine may leak until
 // the OS call returns, but that's a one-time cost bounded by sync.Once.
-func keyringGetWithTimeout() (string, bool) {
+func keyringGetWithTimeout() (string, error) {
 	type result struct {
 		val string
-		ok  bool
+		err error
 	}
 	ch := make(chan result, 1)
 	go func() {
 		secret, err := keyringGet(keyringService, keyringUser)
-		ch <- result{secret, err == nil}
+		ch <- result{secret, err}
 	}()
 	select {
 	case r := <-ch:
-		return r.val, r.ok
+		return r.val, r.err
 	case <-time.After(keychainTimeout):
-		return "", false
+		return "", errors.New("keychain read timed out")
 	}
 }
 

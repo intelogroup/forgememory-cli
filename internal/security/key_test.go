@@ -5,6 +5,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"testing"
+	"time"
 
 	"github.com/zalando/go-keyring"
 )
@@ -38,7 +39,7 @@ func TestGetOrCreateKeySkipsKeychainAfterPersistentFailure(t *testing.T) {
 	getCalls, setCalls := 0, 0
 	keyringGet = func(string, string) (string, error) {
 		getCalls++
-		return "", errors.New("keychain not found")
+		return "", keyring.ErrNotFound
 	}
 	keyringSet = func(string, string, string) error {
 		setCalls++
@@ -60,6 +61,62 @@ func TestGetOrCreateKeySkipsKeychainAfterPersistentFailure(t *testing.T) {
 	}
 	if getCalls != 0 || setCalls != 0 {
 		t.Fatalf("second lookup called keychain get=%d set=%d, want no calls after persistent failure", getCalls, setCalls)
+	}
+}
+
+// A failed read says nothing about whether the entry exists. Minting a key here
+// overwrites the real one and strands everything encrypted under it.
+func TestGetOrCreateKeyNeverOverwritesKeychainOnFailedRead(t *testing.T) {
+	for name, get := range map[string]func(string, string) (string, error){
+		"read error": func(string, string) (string, error) { return "", errors.New("interaction not allowed") },
+		"read timeout": func(string, string) (string, error) {
+			time.Sleep(keychainTimeout + 200*time.Millisecond)
+			return "existing", nil
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			useIsolatedKeyForTests(t)
+			origGet, origSet := keyringGet, keyringSet
+			defer func() { keyringGet, keyringSet = origGet, origSet }()
+			setCalls := 0
+			keyringGet = get
+			keyringSet = func(string, string, string) error {
+				setCalls++
+				return nil
+			}
+
+			key, usedFallback, err := GetOrCreateKey()
+			if err != nil || !usedFallback || len(key) != 32 {
+				t.Fatalf("got (%d bytes, fallback=%v, err=%v), want file fallback key", len(key), usedFallback, err)
+			}
+			if setCalls != 0 {
+				t.Fatalf("keychain overwritten %d time(s) after a failed read", setCalls)
+			}
+			if keychainRecentlyUnavailable() {
+				t.Fatal("transient read failure must not disable the keychain for other processes")
+			}
+		})
+	}
+}
+
+// A confirmed-missing entry is the one case that may create a key.
+func TestGetOrCreateKeyCreatesKeychainEntryWhenMissing(t *testing.T) {
+	useIsolatedKeyForTests(t)
+	origGet, origSet := keyringGet, keyringSet
+	defer func() { keyringGet, keyringSet = origGet, origSet }()
+	var stored string
+	keyringGet = func(string, string) (string, error) { return "", keyring.ErrNotFound }
+	keyringSet = func(_, _, secret string) error {
+		stored = secret
+		return nil
+	}
+
+	key, usedFallback, err := GetOrCreateKey()
+	if err != nil || usedFallback || len(key) != 32 {
+		t.Fatalf("got (%d bytes, fallback=%v, err=%v), want keychain key", len(key), usedFallback, err)
+	}
+	if stored != hex.EncodeToString(key) {
+		t.Fatal("returned key differs from the key stored in the keychain")
 	}
 }
 
