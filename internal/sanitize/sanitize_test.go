@@ -1,6 +1,7 @@
 package sanitize
 
 import (
+	"encoding/json"
 	"strings"
 	"testing"
 )
@@ -71,5 +72,86 @@ func TestScrubSecretsCoversProviderFormats(t *testing.T) {
 				t.Errorf("ScrubSecrets(%q) = %q; expected %q", tc.input, got, tc.expected)
 			}
 		})
+	}
+}
+
+func TestScrubSecretsCoversBareProviderTokens(t *testing.T) {
+	alnum := strings.Repeat("a1B2c3D4e5", 4)
+	for name, token := range map[string]string{
+		"supabase access": "sbp_" + strings.Repeat("0a1b2c3d", 5),
+		"supabase secret": "sb_secret_" + alnum,
+		"neon password":   "npg_" + alnum[:14],
+		"neon api":        "napi_" + alnum + alnum,
+		"slack":           "xoxb-" + "123456789012-" + alnum,
+		"google":          "AIza" + alnum[:35],
+		"hugging face":    "hf_" + alnum + alnum,
+		"npm":             "npm_" + alnum[:36],
+		"resend":          "re_" + alnum[:8] + "_" + alnum,
+		"fly":             "fm2_" + alnum + alnum,
+		"telegram":        "1234567890:" + alnum[:35],
+	} {
+		// No credential word nearby: the token alone must be enough.
+		got := ScrubSecrets(`{"value":"` + token + `","n":1}`)
+		if strings.Contains(got, token) {
+			t.Errorf("%s survived: %s", name, got)
+		}
+		if !json.Valid([]byte(got)) {
+			t.Errorf("%s broke the JSON: %s", name, got)
+		}
+	}
+}
+
+func TestScrubSecretsCatchesPasswordsInProseAndJSON(t *testing.T) {
+	const value = "hunter2Fake0"
+	for _, input := range []string{
+		"my staging database password is " + value,
+		"The API key is " + value + ".",
+		"the token was " + value,
+		"mon mot de passe est " + value,
+		"password: 'P@ssw0rd!23'",
+		"password=P@ssw0rd!23",
+		"SECRET_KEY=" + value + "99",
+		"AWS_SECRET_ACCESS_KEY=" + value + "99",
+		`{"password":"` + value + `"}`,
+		`{\"password\": \"` + value + `\"}`,
+		`{\\\"client_secret\\\":\\\"` + value + `\\\"}`,
+	} {
+		got := ScrubSecrets(input)
+		if strings.Contains(got, value) || strings.Contains(got, "ssw0rd") {
+			t.Errorf("secret survived %q: %q", input, got)
+		}
+		if !strings.Contains(got, "[REDACTED-SECRET]") {
+			t.Errorf("no redaction marker in %q", got)
+		}
+	}
+}
+
+func TestScrubSecretsLeavesOrdinaryProseAlone(t *testing.T) {
+	for _, input := range []string{
+		"the password is required",
+		"the token is expired.",
+		"secret is stored in keychain",
+		"the token is read-only",
+		"the token is v2",
+		"api key is in .env",
+		"password reset flow",
+		`{"input_tokens":1234567890,"total_tokens":1234567890}`,
+		"disk-usage-report-for-the-whole-server-rack",
+		"/tmp/task-0123456789abcdefghijklmnop/out",
+	} {
+		if got := ScrubSecrets(input); got != input {
+			t.Errorf("over-redacted %q: %q", input, got)
+		}
+	}
+}
+
+func TestScrubSecretsIsIdempotentAndKeepsJSONValid(t *testing.T) {
+	input := `{"password":"hunter2Fake0","prompt":"my token is abc123xyz and sbp_` + strings.Repeat("0a1b2c3d", 5) + `","cwd":"/x"}`
+	once := ScrubSecrets(input)
+	if !json.Valid([]byte(once)) {
+		t.Fatalf("invalid JSON: %s", once)
+	}
+	if twice := ScrubSecrets(once); twice != once {
+		t.Fatalf("not idempotent:\n%s\n%s", once, twice)
 	}
 }
