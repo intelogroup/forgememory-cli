@@ -823,6 +823,53 @@ func TestBinary_Hook_RepeatedFailureCreatesAlertAndInjectsRecall(t *testing.T) {
 	}
 }
 
+func TestBinary_Hook_ClaudeEditEchoingFailureWordsRaisesNoAlert(t *testing.T) {
+	home := shortHome(t)
+	startTestDaemon(t, home)
+
+	send := func(payload string) {
+		t.Helper()
+		cmd := exec.Command(forgeBin, "hook")
+		cmd.Env = append(baseEnv(),
+			"HOME="+home,
+			"FORGE_SOURCE_TOOL=claude",
+			"FORGE_EVENT_TYPE=PostToolUse",
+			"FORGE_SESSION_ID=claude-doc-1",
+		)
+		cmd.Stdin = strings.NewReader(payload)
+		if err := cmd.Run(); err != nil {
+			t.Fatalf("forge hook: %v", err)
+		}
+	}
+
+	doc := `{"session_id":"claude-doc-1","cwd":"/tmp/api-service","tool_name":"Edit","hook_event_name":"PostToolUse","tool_input":{"file_path":"CLAUDE.md"},"tool_response":{"filePath":"CLAUDE.md","originalFile":"- After 2 failed fix attempts, read the docs"}}`
+	realFailure := `{"session_id":"claude-doc-1","cwd":"/tmp/api-service","tool_name":"Bash","hook_event_name":"PostToolUse","tool_input":{"command":"cargo build"},"tool_response":{"exit_code":1,"stderr":"error[E0599]: no method named foo"}}`
+	send(doc)
+	send(doc)
+	// The real failures come last: once their alert exists, the doc events have been processed too.
+	send(realFailure)
+	send(realFailure)
+
+	dbPath := filepath.Join(home, ".forge", "forge.db")
+	var alerts []db.Alert
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) && len(alerts) == 0 {
+		time.Sleep(50 * time.Millisecond)
+		database, err := db.Open(dbPath)
+		if err != nil {
+			continue
+		}
+		alerts, _ = database.ActiveAlertsByProject("api-service", 5)
+		database.Close()
+	}
+	if len(alerts) != 1 {
+		t.Fatalf("want only the cargo alert, got %d: %+v", len(alerts), alerts)
+	}
+	if strings.Contains(alerts[0].Narrative, "failed fix") {
+		t.Fatalf("doc text raised an alert: %s", alerts[0].Narrative)
+	}
+}
+
 func TestBinary_Hook_RepeatedFailureClearsAfterSuccess(t *testing.T) {
 	home := shortHome(t)
 	startTestDaemon(t, home)

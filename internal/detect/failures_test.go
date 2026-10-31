@@ -433,3 +433,34 @@ func TestCommandFamily_RecognizesKnownBuildCommands(t *testing.T) {
 		t.Fatalf("commandFamily(npm install) = %q, want npm install", got)
 	}
 }
+
+func TestObserveFailure_SuccessStatusIgnoresFailureWordsInOutput(t *testing.T) {
+	// Edit responses echo the whole file, so a doc line mentioning "failed"
+	// used to raise a repeated_failure alert quoting the doc back at the user.
+	line := "- After 2 failed fix/implementation attempt on lib/framework/API-shaped error, use docs"
+	event := &db.Event{
+		SessionID:  "sess-doc",
+		ProjectID:  "api-service",
+		SourceTool: "claude",
+		ToolName:   "Edit",
+		Status:     "success",
+		Payload:    `{"tool_input":{"file_path":"CLAUDE.md"},"tool_response":{"filePath":"CLAUDE.md","originalFile":"` + line + `"}}`,
+	}
+	if obs := observeFailure(event); obs != nil {
+		t.Fatalf("status=success must not be a failure, got %+v", obs)
+	}
+}
+
+func TestObserveFailure_NonZeroExitCodeBeatsSuccessStatus(t *testing.T) {
+	event := &db.Event{
+		SessionID:  "sess-exit",
+		ProjectID:  "api-service",
+		SourceTool: "claude",
+		ToolName:   "Bash",
+		Status:     "success",
+		Payload:    `{"tool_input":{"command":"./deploy.sh"},"tool_response":{"exit_code":1,"stdout":"step 3 did not complete"}}`,
+	}
+	if observeFailure(event) == nil {
+		t.Fatal("non-zero exit_code must stay a failure whatever status says")
+	}
+}

@@ -136,6 +136,12 @@ func observeFailure(event *db.Event) *failureObservation {
 		// lines, retried-then-succeeded steps) without the command failing.
 		return nil
 	}
+	if !hasExitCode && event.SourceTool == "claude" && event.Status == "success" {
+		// Claude Code reports failures through PostToolUseFailure, so a plain
+		// PostToolUse returned fine, and Edit responses echo whole files. Other
+		// agents get status=success only by inference, so they keep text matching.
+		return nil
+	}
 
 	texts := extractStrings(event.Payload)
 	if len(texts) == 0 {
