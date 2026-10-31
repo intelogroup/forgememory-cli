@@ -135,12 +135,31 @@ func TestScrubSecretsLeavesOrdinaryProseAlone(t *testing.T) {
 		"the token is v2",
 		"api key is in .env",
 		"password reset flow",
+		"refresh token rotation",
+		"Token Expiration handling",
+		"password required for login",
+		"the secret-manager integration",
 		`{"input_tokens":1234567890,"total_tokens":1234567890}`,
 		"disk-usage-report-for-the-whole-server-rack",
 		"/tmp/task-0123456789abcdefghijklmnop/out",
 	} {
 		if got := ScrubSecrets(input); got != input {
 			t.Errorf("over-redacted %q: %q", input, got)
+		}
+	}
+}
+
+func TestScrubSecretsStillRedactsValuesThatAreNotPlainWords(t *testing.T) {
+	for input, value := range map[string]string{
+		"token abcDEFghiJKLmnoPQR":   "abcDEFghiJKLmnoPQR",
+		"password hunter2Fake0":      "hunter2Fake0",
+		"password: correcthorse":     "correcthorse",
+		"api_key=correcthorse":       "correcthorse",
+		`{"secret":"correcthorse"}`:  "correcthorse",
+		"token ABCDEFGHIJKLMNOPQRST": "ABCDEFGHIJKLMNOPQRST",
+	} {
+		if got := ScrubSecrets(input); strings.Contains(got, value) {
+			t.Errorf("secret survived %q: %q", input, got)
 		}
 	}
 }

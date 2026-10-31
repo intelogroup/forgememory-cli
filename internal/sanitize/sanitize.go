@@ -28,6 +28,8 @@ var (
 	passwordPattern = regexp.MustCompile(`(?i)\b[a-z0-9_]*(password|pass|passwd|pwd|secret|secret_key|access_key|api_key|apikey|token|private_key|privatekey)\b(?:\\*["'])?\s*([:=]|\s)\s*(?:\\*["'])?([A-Za-z0-9-_.+/=!@#$%^&*~]{8,})["']?`)
 	// "my password is X". shortcut: a letters-only value is left alone so "the token is expired" survives, upgrade if real passphrases leak.
 	prosePasswordPattern = regexp.MustCompile("(?i)\\b(?:password|passwd|passphrase|passcode|pwd|mot de passe|api[ _-]?key|secret|token|credentials?)\\s+(?:is|was|est)\\s+(?:\\\\*[\"'`])?([^\\s\"'`\\\\,;]{6,})")
+	// "token rotation" is prose. shortcut: "password correcthorse" with no separator or quote survives too, upgrade if real passphrases leak.
+	plainWordPattern = regexp.MustCompile(`^[A-Za-z]?[a-z][a-z._/-]*$`)
 )
 
 // ScrubSecrets redacts sensitive credentials and API keys from event payloads.
@@ -65,7 +67,12 @@ func ScrubSecrets(payload string) string {
 			// Find index of value in match
 			idx := regexp.MustCompile(regexp.QuoteMeta(val)).FindStringIndex(match)
 			if idx != nil {
-				return match[:idx[0]] + "[REDACTED-SECRET]" + match[idx[1]:]
+				before := match[:idx[0]]
+				quoted := strings.HasSuffix(before, `"`) || strings.HasSuffix(before, `'`)
+				if strings.TrimSpace(submatches[2]) == "" && !quoted && plainWordPattern.MatchString(val) {
+					return match
+				}
+				return before + "[REDACTED-SECRET]" + match[idx[1]:]
 			}
 		}
 		return "[REDACTED-SECRET]"
