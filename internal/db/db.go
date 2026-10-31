@@ -98,7 +98,7 @@ func defaultPath() string {
 // schemaVersion is stamped into SQLite's user_version pragma once migrate()
 // has applied the current schema. Bump it whenever migrate()'s statements
 // change.
-const schemaVersion = 11
+const schemaVersion = 12
 
 // migrate applies the full schema, but only once: it runs on every Open(),
 // including every short-lived CLI subprocess invocation and any test that
@@ -611,6 +611,9 @@ func (d *DB) migrate() error {
 		if _, err := tx.Exec(`UPDATE principles SET scope = 'global' WHERE scope = 'project'`); err != nil {
 			return fmt.Errorf("backfill scope: %w", err)
 		}
+	}
+	if err := migrateRecall(tx); err != nil {
+		return fmt.Errorf("recall migration: %w", err)
 	}
 	if _, err := tx.Exec(fmt.Sprintf("PRAGMA user_version = %d", schemaVersion)); err != nil {
 		return fmt.Errorf("stamp schema version: %w", err)
