@@ -26,6 +26,7 @@ import (
 	"github.com/forge/forge/internal/db"
 	"github.com/forge/forge/internal/detect"
 	"github.com/forge/forge/internal/distill"
+	"github.com/forge/forge/internal/embed"
 	"github.com/forge/forge/internal/ipc"
 	"github.com/forge/forge/internal/retrieve"
 )
@@ -211,6 +212,7 @@ func runDaemon(args []string) {
 	distillCfg := distill.LoadConfig()
 	go distillLoop(distill.New(database, distillCfg), database, distillCfg.DistillInterval)
 	go retrievalLoop(retrieve.NewWorker(database), retrievalWake, stop)
+	go embedLoop(database, stop)
 	if interval := consolidationInterval(); interval > 0 {
 		if distillCfg.Provider == "" {
 			log.Printf("consolidate: FORGE_CONSOLIDATE_INTERVAL is set but no inference provider is configured; scheduling disabled")
@@ -897,6 +899,12 @@ type statusReport struct {
 		Total       int `json:"total"`
 		Undistilled int `json:"undistilled"`
 	} `json:"events"`
+	Recall struct {
+		Model    string `json:"model"`
+		Embedded int    `json:"embedded"`
+		Total    int    `json:"total"`
+		Partial  int    `json:"title_only"`
+	} `json:"recall"`
 	Principles           int    `json:"principles"`
 	Sessions             int    `json:"sessions"`
 	CrossSessionPatterns int    `json:"cross_session_patterns"`
@@ -949,6 +957,11 @@ func collectStatusReport() (statusReport, error) {
 	report.Principles = principles
 	report.Sessions = sessions
 	report.CrossSessionPatterns = crossPatterns
+	report.Recall.Model = embed.DefaultModel
+	if client, err := embed.FromEnv(); err == nil {
+		report.Recall.Model = client.Model()
+	}
+	report.Recall.Embedded, report.Recall.Total, report.Recall.Partial, _ = database.EmbeddingCoverage(report.Recall.Model)
 	report.LastDistilled = loadLastDistilled(database)
 	if h, hErr := database.GetDistillationHealth(); hErr == nil {
 		report.Distillation.LastRunAt = h.LastRunAt
@@ -1009,6 +1022,7 @@ func statusOutput() {
 	fmt.Printf("Principles: %d\n", report.Principles)
 	fmt.Printf("Sessions:   %d\n", report.Sessions)
 	fmt.Printf("Cross-session patterns: %d\n", report.CrossSessionPatterns)
+	fmt.Printf("Recall:     %d/%d embedded with %s (%d title-only)\n", report.Recall.Embedded, report.Recall.Total, report.Recall.Model, report.Recall.Partial)
 	if report.DaemonAddress != "" {
 		fmt.Printf("Daemon:     %s (%s)\n", report.Daemon, report.DaemonAddress)
 	} else {
