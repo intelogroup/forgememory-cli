@@ -605,8 +605,12 @@ func (d *DB) migrate() error {
 	// after the FTS rebuild: on an upgraded DB the FTS index starts empty, and
 	// the principles_au trigger's 'delete' against that empty index corrupts the
 	// virtual table.
-	if _, err := tx.Exec(`UPDATE principles SET scope = 'global' WHERE scope = 'project'`); err != nil {
-		return fmt.Errorf("backfill scope: %w", err)
+	// migrate() replays on every version bump, so this runs only when crossing
+	// v9, where scope arrived. Replaying it would promote rows written since.
+	if version < 9 {
+		if _, err := tx.Exec(`UPDATE principles SET scope = 'global' WHERE scope = 'project'`); err != nil {
+			return fmt.Errorf("backfill scope: %w", err)
+		}
 	}
 	if _, err := tx.Exec(fmt.Sprintf("PRAGMA user_version = %d", schemaVersion)); err != nil {
 		return fmt.Errorf("stamp schema version: %w", err)

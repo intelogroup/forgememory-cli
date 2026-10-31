@@ -85,6 +85,9 @@ func TestOpenMigratesV7Database(t *testing.T) {
 	if got.Narrative != "kept" {
 		t.Errorf("narrative = %q, want kept", got.Narrative)
 	}
+	if got.Scope != "global" {
+		t.Errorf("pre-scope row scope = %q, want global", got.Scope)
+	}
 
 	// The temporal columns must exist and default to empty for upgraded rows.
 	var expiredAt, validFrom, sourceEpisodes string
