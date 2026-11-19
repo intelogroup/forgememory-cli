@@ -2,6 +2,7 @@ package main
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -731,6 +732,50 @@ func TestDistillSessionBatch_LockReleasedOnNormalReturn(t *testing.T) {
 	}
 	lock.Close()
 	cleanDistillLock()
+}
+
+func TestDistillSessionBatch_PrincipleFailureKeepsSessionQueued(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("FORGE_PROVIDER", "anthropic")
+	t.Setenv("FORGE_API_KEY", "test-key")
+	database := setupWedgeTestSession(t, home)
+
+	origSynth, origDistill := synthesizeCheckpointForSession, distillSummaryForSession
+	t.Cleanup(func() { synthesizeCheckpointForSession, distillSummaryForSession = origSynth, origDistill })
+	var usedKey string
+	synthesizeCheckpointForSession = func(_ *distill.Distiller, sessionID, proj, checkpointKey string, _ []db.Event) (*db.SessionSummary, error) {
+		usedKey = checkpointKey
+		summary := &db.SessionSummary{SessionID: sessionID, ProjectID: proj, CheckpointKey: checkpointKey, Summary: "x"}
+		return summary, database.InsertSessionSummary(summary)
+	}
+	distillSummaryForSession = func(*distill.Distiller, db.SessionSummary, []db.Event) (int, error) {
+		return 0, errors.New("provider down")
+	}
+
+	last := time.Time{}
+	if _, err, _ := distillSessionBatch(database, time.Minute, &last); err == nil {
+		t.Fatal("expected the principle failure to surface")
+	}
+	if exists, err := database.HasSessionCheckpoint(usedKey); err != nil || exists {
+		t.Fatalf("HasSessionCheckpoint = %v, %v; want removed for retry", exists, err)
+	}
+	queued, err := database.UndistilledCompletedSessions(10)
+	if err != nil || len(queued) != 1 {
+		t.Fatalf("queued = %v, %v; want the session still queued", queued, err)
+	}
+
+	distillSummaryForSession = func(*distill.Distiller, db.SessionSummary, []db.Event) (int, error) { return 1, nil }
+	if err := database.RecordDistillationSuccess(time.Now(), 0, 0, 0, time.Now()); err != nil {
+		t.Fatalf("clear backoff: %v", err)
+	}
+	if _, err, _ := distillSessionBatch(database, time.Minute, &last); err != nil {
+		t.Fatalf("retry: %v", err)
+	}
+	queued, err = database.UndistilledCompletedSessions(10)
+	if err != nil || len(queued) != 0 {
+		t.Fatalf("queued = %v, %v; want drained after retry", queued, err)
+	}
 }
 
 func TestDistillSessionBatch_NoteDistillCycleRanRunsOnSessionError(t *testing.T) {

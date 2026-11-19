@@ -242,22 +242,20 @@ func (d *DB) SearchEventsByProject(projectID, query string, limit int) ([]Event,
 	return events, rows.Err()
 }
 
-// UndistilledCompletedSessions returns session IDs that have a boundary event
-// (Stop/SessionEnd/AfterAgent) but no checkpoint summary yet. These are sessions
-// that have ended and are ready for distillation. Returns at most `limit` sessions.
+// UndistilledCompletedSessions returns up to limit sessions that have both a
+// boundary event and pending events. A summary may cover only one chunk.
 func (d *DB) UndistilledCompletedSessions(limit int) ([]string, error) {
 	if limit <= 0 {
 		limit = 10
 	}
 	rows, err := d.conn.Query(
-		`SELECT DISTINCT e.session_id FROM events e
+		`SELECT e.session_id FROM events e
 		 WHERE e.event_type IN ('Stop','SessionEnd','AfterAgent')
-		   AND e.session_id NOT IN (
-		     SELECT session_id FROM session_summaries
-		     WHERE session_id != ''
+		   AND e.session_id IN (
+		     SELECT session_id FROM events WHERE distilled = 0
 		   )
 		   AND e.session_id != 'unknown'
-		 ORDER BY e.ts DESC LIMIT ?`, limit,
+		 GROUP BY e.session_id ORDER BY MAX(e.ts) DESC LIMIT ?`, limit,
 	)
 	if err != nil {
 		return nil, err
@@ -278,6 +276,27 @@ func (d *DB) UndistilledCompletedSessions(limit int) ([]string, error) {
 func (d *DB) MarkSessionDistilled(sessionID string) error {
 	_, err := d.conn.Exec("UPDATE events SET distilled=1 WHERE session_id=?", sessionID)
 	return err
+}
+
+// UndistilledSessionEvents returns pending events in chronological order.
+func (d *DB) UndistilledSessionEvents(sessionID string, limit int) ([]Event, error) {
+	rows, err := d.conn.Query(
+		`SELECT `+eventSelect+` FROM events
+		 WHERE session_id=? AND distilled=0 ORDER BY ts ASC, rowid ASC LIMIT ?`, sessionID, limit,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var events []Event
+	for rows.Next() {
+		event, err := scanEvent(rows)
+		if err != nil {
+			return nil, err
+		}
+		events = append(events, event)
+	}
+	return events, rows.Err()
 }
 
 // SessionEvents returns the most recent events for a specific session.
