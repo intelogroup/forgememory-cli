@@ -179,7 +179,7 @@ func TestUndistilledCompletedSessions_ExcludesUnknown(t *testing.T) {
 	}
 }
 
-func TestUndistilledCompletedSessions_ExcludesAlreadySummarized(t *testing.T) {
+func TestUndistilledCompletedSessions_UsesPendingEventsAfterSummary(t *testing.T) {
 	database := openTestDB(t)
 	const sessionID = "sess-done"
 	seedSessionEvents(t, database, sessionID, 4, true)
@@ -195,10 +195,15 @@ func TestUndistilledCompletedSessions_ExcludesAlreadySummarized(t *testing.T) {
 	if err != nil {
 		t.Fatalf("UndistilledCompletedSessions: %v", err)
 	}
-	for _, sid := range got {
-		if sid == sessionID {
-			t.Fatal("summarized session should be excluded")
-		}
+	if len(got) != 1 || got[0] != sessionID {
+		t.Fatalf("pending events should keep the summarized session queued, got %v", got)
+	}
+	if err := database.MarkSessionDistilled(sessionID); err != nil {
+		t.Fatal(err)
+	}
+	got, err = database.UndistilledCompletedSessions(10)
+	if err != nil || len(got) != 0 {
+		t.Fatalf("completed session should leave the queue, got %v, %v", got, err)
 	}
 }
 

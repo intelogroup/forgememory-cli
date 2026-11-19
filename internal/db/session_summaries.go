@@ -109,6 +109,12 @@ func (d *DB) HasSessionCheckpoint(checkpointKey string) (bool, error) {
 	return count > 0, err
 }
 
+// DeleteSessionCheckpoint removes a checkpoint's summary so it can be redone.
+func (d *DB) DeleteSessionCheckpoint(checkpointKey string) error {
+	_, err := d.conn.Exec(`DELETE FROM session_summaries WHERE checkpoint_key = ?`, checkpointKey)
+	return err
+}
+
 // SessionSummaryCount returns total session summary count.
 func (d *DB) SessionSummaryCount() (int, error) {
 	var count int

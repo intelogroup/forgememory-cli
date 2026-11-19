@@ -499,10 +499,16 @@ var synthesizeCheckpointForSession = func(loopD *distill.Distiller, sessionID, p
 	return loopD.SynthesizeCheckpoint(sessionID, proj, "daemon", checkpointKey, events)
 }
 
+// distillSummaryForSession is a var for the same reason: tests fail it on demand.
+var distillSummaryForSession = func(loopD *distill.Distiller, summary db.SessionSummary, events []db.Event) (int, error) {
+	return loopD.DistillCheckpointSummary(summary, events)
+}
+
 // distillSessionBatch distills one batch of sessions and returns (processed, lastErr, hadWork).
 // Extracted so the loop can call it both on tick and in burst-drain mode.
 func distillSessionBatch(database *db.DB, interval time.Duration, lastCrossSessionRun *time.Time) (int, error, bool) {
 	const batchLimit = 20
+	const eventsPerCheckpoint = 300
 
 	// Check for completed sessions — avoids spinning on orphaned events.
 	sessions, sErr := database.UndistilledCompletedSessions(batchLimit)
@@ -556,21 +562,14 @@ func distillSessionBatch(database *db.DB, interval time.Duration, lastCrossSessi
 	defer lock.Close()
 
 	var lastErr error
+	distilledSessions := 0
+	morePendingEvents := false
 	for _, sessionID := range sessions {
 		proj := ""
-		checkpointKey := sessionID + ":daemon"
-
-		// Check if already processed (fast path)
-		exists, _ := database.HasSessionCheckpoint(checkpointKey)
-		if exists {
-			_ = database.MarkSessionDistilled(sessionID)
-			continue
-		}
-
 		startDistill := time.Now()
 
-		// Load session events
-		events, evErr := database.SessionEventsUpTo(sessionID, "", 0)
+		// Read one extra event to detect more work without loading the whole session.
+		events, evErr := database.UndistilledSessionEvents(sessionID, eventsPerCheckpoint+1)
 		if evErr != nil {
 			log.Printf("Distillation: failed to fetch events for session %s: %v", sessionID, evErr)
 			lastErr = evErr
@@ -579,7 +578,19 @@ func distillSessionBatch(database *db.DB, interval time.Duration, lastCrossSessi
 		}
 
 		if len(events) == 0 {
-			_ = database.MarkSessionDistilled(sessionID)
+			continue
+		}
+		moreForSession := len(events) > eventsPerCheckpoint
+		if moreForSession {
+			events = events[:eventsPerCheckpoint]
+		}
+
+		// Event IDs distinguish chunks whose timestamps are identical. Pending
+		// events mean an existing summary may precede a failed principle write.
+		checkpointKey := sessionID + ":daemon-batch:" + events[len(events)-1].ID
+		if err := database.DeleteSessionCheckpoint(checkpointKey); err != nil {
+			lastErr = err
+			_ = database.RecordDistillationFailure(startDistill, time.Since(startDistill), len(events), err.Error(), time.Now().Add(interval))
 			continue
 		}
 
@@ -618,19 +629,31 @@ func distillSessionBatch(database *db.DB, interval time.Duration, lastCrossSessi
 
 		distilledPrinciples := 0
 		if summary != nil {
-			dpCount, dpErr := loopD.DistillCheckpointSummary(*summary, events)
+			dpCount, dpErr := distillSummaryForSession(loopD, *summary, events)
 			if dpErr != nil {
 				log.Printf("Distillation: session %s DistillCheckpointSummary failed: %v", sessionID, dpErr)
 				lastErr = dpErr
 				_ = database.RecordDistillationFailure(startDistill, time.Since(startDistill), len(events), dpErr.Error(), time.Now().Add(interval))
+				// Otherwise the next tick sees the checkpoint and marks the events
+				// distilled without their principles ever being extracted.
+				_ = database.DeleteSessionCheckpoint(checkpointKey)
 				continue
 			}
 			distilledPrinciples = dpCount
 		}
 
-		// Successfully distilled session!
+		ids := make([]string, 0, len(events))
+		for _, event := range events {
+			ids = append(ids, event.ID)
+		}
+		if err := database.MarkDistilled(ids); err != nil {
+			lastErr = err
+			_ = database.RecordDistillationFailure(startDistill, time.Since(startDistill), len(events), err.Error(), time.Now().Add(interval))
+			continue
+		}
 		_ = database.RecordDistillationSuccess(startDistill, time.Since(startDistill), len(events), distilledPrinciples, time.Now().Add(interval))
-		_ = database.MarkSessionDistilled(sessionID)
+		distilledSessions++
+		morePendingEvents = morePendingEvents || moreForSession
 	}
 
 	// Cross-session synthesis: run periodically (every 30 min).
@@ -655,10 +678,10 @@ func distillSessionBatch(database *db.DB, interval time.Duration, lastCrossSessi
 	if lastErr != nil {
 		log.Printf("Distillation error: %v", lastErr)
 	} else {
-		log.Printf("Distillation cycle complete: processed %d session(s)", len(sessions))
+		log.Printf("Distillation cycle complete: processed %d session batch(es) out of %d", distilledSessions, len(sessions))
 	}
 	_ = crossSessionCount
-	return len(sessions), lastErr, len(sessions) >= batchLimit
+	return len(sessions), lastErr, lastErr == nil && distilledSessions > 0 && (morePendingEvents || len(sessions) >= batchLimit)
 }
 
 func processCompletedSessions(database *db.DB, sessionIDs []string) {
