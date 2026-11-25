@@ -13,5 +13,6 @@ func registeredAdapters() []ClientAdapter {
 		codexAdapter{},
 		opencodeAdapter{},
 		antigravityAdapter{},
+		clineAdapter{},
 	}
 }
